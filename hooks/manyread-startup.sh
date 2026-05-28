@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# manyread SessionStart hook — bash fallback for mac/linux (concise, one-time).
+cat <<'JSON'
+{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"manyread is active: it is the DEFAULT way to READ/SEARCH code (Edit/Write unchanged). Before exploring an unfamiliar repo with ls/find/cat/grep/Read: if it has NO manyread index, STOP and ask the user to build one with /mr-init (regardless of size); if it HAS one, query via manyread (query.py: FTS5 + symbol/graph probes, then a bounded substr slice) instead of scanning files. In a SYSTEM folder (drive root / home / Desktop) do not index in place -- ask for a dedicated project folder. A needed codebase already indexed elsewhere (e.g. a shared engine)? reuse by COPY: index_build.py --list-stores / --copy-from. Fall back to plain Read/Grep only when manyread cannot help (unindexed file, image/binary, or the store itself). See the manyread skill for how to invoke its scripts."}}
+JSON
+exit 0

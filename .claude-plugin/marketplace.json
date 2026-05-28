@@ -1,0 +1,11 @@
+{
+  "name": "manyread",
+  "owner": { "name": "x380kkm" },
+  "plugins": [
+    {
+      "name": "manyread",
+      "source": "./",
+      "description": "Read large source trees via a local SQLite index (FTS5 + tree-sitter), A* bounded extraction, query traces, and a ref/prune workspace. Built on SQL-ManyThing."
+    }
+  ]
+}

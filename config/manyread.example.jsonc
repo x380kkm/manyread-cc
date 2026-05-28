@@ -1,0 +1,37 @@
+// manyread per-project config — copy to <repo>/.manyread/config.json
+//
+// This file TRAVELS WITH THE REPO and is committable. It must NEVER contain
+// machine-specific absolute paths: db_path / refs_dir are RELATIVE to the
+// project root, and the root itself is resolved dynamically at runtime via
+// (in priority order):
+//   1. env MANYREAD_ROOT_<ALIAS>   (uppercased alias, e.g. MANYREAD_ROOT_MYPROJ)
+//   2. the global registry          (~/.manyread/registry.json)
+//   3. an explicit --root argument
+{
+  // Short, stable handle for this project. Used by every CLI as <alias>.
+  "alias": "myproj",
+
+  // Languages enabled for this project. Drives default extension presets and
+  // tree-sitter enrichment. Built-in presets:
+  //   cpp, python, javascript, typescript, csharp, shader, docs
+  "languages": ["cpp", "python"],
+
+  // File extensions to index. If omitted, derived from `languages` via the
+  // built-in presets. Listed explicitly here so you can trim/extend it.
+  "exts": [".h", ".cpp", ".hpp", ".inl", ".py"],
+
+  // Optional named profile (reserved; null disables). Kept for forward compat.
+  "profile": null,
+
+  // Glob patterns (relative to root) excluded during enumeration. Combined
+  // with a built-in SKIP_DIRS set (.git node_modules dist .venv venv
+  // __pycache__ .manyread). Used only by the os.walk fallback; when the root
+  // is a git repo, `git ls-files` enumeration is authoritative.
+  "ignore_globs": ["ThirdParty/*", "Intermediate/*", "*/node_modules/*"],
+
+  // SQLite search-space DB, relative to project root.
+  "db_path": ".manyread/source.db",
+
+  // Directory holding ref/prune reading workspaces, relative to project root.
+  "refs_dir": ".manyread/refs"
+}

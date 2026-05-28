@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "extends_presets": [],
+  "preset_dirs": [],
+  "rules": [
+    {
+      "id": "unreal/api-export-rename",
+      "doc": "Unreal exports a class via an UPPERCASE_API macro: `class SDFPARTICLES_API UFoo : public UObject {}`. tree-sitter-cpp misreads the macro as the class name and drops the real name. Match cpp class/struct whose name is the export macro and rename to the next C identifier (the true type name), tagging api_exported=true.",
+      "when": {
+        "lang": "cpp",
+        "kind": "class",
+        "name_regex": "[A-Z][A-Z0-9_]*_API"
+      },
+      "action": "rename_to_next_identifier",
+      "skip_token_regex": "(?:(?:class|struct)\\s+)?[A-Z][A-Z0-9_]*_API",
+      "set": {
+        "api_exported": true
+      }
+    },
+    {
+      "id": "unreal/api-export-rename-struct",
+      "doc": "Same export-macro fix as unreal/api-export-rename but for `struct SDFPARTICLES_API FFoo`.",
+      "when": {
+        "lang": "cpp",
+        "kind": "struct",
+        "name_regex": "[A-Z][A-Z0-9_]*_API"
+      },
+      "action": "rename_to_next_identifier",
+      "skip_token_regex": "(?:(?:class|struct)\\s+)?[A-Z][A-Z0-9_]*_API",
+      "set": {
+        "api_exported": true
+      }
+    },
+    {
+      "id": "unreal/uclass-tag",
+      "doc": "Example set_attr rule: tag UCLASS-like engine objects (cpp class names beginning with U/A/F/S/T followed by a capital, e.g. UObject, AActor, FVector) with an unreal_type marker so queries can filter engine types. Adds an attribute only; does not rename or drop.",
+      "when": {
+        "lang": "cpp",
+        "kind": "class",
+        "name_regex": "[UAFST][A-Z][A-Za-z0-9_]*"
+      },
+      "action": "set_attr",
+      "set": {
+        "unreal_type": true
+      }
+    }
+  ]
+}
