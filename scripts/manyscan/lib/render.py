@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
+from pathlib import Path
 
 from lib import analyze
 from lib.graph import Graph
@@ -100,6 +101,117 @@ def to_dot(g: Graph) -> str:
     return "\n".join(lines) + "\n"
 
 
+# --- self-contained interactive HTML (cytoscape.js, force-directed cose) -----
+# A single file that opens in any browser — no server/node/build. Built to scale
+# to MANY nodes (engine-level bounded slices): force layout + pan/zoom + search +
+# color-by-kind, with the bounded-truncation banner kept visible. For very large
+# slices, roll up to dir/module first (manyscan's real scale lever).
+_ASSET_LIB = Path(__file__).resolve().parent.parent / "assets" / "cytoscape.min.js"
+_CDN_LIB = "https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"
+_PALETTE = ["#4e79a7", "#f28e2b", "#59a14f", "#e15759", "#76b7b2",
+            "#edc948", "#b07aa1", "#ff9da7", "#9c755f", "#9d7660"]
+
+_HTML_BOOTSTRAP = """
+const cy = cytoscape({
+  container: document.getElementById('cy'),
+  elements: DATA,
+  style: [
+    {selector:'node', style:{'label':'data(label)','font-size':'8px','width':16,'height':16,
+      'background-color':'data(color)','color':'#223','text-valign':'bottom','text-halign':'center',
+      'text-wrap':'wrap','text-max-width':'140px'}},
+    {selector:'node[frontier > 0]', style:{'border-width':3,'border-color':'#e15759','border-style':'dashed'}},
+    {selector:'edge', style:{'width':1,'line-color':'#c4c9d4','target-arrow-color':'#c4c9d4',
+      'target-arrow-shape':'triangle','arrow-scale':0.7,'curve-style':'bezier'}},
+    {selector:'.dim', style:{'opacity':0.1}},
+    {selector:'.hit', style:{'background-color':'#ffec3d','border-width':3,'border-color':'#f5a623','z-index':99}}
+  ],
+  layout: {name:'cose', animate:false, padding:30, nodeRepulsion:9000, idealEdgeLength:90, nodeOverlap:8},
+  wheelSensitivity: 0.2
+});
+const q = document.getElementById('q');
+q.addEventListener('input', function(){
+  const s = q.value.trim().toLowerCase();
+  cy.batch(function(){
+    cy.elements().removeClass('dim hit');
+    if(!s) return;
+    const hits = cy.nodes().filter(function(n){return (n.data('label')||'').toLowerCase().indexOf(s)>=0;});
+    if(hits.length===0) return;
+    cy.elements().addClass('dim');
+    hits.removeClass('dim').addClass('hit');
+    hits.closedNeighborhood().removeClass('dim');
+    cy.animate({fit:{eles:hits, padding:80}},{duration:300});
+  });
+});
+"""
+
+
+def _html_escape(s: str | None) -> str:
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def to_html(g: Graph, title: str = "manyscan dependency slice") -> str:
+    """Render a Graph as ONE self-contained interactive HTML file (cytoscape.js).
+
+    The cytoscape lib is inlined from the vendored asset (offline; CDN fallback if
+    the asset is missing), as is the graph data — so the output is a single file
+    that renders a force-directed, zoomable, searchable graph in any browser.
+    """
+    kinds = sorted({(n.kind or "node") for n in g.nodes.values()})
+    kcolor = {k: _PALETTE[i % len(_PALETTE)] for i, k in enumerate(kinds)}
+
+    elements: list[dict] = []
+    for n in sorted(g.nodes.values(), key=lambda n: n.id):
+        extra = g.frontier.get(n.id, 0)
+        label = n.label or n.id
+        if extra:
+            label = f"{label}  +{extra}⤳"
+        elements.append({"data": {
+            "id": n.id, "label": label, "kind": n.kind or "node",
+            "color": kcolor.get(n.kind or "node", "#888"), "frontier": extra,
+            "evidence": str(n.evidence) if n.evidence else "",
+        }})
+    for i, e in enumerate(sorted(g.edges, key=lambda e: (e.src, e.dst, e.relation))):
+        elements.append({"data": {"id": f"e{i}", "source": e.src, "target": e.dst, "rel": e.relation}})
+    data_json = json.dumps(elements, ensure_ascii=False)
+
+    banner = ""
+    if g.truncated:
+        banner = f"bounded: capped at level {g.frontier_depth}, {g.elided} deps elided"
+    elif g.depth_bounded:
+        banner = f"bounded: depth-capped at level {g.frontier_depth}"
+
+    legend = "".join(
+        f'<span class="lg"><i style="background:{kcolor[k]}"></i>{_html_escape(k)}</span>' for k in kinds
+    )
+    meta = f"{len(g.nodes)} nodes &middot; {len(g.edges)} edges"
+
+    if _ASSET_LIB.is_file():
+        lib = "<script>" + _ASSET_LIB.read_text(encoding="utf-8") + "</script>"
+    else:
+        lib = f'<script src="{_CDN_LIB}"></script>'
+
+    head = (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        f"<title>{_html_escape(title)}</title><style>"
+        "html,body{margin:0;height:100%;font:13px system-ui,Segoe UI,sans-serif}"
+        "#bar{position:fixed;top:0;left:0;right:0;padding:6px 10px;background:#1f2430;color:#eee;"
+        "z-index:10;display:flex;gap:10px;align-items:center;flex-wrap:wrap}"
+        "#bar b{font-weight:600}.meta{color:#9aa6b2}.warn{color:#ffcf5c}"
+        "#q{width:200px;padding:3px 6px;border-radius:4px;border:1px solid #556;background:#2b3142;color:#eee}"
+        ".lg{display:inline-flex;align-items:center;gap:4px;color:#cdd6e0}"
+        ".lg i{width:10px;height:10px;border-radius:50%;display:inline-block}"
+        "#cy{position:fixed;top:44px;left:0;right:0;bottom:0;background:#fbfbfd}"
+        "</style></head><body><div id='bar'>"
+        f"<b>{_html_escape(title)}</b><span class='meta'>{meta}</span>"
+        + (f"<span class='warn'>&#9888; {_html_escape(banner)}</span>" if banner else "")
+        + "<input id='q' placeholder='search node...'>"
+        f"<span style='display:flex;gap:8px;flex-wrap:wrap'>{legend}</span>"
+        "</div><div id='cy'></div>"
+    )
+    script = "<script>const DATA=" + data_json + ";\n" + _HTML_BOOTSTRAP + "</script>"
+    return head + lib + script + "</body></html>"
+
+
 # --- text --------------------------------------------------------------------
 def _bounded_lines(truncated: bool, depth_bounded: bool, frontier_depth: int,
                    elided: int, frontier: dict) -> list[str]:
@@ -144,11 +256,11 @@ def metrics_text(m: analyze.Metrics) -> str:
     return "\n".join(lines) + "\n"
 
 
-FORMATS = {"json": to_json, "mermaid": to_mermaid, "dot": to_dot, "text": to_text}
+FORMATS = {"json": to_json, "mermaid": to_mermaid, "dot": to_dot, "text": to_text, "html": to_html}
 
 
 def render(g: Graph, fmt: str) -> str:
-    """Render a Graph in ``fmt`` (json|mermaid|dot|text)."""
+    """Render a Graph in ``fmt`` (json|mermaid|dot|text|html)."""
     if fmt not in FORMATS:
         raise ValueError(f"unknown format: {fmt!r} (use {'/'.join(FORMATS)})")
     return FORMATS[fmt](g)

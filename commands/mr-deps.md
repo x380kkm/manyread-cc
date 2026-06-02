@@ -28,13 +28,17 @@ each Bash call — shell state does not persist):
 MR="${CLAUDE_PLUGIN_ROOT:-$(ls -d ~/.claude/plugins/cache/*/manyread/*/ 2>/dev/null | sort | tail -1)}"
 uv run --python 3.12 "$MR/scripts/manyscan/scan.py" list-stores
 uv run --python 3.12 "$MR/scripts/manyscan/scan.py" scan    <seed> --store <dir|alias> \
-    [--dir out|in|both] [--level file|dir|module] [--max-nodes N] [--format json|mermaid|dot|text]
+    [--dir out|in|both] [--level file|dir|module] [--max-nodes N] [--format json|mermaid|dot|text|html]
 uv run --python 3.12 "$MR/scripts/manyscan/scan.py" analyze <seed> --store <dir|alias> [--level dir|module]
 uv run --python 3.12 "$MR/scripts/manyscan/scan.py" export  <seed> --store <dir|alias>   # graphviz dot
 ```
 
 `--store` takes a hub alias, a store dir, or a `source.db` path; or use `--root <repo>`.
 `<seed>` = a symbol / file / dir / keyword.
+
+**Visual output:** `--format html > deps.html` writes ONE self-contained file (cytoscape
+force-directed layout, pan/zoom/search, color-by-kind, dashed-red = capped frontier node) —
+open in any browser, no install. For a large engine-scale slice, `--level dir|module` first.
 
 ## Rules
 

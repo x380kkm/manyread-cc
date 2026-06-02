@@ -31,12 +31,17 @@ shell state does not persist), then call `scripts/manyscan/scan.py`:
 MR="${CLAUDE_PLUGIN_ROOT:-$(ls -d ~/.claude/plugins/cache/*/manyread/*/ 2>/dev/null | sort | tail -1)}"
 uv run --python 3.12 "$MR/scripts/manyscan/scan.py" list-stores
 uv run --python 3.12 "$MR/scripts/manyscan/scan.py" scan    <seed> --store <dir|alias> \
-    [--dir out|in|both] [--level file|dir|module] [--max-nodes N] [--format json|mermaid|dot|text]
+    [--dir out|in|both] [--level file|dir|module] [--max-nodes N] [--format json|mermaid|dot|text|html]
 uv run --python 3.12 "$MR/scripts/manyscan/scan.py" analyze <seed> --store <dir|alias> [--level dir|module]
 uv run --python 3.12 "$MR/scripts/manyscan/scan.py" export  <seed> --store <dir|alias>   # graphviz dot
 ```
 `--store` takes a hub alias, a store dir, or a `source.db` path; or use `--root <repo>`.
 Also available as the `/mr-deps` command.
+
+**Visual:** `--format html > deps.html` emits ONE self-contained file (cytoscape force
+layout, pan/zoom/search, color-by-kind, dashed-red = bounded/capped node) — open it in any
+browser, no install. `mermaid`/`dot` render in VS Code / GitHub / mermaid.live. For a
+many-node engine-scale slice, roll up with `--level dir|module` first to keep it readable.
 
 ## Rules
 - Needs a manyread store (`<repo>/manyread/source.db`). If absent, build it first

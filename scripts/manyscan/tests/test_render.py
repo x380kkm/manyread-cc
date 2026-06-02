@@ -63,6 +63,27 @@ def test_metrics_text_summary_and_warning():
     assert "most_unstable:" in txt
 
 
+def test_to_html_self_contained_and_interactive():
+    out = render.to_html(_slice())
+    assert out.startswith("<!doctype html>") and out.rstrip().endswith("</html>")
+    # cytoscape lib inlined from the vendored asset (offline, single file)
+    assert "cytoscape" in out and len(out) > 300_000
+    assert "name:'cose'" in out          # force-directed layout
+    assert "a.py" in out and "b.py" in out
+    assert "+7⤳" in out                  # frontier node tagged in its label
+    assert "7 deps elided" in out        # honest truncation banner
+    assert "search node" in out          # interactive search box
+
+
+def test_to_html_deterministic():
+    assert render.to_html(_slice()) == render.to_html(_slice())
+
+
+def test_html_in_formats():
+    assert "html" in render.FORMATS
+    assert render.render(_slice(), "html").startswith("<!doctype html>")
+
+
 def test_render_unknown_format_raises():
     try:
         render.render(_slice(), "yaml")
