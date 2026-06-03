@@ -742,6 +742,18 @@ _HTML_BOOTSTRAP = """
     document.getElementById('hp-apply').addEventListener('click', applyPanel);
     document.getElementById('hp-fit').addEventListener('click', function(){ fitVisible(true); });
     document.getElementById('hp-export').addEventListener('click', exportHidden);
+    // drag the left-edge grip to RESIZE the panel width (so long symbol names aren't clipped)
+    var grip = document.getElementById('hp-grip');
+    if(grip){
+      var rz = false;
+      grip.addEventListener('mousedown', function(e){ rz = true; e.preventDefault(); document.body.style.userSelect='none'; });
+      window.addEventListener('mousemove', function(e){
+        if(!rz) return;
+        var w = window.innerWidth - e.clientX;                       // right-anchored panel => width grows leftward
+        hp.style.width = Math.max(260, Math.min(window.innerWidth - 80, w)) + 'px';
+      });
+      window.addEventListener('mouseup', function(){ if(rz){ rz = false; document.body.style.userSelect=''; } });
+    }
     renderRows(); refreshDeltaHint(); updateCounts();
   }
   setupHidePanel();
@@ -765,6 +777,7 @@ _HTML_BOOTSTRAP = """
 _HIDE_PANEL_HTML = (
     "<div id='hp' class='collapsed'>"
     "<div class='hp-tab' id='hp-tab'>HIDE</div>"
+    "<div class='hp-grip' id='hp-grip' title='drag to resize'></div>"
     "<div class='hp-hd'>"
     "<input id='hpq' placeholder='filter symbols...'>"
     "<select id='hp-kind'><option value=''>kind: any</option></select>"
@@ -1030,10 +1043,13 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
         "#hp{position:fixed;top:44px;right:0;bottom:0;width:340px;z-index:15;display:flex;"
         "flex-direction:column;background:#222838;color:#dfe3ea;box-shadow:-2px 0 8px rgba(0,0,0,.3);"
         "transition:transform .18s ease;font-size:12px}"
-        "#hp.collapsed{transform:translateX(322px)}"
+        "#hp.collapsed{transform:translateX(calc(100% - 18px))}"   # width-relative: tab stays visible at any width
         ".hp-tab{position:absolute;left:-0px;top:0;width:18px;height:64px;background:#39415a;"
         "color:#cdd6e0;writing-mode:vertical-rl;text-align:center;font-weight:600;cursor:pointer;"
         "border-radius:4px 0 0 4px;padding:6px 1px;user-select:none}"
+        # drag the left edge (below the tab) to widen the panel so long symbol names aren't clipped
+        ".hp-grip{position:absolute;left:0;top:70px;bottom:0;width:6px;cursor:ew-resize;z-index:16}"
+        ".hp-grip:hover{background:#3a9457}"
         "#hp .hp-hd{display:flex;flex-wrap:wrap;gap:4px;padding:8px 8px 4px 24px}"
         "#hp .hp-hd input,#hp .hp-hd select{background:#2b3142;color:#eee;border:1px solid #556;"
         "border-radius:4px;padding:2px 4px;font-size:11px}"
