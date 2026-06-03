@@ -54,7 +54,7 @@ def cmd_scan(args) -> int:
     info = _store_info(args)
     budget = _budget(args)
     with stores.Store(info.db_path) as st:
-        if args.format == "json" and args.level == "file":
+        if args.format == "json" and args.level == "file" and not args.srp:
             data, _hit = cache.cached_scan(st, args.seed, budget, alias=info.alias,
                                            use_cache=not args.no_cache)
             if not data["nodes"]:
@@ -64,7 +64,16 @@ def cmd_scan(args) -> int:
             g = scope.scan(st, args.seed, budget, alias=info.alias)
             if not g.nodes:
                 print(f"warning: seed {args.seed!r} resolved to no nodes", file=sys.stderr)
-            if args.level != "file":
+            if args.srp:
+                # color file-level nodes by their cohesive cluster (SRP view); the
+                # cross-cluster edges render as dashed-red seams. --level picks the
+                # grouping granularity (dir|module), not a rollup.
+                lvl = args.level if args.level != "file" else "dir"
+                group_of = rollup._group_fn(lvl, st)  # noqa: SLF001 (same package)
+                for nid, lab in analyze.cluster_of(g, group_of).items():
+                    if nid in g.nodes:
+                        g.nodes[nid].attrs["cluster"] = lab
+            elif args.level != "file":
                 g = rollup.rollup(g, args.level, store=st)
             _emit(render.render(g, args.format))
     return 0
@@ -75,6 +84,14 @@ def cmd_analyze(args) -> int:
     budget = _budget(args)
     with stores.Store(info.db_path) as st:
         g = scope.scan(st, args.seed, budget, alias=info.alias)
+        if not g.nodes:
+            print(f"warning: seed {args.seed!r} resolved to no nodes", file=sys.stderr)
+        if args.srp:
+            lvl = args.level if args.level != "file" else "dir"
+            group_of = rollup._group_fn(lvl, st)  # noqa: SLF001 (same package)
+            reports = analyze.srp(g, group_of, min_cohesion=args.min_cohesion)
+            _emit(render.srp_to_json(reports) if args.format == "json" else render.srp_text(reports))
+            return 0
         if args.level != "file":
             g = rollup.rollup(g, args.level, store=st)
         m = analyze.metrics(g)
@@ -92,6 +109,13 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--dir", choices=["out", "in", "both"], default="out")
     p.add_argument("--level", choices=["file", "dir", "module"], default="file")
     p.add_argument("--no-cache", dest="no_cache", action="store_true")
+    p.add_argument("--srp", action="store_true",
+                   help="single-responsibility view: find a module's cohesive internal "
+                        "clusters (candidate split groups) + the seams to cut; scan colors "
+                        "nodes by cluster, analyze reports K/cohesion/seams")
+    p.add_argument("--min-cohesion", dest="min_cohesion", type=float, default=0.15,
+                   help="SRP: internal-density below this + >=2 unrelated consumers flags "
+                        "a module multi-responsibility (default 0.15)")
 
 
 def main(argv: list[str] | None = None) -> int:

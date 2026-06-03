@@ -84,6 +84,38 @@ def test_html_in_formats():
     assert render.render(_slice(), "html").startswith("<!doctype html>")
 
 
+def test_html_exposes_node_path_and_info_panel():
+    out = render.to_html(_slice())
+    assert '"path"' in out                  # every node carries its file path
+    assert "id='info'" in out               # tap-a-node info panel exists
+    assert "GET ITS FILE PATH" in out       # the panel's purpose
+    assert "search node/path" in out        # search covers path too
+
+
+def test_html_colors_by_cluster_when_present():
+    g = Graph()
+    g.add_node(Node("file:1", "file", label="a.py", attrs={"cluster": "mod#0"}))
+    g.add_node(Node("file:2", "file", label="b.py", attrs={"cluster": "mod#1"}))
+    g.add_edge(Edge("file:1", "file:2", "imports"))
+    out = render.to_html(g)
+    assert '"cluster": "mod#0"' in out and '"cluster": "mod#1"' in out
+    assert "color=cluster" in out           # legend switched to cluster mode
+    assert "edge.seam" in out               # cross-cluster edges dash as seams
+
+
+def test_srp_text_reports_modules():
+    from lib.graph import Edge as E, Node as N
+    g = Graph()
+    for nid in ["mod/a", "mod/b", "mod/c", "mod/d"]:
+        g.add_node(N(nid, "file", label=nid))
+    g.add_edge(E("mod/a", "mod/b", "imports"))
+    g.add_edge(E("mod/c", "mod/d", "imports"))
+    reports = analyze.srp(g, lambda n: n.id.split("/")[0])
+    txt = render.srp_text(reports)
+    assert "multi-responsibility" in txt and "K=2" in txt
+    assert "cluster#0" in txt and "cluster#1" in txt
+
+
 def test_render_unknown_format_raises():
     try:
         render.render(_slice(), "yaml")

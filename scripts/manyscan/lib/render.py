@@ -123,18 +123,36 @@ const cy = cytoscape({
     {selector:'edge', style:{'width':1,'line-color':'#c4c9d4','target-arrow-color':'#c4c9d4',
       'target-arrow-shape':'triangle','arrow-scale':0.7,'curve-style':'bezier'}},
     {selector:'.dim', style:{'opacity':0.1}},
-    {selector:'.hit', style:{'background-color':'#ffec3d','border-width':3,'border-color':'#f5a623','z-index':99}}
+    {selector:'.hit', style:{'background-color':'#ffec3d','border-width':3,'border-color':'#f5a623','z-index':99}},
+    {selector:'edge.seam', style:{'line-color':'#e15759','target-arrow-color':'#e15759','line-style':'dashed','width':2}}
   ],
   layout: {name:'cose', animate:false, padding:30, nodeRepulsion:9000, idealEdgeLength:90, nodeOverlap:8},
   wheelSensitivity: 0.2
 });
+// seams: edges crossing a cluster boundary (the cuts an SRP split would make)
+cy.edges().forEach(function(ed){
+  const a=ed.source().data('cluster'), b=ed.target().data('cluster');
+  if(a && b && a!==b) ed.addClass('seam');
+});
+// info panel: tap a node to GET ITS FILE PATH (+ kind/cluster); tap blank to close
+const info = document.getElementById('info');
+function showInfo(d){
+  info.innerHTML='';
+  const b=document.createElement('b'); b.textContent=d.label||d.id; info.appendChild(b);
+  const m=document.createElement('div'); m.className='k';
+  m.textContent=(d.kind||'')+(d.cluster?('  ·  '+d.cluster):''); info.appendChild(m);
+  const c=document.createElement('code'); c.textContent=d.path||''; c.title='click to select'; info.appendChild(c);
+  info.style.display='block';
+}
+cy.on('tap','node',function(e){ showInfo(e.target.data()); });
+cy.on('tap',function(e){ if(e.target===cy) info.style.display='none'; });
 const q = document.getElementById('q');
 q.addEventListener('input', function(){
   const s = q.value.trim().toLowerCase();
   cy.batch(function(){
     cy.elements().removeClass('dim hit');
     if(!s) return;
-    const hits = cy.nodes().filter(function(n){return (n.data('label')||'').toLowerCase().indexOf(s)>=0;});
+    const hits = cy.nodes().filter(function(n){return ((n.data('label')||'')+' '+(n.data('path')||'')).toLowerCase().indexOf(s)>=0;});
     if(hits.length===0) return;
     cy.elements().addClass('dim');
     hits.removeClass('dim').addClass('hit');
@@ -156,8 +174,18 @@ def to_html(g: Graph, title: str = "manyscan dependency slice") -> str:
     the asset is missing), as is the graph data — so the output is a single file
     that renders a force-directed, zoomable, searchable graph in any browser.
     """
-    kinds = sorted({(n.kind or "node") for n in g.nodes.values()})
-    kcolor = {k: _PALETTE[i % len(_PALETTE)] for i, k in enumerate(kinds)}
+    # Color by cohesive cluster (attrs['cluster']) when present (SRP view), else by kind.
+    clustered = any(n.attrs.get("cluster") for n in g.nodes.values())
+    if clustered:
+        keys = sorted({(n.attrs.get("cluster") or "?") for n in g.nodes.values()})
+    else:
+        keys = sorted({(n.kind or "node") for n in g.nodes.values()})
+    kcolor = {k: _PALETTE[i % len(_PALETTE)] for i, k in enumerate(keys)}
+
+    def _path_of(n) -> str:
+        if n.evidence is not None and getattr(n.evidence, "path", None):
+            return n.evidence.path
+        return n.label or n.id
 
     elements: list[dict] = []
     for n in sorted(g.nodes.values(), key=lambda n: n.id):
@@ -165,9 +193,12 @@ def to_html(g: Graph, title: str = "manyscan dependency slice") -> str:
         label = n.label or n.id
         if extra:
             label = f"{label}  +{extra}⤳"
+        cluster = n.attrs.get("cluster") or ""
+        ckey = cluster if clustered else (n.kind or "node")
         elements.append({"data": {
             "id": n.id, "label": label, "kind": n.kind or "node",
-            "color": kcolor.get(n.kind or "node", "#888"), "frontier": extra,
+            "color": kcolor.get(ckey, "#888"), "frontier": extra,
+            "path": _path_of(n), "cluster": cluster,
             "evidence": str(n.evidence) if n.evidence else "",
         }})
     for i, e in enumerate(sorted(g.edges, key=lambda e: (e.src, e.dst, e.relation))):
@@ -181,8 +212,9 @@ def to_html(g: Graph, title: str = "manyscan dependency slice") -> str:
         banner = f"bounded: depth-capped at level {g.frontier_depth}"
 
     legend = "".join(
-        f'<span class="lg"><i style="background:{kcolor[k]}"></i>{_html_escape(k)}</span>' for k in kinds
+        f'<span class="lg"><i style="background:{kcolor[k]}"></i>{_html_escape(k)}</span>' for k in keys
     )
+    legend_kind = "cluster" if clustered else "kind"
     meta = f"{len(g.nodes)} nodes &middot; {len(g.edges)} edges"
 
     if _ASSET_LIB.is_file():
@@ -201,12 +233,16 @@ def to_html(g: Graph, title: str = "manyscan dependency slice") -> str:
         ".lg{display:inline-flex;align-items:center;gap:4px;color:#cdd6e0}"
         ".lg i{width:10px;height:10px;border-radius:50%;display:inline-block}"
         "#cy{position:fixed;top:44px;left:0;right:0;bottom:0;background:#fbfbfd}"
+        "#info{display:none;position:fixed;left:10px;bottom:10px;max-width:60%;z-index:20;"
+        "background:#1f2430;color:#eee;padding:8px 10px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,.3)}"
+        "#info b{font-weight:600}#info .k{color:#9aa6b2;font-size:11px;margin:2px 0}"
+        "#info code{display:block;color:#a6e3a1;word-break:break-all;-webkit-user-select:all;user-select:all}"
         "</style></head><body><div id='bar'>"
-        f"<b>{_html_escape(title)}</b><span class='meta'>{meta}</span>"
+        f"<b>{_html_escape(title)}</b><span class='meta'>{meta} &middot; color={legend_kind} &middot; tap node → path</span>"
         + (f"<span class='warn'>&#9888; {_html_escape(banner)}</span>" if banner else "")
-        + "<input id='q' placeholder='search node...'>"
+        + "<input id='q' placeholder='search node/path...'>"
         f"<span style='display:flex;gap:8px;flex-wrap:wrap'>{legend}</span>"
-        "</div><div id='cy'></div>"
+        "</div><div id='cy'></div><div id='info'></div>"
     )
     script = "<script>const DATA=" + data_json + ";\n" + _HTML_BOOTSTRAP + "</script>"
     return head + lib + script + "</body></html>"
@@ -253,6 +289,39 @@ def metrics_text(m: analyze.Metrics) -> str:
         lines.append("top instability:")
         for nm in m.nodes[:5]:
             lines.append(f"  - {nm.label} I={nm.instability} (Ca={nm.ca},Ce={nm.ce})")
+    return "\n".join(lines) + "\n"
+
+
+# --- SRP report views --------------------------------------------------------
+def srp_to_json(reports: list, indent: int | None = 2) -> str:
+    """Serialize a list of analyze.SrpReport (deterministic)."""
+    return json.dumps([asdict(r) for r in reports], ensure_ascii=False, indent=indent)
+
+
+def srp_text(reports: list) -> str:
+    """Human-readable SRP report: per module K + cohesion + clusters + seams to cut."""
+    lines: list[str] = []
+    flagged = [r for r in reports if r.multi_responsibility]
+    lines.append(f"SRP: {len(reports)} modules, {len(flagged)} flagged multi-responsibility "
+                 f"(structural proxy — confirm semantically)")
+    for r in reports:
+        if r.multi_responsibility:
+            mark = " ⚠ multi-responsibility"
+        elif r.internal_edges == 0 and r.n_members > 1:
+            mark = " ○ independent files (no internal coupling)"
+        else:
+            mark = " ✓ cohesive"
+        lines.append(f"\n[{r.module}] K={r.components} cohesion={r.cohesion} "
+                     f"members={r.n_members} fan-in-from={len(r.fan_in_sources)}{mark}")
+        if r.components > 1:
+            for i, c in enumerate(r.clusters):
+                head = ", ".join(c.members[:6]) + (" …" if c.size > 6 else "")
+                lines.append(f"   cluster#{i} ({c.size}): {head}")
+            if r.seams:
+                lines.append("   seams to cut: " + "; ".join(f"{a} --{rel}--> {b}" for a, b, rel in r.seams[:8]))
+        if r.fan_in_sources:
+            lines.append("   consumers: " + ", ".join(r.fan_in_sources[:8]))
+    lines.append(f"\nnote: {reports[0].note}" if reports else "note: (no modules)")
     return "\n".join(lines) + "\n"
 
 

@@ -60,6 +60,52 @@ def test_triangle_has_no_bridges():
     assert analyze.cut_nodes(g) == []
 
 
+def _modular_graph():
+    # module 'mod' = two disconnected internal clusters (a-b) and (c-d);
+    # module 'ok' = one connected component (x-y-z).
+    g = Graph()
+    for nid in ["mod/a", "mod/b", "mod/c", "mod/d", "ok/x", "ok/y", "ok/z"]:
+        g.add_node(Node(nid, "file", label=nid))
+    g.add_edge(Edge("mod/a", "mod/b", "imports"))
+    g.add_edge(Edge("mod/c", "mod/d", "imports"))
+    g.add_edge(Edge("ok/x", "ok/y", "imports"))
+    g.add_edge(Edge("ok/y", "ok/z", "imports"))
+    return g
+
+
+def _group(n):
+    return n.id.split("/")[0]
+
+
+def test_srp_flags_multi_responsibility_and_clusters():
+    reports = {r.module: r for r in analyze.srp(_modular_graph(), _group)}
+    mod, ok = reports["mod"], reports["ok"]
+    assert mod.components == 2 and mod.multi_responsibility is True
+    assert sorted(c.size for c in mod.clusters) == [2, 2]      # two responsibilities
+    assert ok.components == 1 and ok.multi_responsibility is False  # cohesive
+
+
+def test_srp_seams_are_internal_bridges():
+    # one module, one connected chain a-b-c -> bridges (a,b) and (b,c) are the seams
+    g = Graph()
+    for nid in ["m/a", "m/b", "m/c"]:
+        g.add_node(Node(nid, "file", label=nid))
+    g.add_edge(Edge("m/a", "m/b", "imports"))
+    g.add_edge(Edge("m/b", "m/c", "imports"))
+    rep = analyze.srp(g, _group)[0]
+    assert rep.components == 1
+    assert {frozenset((a, b)) for a, b, _ in rep.seams} == {frozenset(("m/a", "m/b")),
+                                                            frozenset(("m/b", "m/c"))}
+
+
+def test_cluster_of_labels_split_module():
+    cl = analyze.cluster_of(_modular_graph(), _group)
+    # split module -> mod#0 / mod#1 (two labels); cohesive module -> single label 'ok'
+    assert {cl["mod/a"], cl["mod/c"]} == {"mod#0", "mod#1"}
+    assert cl["mod/a"] == cl["mod/b"]                 # same responsibility, same label
+    assert cl["ok/x"] == cl["ok/y"] == cl["ok/z"] == "ok"
+
+
 def test_metrics_summary_and_bounded():
     g = _chain("a", "b", "c")
     g.truncated = True
