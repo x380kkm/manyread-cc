@@ -30,7 +30,8 @@ MR="${CLAUDE_PLUGIN_ROOT:-$(ls -d ~/.claude/plugins/cache/*/manyread/*/ 2>/dev/n
 uv run --python 3.12 "$MR/scripts/manyscan/scan.py" boundary --root <repo> \
     --target-root <target-rel-path> [--dep-root <dep-rel> ...] \
     [--view both|internal|dependency] [--layers flat|two|four] [--dep-depth N] \
-    [--ignore <view-hide.json>] [--format html|json|text|dot] [--max-nodes N]
+    [--ignore <view-hide.json>] [--collapse off|file|dir] \
+    [--format html|json|text|dot] [--max-nodes N]
 ```
 The old name `plugin-boundary` (and the flags `--plugin-root` / `--engine-root`) still
 work as deprecated aliases mapping to `--target-root` / `--dep-root`.
@@ -68,6 +69,21 @@ The html draws N ORDERED, FRAMED bands left→right (forceAtlas2 still lays out 
   "this slice only — re-run manyscan for a deeper chain": the in-browser chain only sees
   the currently loaded slice, so for a deeper/fresh chain re-run manyscan with that node
   as the seed.
+
+### Collapsible MODULE<->SYMBOL view (`--collapse off|file|dir`, html only)
+A subsystem boundary can be ~1769 symbol nodes — unreadable. `--collapse` (default `off` =
+v0.6.2 bytes) groups both sides into collapsible MODULES: target symbols by FILE (`file`:
+stem, a .cpp/.h pair coalesces; `dir`: parent dir), dependency symbols by ENGINE MODULE
+(same resolver as `--rollup-dep`; unresolved `dep:`/`amb:` → an `(external)` bucket). DEFAULT
+= ALL modules COLLAPSED: a readable overview of ~60 super-nodes (sized by member count,
+placed in their band). EXPAND modules from the side-panel **MODULES** section (above HIDE)
+to reveal their symbols IN PLACE; collapse-all / expand-all are there too. The side panel is
+the ONLY collapse control — graph double-click still drills the symbol chain (no-op on a
+collapsed super-node). Coexists with hide/search/bands/drill-down (all act on the displayed
+quotient; a hidden member drops out of its super-node). Deterministic + offline: only a
+SORTED `MODULES` const is baked; the quotient + all positions are in-browser. Caveat: a file
+split across target-core/target-iface lands in the LOWER (min-member) band; without indexed
+module markers the dependency side groups by TOP DIRECTORY (pass `--dep-root` for finer).
 
 ### Hide ubiquitous noise + record a default (`--ignore`, html only)
 High-fan-in symbols (`int32`/`FString`/`TArray`/primitives) drown the graph. The html has

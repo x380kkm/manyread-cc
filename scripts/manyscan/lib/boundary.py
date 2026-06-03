@@ -28,6 +28,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 
 from lib import deps, rollup
 from lib.graph import Budget, Edge, Evidence, Graph, Node
@@ -431,6 +432,63 @@ def assign_bands(g: Graph, layers: str) -> tuple[dict[str, int], list[dict]]:
             band_of[nid] = DEP_IFACE if (nid in dep_surface or not n.attrs.get("dep_core")) else DEP_CORE
     return band_of, [{"band": 0, "label": "target-core"}, {"band": 1, "label": "target-iface"},
                      {"band": 2, "label": "dep-iface"}, {"band": 3, "label": "dep-core"}]
+
+
+# zone-side tints for the module super-nodes (mirror render._ZONE_COLOR; kept local so
+# boundary.py has no render import). target=blue, dependency=orange.
+_MODULE_ZONE_COLOR = {"target": "#4e79a7", "dependency": "#f28e2b"}
+
+
+def assign_modules(g: Graph, z: "Zoning", level: str = "file", store=None,
+                   band_of: dict | None = None) -> tuple[dict[str, str], list[dict]]:
+    """Deterministic MODULE assignment for the collapsible quotient view.
+
+    Returns ``(module_of, modules_meta)`` where ``module_of`` maps every node id to a
+    side-prefixed module id and ``modules_meta`` is the sorted-by-id list of module
+    super-node descriptors.
+
+    * TARGET side (zone == ``target``): module = the file STEM of ``attrs['path']``
+      (``level='file'``, so a ``.cpp`` + ``.h`` pair coalesces) or its parent DIR
+      (``level='dir'``). A path-less target (``amb:<name>``) -> ``(external)``.
+    * DEPENDENCY side: a symbol dep with a path -> ``rollup._module_of`` via
+      ``rollup.roots_by_len`` (the SAME resolver ``dependency_surface`` uses, so the ids
+      match ``--rollup-dep``); a by-name dep (``dep:`` / ``amb:`` with no path) ->
+      ``(external)``.
+
+    ``module_id = f'{side}:{raw}'`` — the ``side`` prefix prevents a target file-stem
+    from colliding with a dependency module of the same name, and keeps the synthetic
+    ``mod:`` super-node id distinct from the ``s<id>``/``dep:``/``amb:`` member keys.
+
+    PURE + sorted (``sorted(g.nodes)``) so two runs are byte-identical. The super-node
+    band is the MIN member band (a file split across target-core/target-iface collapses
+    to the lower band) — a documented semantic compromise.
+    """
+    roots = rollup.roots_by_len(store)
+    module_of: dict[str, str] = {}
+    members: dict[str, int] = {}
+    band_min: dict[str, int] = {}
+    for nid in sorted(g.nodes):                       # sorted => stable
+        n = g.nodes[nid]
+        side = "target" if n.attrs.get("zone") == TARGET else "dependency"
+        path = n.attrs.get("path") or ""
+        if side == "target":
+            if path:
+                pp = PurePosixPath(path)
+                raw = pp.stem if level == "file" else (pp.parent.as_posix() or "(root)")
+            else:
+                raw = "(external)"
+        else:
+            raw = rollup._module_of(_FakeNode(path), roots) if path else "(external)"
+        mid = side + ":" + raw
+        module_of[nid] = mid
+        members[mid] = members.get(mid, 0) + 1
+        b = band_of.get(nid, 0) if band_of is not None else 0
+        band_min[mid] = b if mid not in band_min else min(band_min[mid], b)
+    meta = [{"id": mid, "label": mid.split(":", 1)[1], "side": mid.split(":", 1)[0],
+             "members": members[mid], "band": band_min[mid],
+             "zone": mid.split(":", 1)[0], "color": _MODULE_ZONE_COLOR[mid.split(":", 1)[0]]}
+            for mid in sorted(members)]
+    return module_of, meta
 
 
 def dependency_surface(g: Graph, rollup_modules: bool = False, store=None) -> Graph:

@@ -510,3 +510,120 @@ def test_manual_hidden_hides_incident_edges_no_dangle():
         incident = e.src in hidden or e.dst in hidden
         if not incident:
             assert e.src not in hidden and e.dst not in hidden
+
+
+# --- COLLAPSIBLE MODULE<->SYMBOL quotient view: gated bake, quotient JS, panel ----
+def _zoned_paths_graph():
+    """A zoned hub graph whose nodes carry file paths (so module assignment is meaningful):
+    p1/p2/p3 in plugin/*.cpp (target), h/l in engine/*.h (dependency)."""
+    g = _zoned_hub_graph()
+    g.nodes["p1"].attrs["path"] = "plugin/P1.cpp"
+    g.nodes["p2"].attrs["path"] = "plugin/P2.cpp"
+    g.nodes["p3"].attrs["path"] = "plugin/P3.cpp"
+    g.nodes["h"].attrs["path"] = "engine/Core.h"
+    g.nodes["l"].attrs["path"] = "engine/Leaf.h"
+    return g
+
+
+def _collapse_render(g, layers="four"):
+    """(html, module_of, modules_meta) the way scan.py wires --collapse file."""
+    from lib import boundary
+    from lib.boundary import Zoning
+    z = Zoning(target_root="plugin", dep_roots=("engine",))
+    bo, bm = boundary.assign_bands(g, layers)
+    mo, mm = boundary.assign_modules(g, z, "file", None, bo)
+    return render.to_html(g, band_of=bo, bands_meta=bm, module_of=mo, modules_meta=mm), mo, mm
+
+
+def test_collapse_off_byte_identical():
+    """module_of=None,modules_meta=None == the plain render (the gate); the consts block
+    carries no `const MODULES=` and DATA has no "module": attr; md5 equal twice."""
+    import hashlib
+    for g in (_slice(), _zoned_hub_graph()):
+        plain = render.to_html(g)
+        off = render.to_html(g, module_of=None, modules_meta=None)
+        assert plain == off
+        assert "const MODULES=" not in _consts_block(off)
+        # the DATA payload carries no module attr
+        start = off.index("const DATA=") + len("const DATA=")
+        end = off.index(";\n", start)
+        assert '"module":' not in off[start:end]
+        assert hashlib.md5(render.to_html(g).encode()).hexdigest() == \
+            hashlib.md5(off.encode()).hexdigest()
+
+
+def test_collapse_on_markers():
+    out, _mo, _mm = _collapse_render(_zoned_paths_graph())
+    for tok in ("const MODULES=", "buildQuotient", "'mod:'", "partitionBandsOn",
+                "ST.expanded", "renderModuleRows", "hp-mods", "hp-mexpand", "hp-mcollapse"):
+        assert tok in out, tok
+    assert "'q:'" in out                              # single deterministic edge-dedup key
+    assert "indexOf('mod:')" in out                   # the doubleClick super-node guard
+
+
+def test_collapse_offline_and_bare_tags():
+    out, _mo, mm = _collapse_render(_zoned_paths_graph())
+    assert "<script src=" not in out                  # fully offline
+    assert out.count("<script>") >= 4                 # MODULES rides the existing bare consts tag
+    assert 'id="ms-boot"' in out
+    cb = _consts_block(out)                            # the MODULES line is INSIDE the consts block
+    assert "const DATA=" in cb and "const MODULES=" in cb
+    assert cb.index("const DATA=") < cb.index("const MODULES=")
+
+
+def test_collapse_default_collapsed():
+    out, _mo, mm = _collapse_render(_zoned_paths_graph())
+    assert "expanded:new Set()" in out                # ST.expanded starts EMPTY => all collapsed
+    assert "if(MODS){ if(HAS_ZONES){ applyView(ST.view); } else { buildQuotient(); } }" in out
+    # the MODULES const lists every module from modules_meta (sorted ids)
+    for m in mm:
+        assert ('"id": "%s"' % m["id"]) in out
+
+
+def test_collapse_buildchild_reemits_modules():
+    """The drill-down child re-emits MODULES (inside the SAME bare consts string as DATA)
+    so chain tabs inherit the quotient; exactly ONE bare consts <script> in the child."""
+    out, _mo, _mm = _collapse_render(_zoned_paths_graph())
+    assert "'const MODULES=' + JSON.stringify(MODULES)" in out
+
+
+def test_collapse_panel_and_counts_markers():
+    out, _mo, _mm = _collapse_render(_zoned_paths_graph())
+    # the side panel is the ONLY collapse control; double-click on a super-node is a no-op
+    assert "renderModuleRows" in out
+    # counts reconcile against displayed.order (never reads 0 against a populated overview)
+    assert "displayed.order" in out
+    assert "modules collapsed" in out
+    # interaction handlers are quotient-aware (read/write the bound `displayed` graph)
+    assert "displayed.getNodeAttributes(e.node)" in out      # clickNode
+    assert "displayed.setNodeAttribute(dragged" in out       # drag
+    assert "displayed.extremities(key)" in out               # edgeReducer
+    # locateNode auto-expands a collapsed member's module
+    assert "ST.expanded.add(mod); buildQuotient();" in out
+
+
+def test_collapse_view_and_apply_rebuild_quotient():
+    """applyView and applyPanel rebuild the quotient when MODS (so a view change / a
+    committed hide reaches the super-nodes), but keep the v0.6.2 path when off."""
+    out, _mo, _mm = _collapse_render(_zoned_paths_graph())
+    assert "if(MODS){ recomputeHidden(); buildQuotient(); return; }" in out   # applyView
+    assert "if(MODS){ buildQuotient(); return; }" in out                       # applyPanel
+    # off path preserved verbatim (byte-compat anchor)
+    assert "recomputeHidden(); renderer.refresh(); updateCounts();" in out
+
+
+def test_collapse_off_panel_markup_byte_identical():
+    """The OFF page's #hp panel MARKUP + the <style> block are byte-identical to v0.6.2
+    (no MODULES section, no .hp-sec/.hp-mrow CSS) — checked over the head region (before
+    the consts block), since the inert quotient machinery in the static bootstrap is
+    additive by design (decision: off => DATA/consts + markup + behavior identical)."""
+    g = _zoned_hub_graph()
+    off = render.to_html(g)
+    head = off[:off.index("const DATA=")]            # markup + <style>, excludes the boot tag
+    assert "id='hp-mods'" not in head
+    assert "hp-sec-hd" not in head                    # no section headers in the off markup
+    assert ".hp-mrow{" not in head and ".hp-mbulk{" not in head  # no gated CSS rules
+    # ON page DOES carry them in the head
+    on, _mo, _mm = _collapse_render(_zoned_paths_graph())
+    on_head = on[:on.index("const DATA=")]
+    assert "id='hp-mods'" in on_head and ".hp-mrow{" in on_head

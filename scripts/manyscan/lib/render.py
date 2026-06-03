@@ -156,10 +156,24 @@ _HTML_BOOTSTRAP = """
   var PRISTINE_HP = (function(){ var e = document.getElementById('hp'); return e ? e.outerHTML : ''; })();
 
   // ---- build the graphology graph from baked DATA ----
+  // `graph` (the MASTER) is the source-of-truth for reachability / drill-down / module
+  // membership / hidden-ness and is NEVER mutated by the quotient. `displayed` is what
+  // sigma renders. When the collapsible quotient is OFF (no MODULES baked) displayed IS
+  // graph (same object) => zero behavioral/byte change vs v0.6.2.
   var graph = GG.MultiDirectedGraph ? new GG.MultiDirectedGraph()
     : new (GG.Graph || GG)({ type:'directed', multi:true });
   DATA.nodes.forEach(function(n){ try{ graph.addNode(n.key, Object.assign({}, n.attrs)); }catch(_){} });
   DATA.edges.forEach(function(e){ try{ graph.addEdgeWithKey(e.key, e.source, e.target, Object.assign({}, e.attrs)); }catch(_){} });
+
+  // ---- collapsible MODULE<->SYMBOL quotient: gate + module index ----
+  // MODS null (no `const MODULES=` baked) => the entire quotient is inert and displayed
+  // === graph (the v0.6.2 path). When present, `displayed` is a fresh graph rebuilt by
+  // buildQuotient from (master + ST.expanded + ST.hidden) on every collapse-state change.
+  var MODS = (typeof MODULES !== 'undefined' && MODULES) ? MODULES : null;
+  var MODBYID = {};
+  if(MODS){ for(var mi=0; mi<MODS.length; mi++){ MODBYID[MODS[mi].id] = MODS[mi]; } }
+  var displayed = MODS ? (GG.MultiDirectedGraph ? new GG.MultiDirectedGraph()
+    : new (GG.Graph || GG)({ type:'directed', multi:true })) : graph;
 
   // ---- config-default-hidden bake (sorted list; [] when no config) ----
   var HIDDEN = (typeof HIDDEN !== 'undefined' && HIDDEN) ? HIDDEN : [];
@@ -239,7 +253,8 @@ _HTML_BOOTSTRAP = """
     unhidden:new Set(),        // keys the user explicitly re-enabled (lets a cfg/manual node return)
     preview:new Set(),         // PENDING, not-yet-applied checkbox toggles (translucent only)
     hidden:new Set(),          // DERIVED union — what reducers/boxes read
-    hiddenE:new Set() };       // edge-hide for the view toggle
+    hiddenE:new Set(),         // edge-hide for the view toggle
+    expanded:new Set() };      // collapsible quotient: module ids the user EXPANDED (empty => all collapsed)
   for(var hi=0; hi<HIDDEN.length; hi++){ if(graph.hasNode(HIDDEN[hi])) ST.hiddenCfg.add(HIDDEN[hi]); }
   function recomputeHidden(){
     var nx = new Set();
@@ -251,6 +266,88 @@ _HTML_BOOTSTRAP = """
     ST.hidden = nx;
   }
   recomputeHidden();
+
+  // ---- collapsible quotient: repOf + buildQuotient ----
+  // repOf(k): the DISPLAYED representative of a MASTER node key k — itself when the
+  // quotient is off / its module is expanded / it is ungrouped, else its 'mod:'+module
+  // super-node. Pure over (graph attrs + ST.expanded).
+  function repOf(k){
+    if(!MODS) return k;
+    var a = graph.getNodeAttributes(k); var mod = a && a.module;
+    if(mod && ST.expanded.has(mod)) return k;
+    if(mod) return 'mod:' + mod;
+    return k;
+  }
+  // buildQuotient(): rebuild `displayed` from (master graph + ST.expanded + ST.hidden).
+  // Only callable when MODS. A COLLAPSED module => ONE super-node 'mod:<id>' (sized by its
+  // NON-HIDDEN member count); an EXPANDED module => its member symbol nodes verbatim. A
+  // module is emitted (and view-counted) ONLY if it has >=1 non-hidden member. Edges map
+  // each endpoint to its displayed rep, drop intra-collapsed self-loops, and DEDUP onto a
+  // single deterministic 'q:rs>rd' key (weight + commutative cross/bridge flags).
+  function buildQuotient(){
+    if(!MODS) return;
+    displayed.clear();                              // keeps the sigma binding + listeners
+    // live per-module non-hidden member tally (for super-node size + view visibility)
+    var liveMembers = {};
+    graph.forEachNode(function(k,a){
+      if(ST.hidden.has(k)) return;
+      var mod = a.module;
+      if(mod) liveMembers[mod] = (liveMembers[mod]|0) + 1;
+    });
+    var emitted = {};
+    graph.forEachNode(function(k,a){
+      if(ST.hidden.has(k)) return;                  // hidden member drops out of its super-node
+      var mod = a.module;
+      if(mod && !ST.expanded.has(mod)){             // COLLAPSED -> super-node (once)
+        var sid = 'mod:' + mod;
+        if(!emitted[sid]){
+          emitted[sid] = true;
+          var m = MODBYID[mod] || {label:mod, zone:'dependency', band:0, color:'#888', members:1, side:'dependency'};
+          var cnt = liveMembers[mod] || 1;
+          displayed.addNode(sid, { label:m.label, kind:'module', zone:m.zone,
+            band:(m.band|0), color:m.color, size:8 + Math.log2(cnt + 1) * 4,
+            module:mod, isSuper:true, path:'', cluster:m.zone, fan_in:cnt, deg:cnt });
+        }
+      } else {                                      // EXPANDED or ungrouped -> verbatim member
+        try{ displayed.addNode(k, Object.assign({}, a)); }catch(_){}
+      }
+    });
+    var seen = {};                                  // 'rsrd' -> displayed edge key
+    graph.forEachEdge(function(ek,ea,s,t){
+      if(ST.hidden.has(s) || ST.hidden.has(t)) return;
+      var rs = repOf(s), rd = repOf(t);
+      if(rs === rd && rs.indexOf('mod:') === 0) return;       // intra-collapsed self-loop
+      if(!displayed.hasNode(rs) || !displayed.hasNode(rd)) return;
+      var sk = rs + '' + rd;
+      var qk = seen[sk];
+      if(qk === undefined){
+        qk = 'q:' + rs + '>' + rd; seen[sk] = qk;
+        displayed.addEdgeWithKey(qk, rs, rd, { rel:ea.rel, weight:1, size:(ea.size||1),
+          color:(ea.color||'#c4c9d4'), cross:(ea.cross|0), bridge:(ea.bridge|0) });
+      } else {
+        displayed.updateEdgeAttribute(qk, 'weight', function(w){ return (w||1) + 1; });
+        if(ea.cross) displayed.setEdgeAttribute(qk, 'cross', 1);
+        if(ea.bridge) displayed.setEdgeAttribute(qk, 'bridge', 1);
+      }
+    });
+    // commutative seam tint: derive color purely from the OR-ed cross flag AFTER the loop,
+    // so the tint is independent of forEachEdge order (the bridge reducer repaints red).
+    displayed.forEachEdge(function(ek,ea){
+      if(ea.cross){ displayed.setEdgeAttribute(ek,'color','#7f8a9c');
+        if((ea.size||1) < 1.5) displayed.setEdgeAttribute(ek,'size',1.5); }
+    });
+    // LAYOUT the quotient from a fresh deterministic seed (RUNTIME ONLY; no baked coords).
+    reseed(displayed);
+    if(FA2 && displayed.order >= 2 && displayed.size > 0){
+      try{ FA2.assign(displayed, { iterations: ITER, settings: fa2Settings(displayed) }); }catch(_){}
+    }
+    partitionBandsOn(displayed.forEachNode.bind(displayed),
+      function(k){ return displayed.getNodeAttributes(k); },
+      function(k,nx){ displayed.setNodeAttribute(k,'x',nx); });
+    if(renderer){ renderer.refresh(); fitVisible(true); }
+    updateCounts(); if(typeof renderRows === 'function') renderRows();
+    if(typeof renderModuleRows === 'function') renderModuleRows();
+  }
 
   function nodeReducer(key, attr){
     const r = Object.assign({}, attr);
@@ -268,7 +365,7 @@ _HTML_BOOTSTRAP = """
   }
   function edgeReducer(key, attr){
     const r = Object.assign({}, attr);
-    const ex = graph.extremities(key);
+    const ex = displayed.extremities(key);          // displayed: quotient edge keys ('q:..') live ONLY here
     if(ST.hiddenE.has(key) || ST.hidden.has(ex[0]) || ST.hidden.has(ex[1])){ r.hidden = true; return r; }
     if(ST.preview && (ST.preview.has(ex[0]) || ST.preview.has(ex[1]))){ r.color='#eceef3'; r.zIndex=0; }  // dim preview-incident
     if(attr.bridge){ r.color = '#e15759'; r.size = Math.max(r.size||1, 3); r.zIndex = 3; }  // bridge: red+thick
@@ -279,23 +376,28 @@ _HTML_BOOTSTRAP = """
   // ---- BOOT layout: exclude cfg-hidden nodes from FA2 participation so the camera
   // auto-fits the VISIBLE subgraph. Empty cfg => the EXACT v0.6.0 code path (full-graph
   // FA2 + partitionBands), so unconfigured runtime layout is unchanged. ----
-  if(ST.hiddenCfg.size === 0 || !OPS || !OPS.subgraph){
-    if(FA2){ try { FA2.assign(graph, { iterations: ITER, settings: fa2Settings(graph) }); } catch(_){} }
-    partitionBands();
-  } else {
-    var bootVis = [];
-    graph.forEachNode(function(k){ if(!ST.hidden.has(k)) bootVis.push(k); });
-    var bootSub = null; try { bootSub = OPS.subgraph(graph, bootVis); } catch(_){}
-    if(bootSub){
-      layoutGraph(bootSub);
-      bootSub.forEachNode(function(k,a){ graph.setNodeAttribute(k,'x',a.x); graph.setNodeAttribute(k,'y',a.y); });
-    } else {
+  // QUOTIENT GATE: when MODS, the master `graph` is NOT what sigma renders — the default
+  // all-collapsed `displayed` is. Skip the boot layout of master entirely; buildQuotient()
+  // (run once below, after the renderer + panel fns exist) produces the overview.
+  if(!MODS){
+    if(ST.hiddenCfg.size === 0 || !OPS || !OPS.subgraph){
       if(FA2){ try { FA2.assign(graph, { iterations: ITER, settings: fa2Settings(graph) }); } catch(_){} }
       partitionBands();
+    } else {
+      var bootVis = [];
+      graph.forEachNode(function(k){ if(!ST.hidden.has(k)) bootVis.push(k); });
+      var bootSub = null; try { bootSub = OPS.subgraph(graph, bootVis); } catch(_){}
+      if(bootSub){
+        layoutGraph(bootSub);
+        bootSub.forEachNode(function(k,a){ graph.setNodeAttribute(k,'x',a.x); graph.setNodeAttribute(k,'y',a.y); });
+      } else {
+        if(FA2){ try { FA2.assign(graph, { iterations: ITER, settings: fa2Settings(graph) }); } catch(_){} }
+        partitionBands();
+      }
     }
   }
 
-  const renderer = new SigmaCls(graph, document.getElementById('cy'), {
+  const renderer = new SigmaCls(displayed, document.getElementById('cy'), {
     defaultEdgeType:'line', renderEdgeLabels:false, zIndex:true,
     labelRenderedSizeThreshold: 7, labelDensity: 0.7, labelGridCellSize: 80,
     nodeReducer: nodeReducer, edgeReducer: edgeReducer,
@@ -313,7 +415,9 @@ _HTML_BOOTSTRAP = """
     info.style.display='block';
   }
   renderer.on('clickNode', function(e){
-    showInfo(graph.getNodeAttributes(e.node));
+    // read from `displayed` (the bound graph): a collapsed super-node 'mod:<id>' exists
+    // ONLY there, never in master. locateRow on a 'mod:' key is a harmless no-op (no HP row).
+    if(displayed.hasNode(e.node)) showInfo(displayed.getNodeAttributes(e.node));
     locateRow(e.node);                              // graph -> list: scroll+flash the row
   });
   renderer.on('clickStage', function(){ info.style.display='none'; });
@@ -323,7 +427,7 @@ _HTML_BOOTSTRAP = """
   // explicit setCustomBBox over visible-only x/y is required for a tight fit. ----
   function fitVisible(animate){
     var minx=Infinity,maxx=-Infinity,miny=Infinity,maxy=-Infinity,seen=false;
-    graph.forEachNode(function(k,a){
+    displayed.forEachNode(function(k,a){            // displayed: frames the rendered quotient (super-nodes incl.)
       if(ST.hidden.has(k)) return;
       if(typeof a.x!=='number'||typeof a.y!=='number') return;
       if(a.x<minx)minx=a.x; if(a.x>maxx)maxx=a.x; if(a.y<miny)miny=a.y; if(a.y>maxy)maxy=a.y; seen=true;
@@ -333,7 +437,7 @@ _HTML_BOOTSTRAP = """
     renderer.refresh();
     try{ renderer.getCamera().animatedReset({duration: animate?300:0}); }catch(_){}
   }
-  if(ST.hiddenCfg.size > 0) fitVisible(false);      // tight initial frame on the visible subgraph
+  if(!MODS && ST.hiddenCfg.size > 0) fitVisible(false);  // tight initial frame on the visible subgraph (MODS: buildQuotient fits)
 
   // ---- search: dim non-matches, highlight hits (label + path) ----
   const q = document.getElementById('q');
@@ -341,7 +445,7 @@ _HTML_BOOTSTRAP = """
     ST.q = q.value.trim().toLowerCase();
     ST.hits = null;
     if(ST.q){ ST.hits = new Set();
-      graph.forEachNode(function(k,a){
+      displayed.forEachNode(function(k,a){           // displayed: search matches the RENDERED nodes (incl. super-nodes)
         if(((a.label||'')+' '+(a.path||'')).toLowerCase().indexOf(ST.q) >= 0) ST.hits.add(k);
       });
     }
@@ -370,23 +474,29 @@ _HTML_BOOTSTRAP = """
         });
       }
     }
+    // QUOTIENT: rebuild displayed so the view change reaches the super-nodes. A super-node
+    // is emitted only if it has >=1 non-hidden member, so a module whose members are ALL
+    // view-hidden (e.g. a pure-dependency module under view='internal') disappears.
+    if(MODS){ recomputeHidden(); buildQuotient(); return; }
     recomputeHidden(); renderer.refresh(); updateCounts();
   }
   if(viewSel){ viewSel.addEventListener('change', function(){ applyView(viewSel.value); }); }
-  if(HAS_ZONES) applyView(ST.view);
+  if(HAS_ZONES && !MODS) applyView(ST.view);        // MODS: buildQuotient (below) applies the initial view
 
   // ---- drag a NODE (≠ pan): canvas drag still pans (sigma default) ----
+  // Writes go to `displayed` (the bound graph) — a dragged key may be a super-node that
+  // exists ONLY in displayed; off-path displayed===graph so this is identical to v0.6.2.
   let dragged=null, dragging=false;
   renderer.on('downNode', function(e){ dragging=true; dragged=e.node;
-    graph.setNodeAttribute(dragged,'highlighted',true); });
+    if(displayed.hasNode(dragged)) displayed.setNodeAttribute(dragged,'highlighted',true); });
   renderer.getMouseCaptor().on('mousemovebody', function(e){
-    if(!dragging) return;
+    if(!dragging || !displayed.hasNode(dragged)) return;
     const p = renderer.viewportToGraph(e);
-    graph.setNodeAttribute(dragged,'x',p.x); graph.setNodeAttribute(dragged,'y',p.y);
+    displayed.setNodeAttribute(dragged,'x',p.x); displayed.setNodeAttribute(dragged,'y',p.y);
     e.preventSigmaDefault(); e.original.preventDefault(); e.original.stopPropagation();
   });
   renderer.getMouseCaptor().on('mouseup', function(){
-    if(dragged) graph.removeNodeAttribute(dragged,'highlighted');
+    if(dragged && displayed.hasNode(dragged)) displayed.removeNodeAttribute(dragged,'highlighted');
     dragging=false; dragged=null;
   });
 
@@ -429,7 +539,8 @@ _HTML_BOOTSTRAP = """
       for(var b=0; b<NBANDS; b++) bb[b] = null;
       // accumulate per-band viewport bbox over VISIBLE nodes (skip ST.hidden — the Set
       // the view-toggle reducer actually reads — so boxes follow the view toggle).
-      graph.forEachNode(function(k,a){
+      // displayed: super-nodes carry their (min-member) band so boxes frame the quotient.
+      displayed.forEachNode(function(k,a){
         if(ST.hidden.has(k)) return;
         var b = (a.band|0); if(b<0 || b>=NBANDS) return;
         var p = renderer.graphToViewport({x:a.x, y:a.y});
@@ -519,7 +630,12 @@ _HTML_BOOTSTRAP = """
       + 'const ITER=' + (typeof ITER!=='undefined' ? ITER : 90) + ';\\n'
       + 'const INITVIEW=' + JSON.stringify(typeof INITVIEW!=='undefined'?INITVIEW:'both') + ';\\n'
       + 'const BANDS=' + JSON.stringify(typeof BANDS!=='undefined'?BANDS:[]) + ';\\n'
-      + 'const HIDDEN=' + JSON.stringify(childHidden) + ';\\n';
+      + 'const HIDDEN=' + JSON.stringify(childHidden) + ';\\n'
+      // re-emit MODULES (slice-independent: module ids/meta describe ALL modules; modules
+      // with zero surviving members in the child slice simply emit no super-node because
+      // buildQuotient only emits one when iterating a master node carrying that module).
+      // Rides INSIDE the same bare consts string as DATA (still starts 'const DATA=').
+      + (typeof MODULES!=='undefined' && MODULES ? 'const MODULES=' + JSON.stringify(MODULES) + ';\\n' : '');
     var styleEl = document.querySelector('style');
     var barEl = document.getElementById('bar');
     var banner = '<div style="position:fixed;top:44px;left:0;right:0;z-index:9;'
@@ -548,7 +664,16 @@ _HTML_BOOTSTRAP = """
   function updateCounts(){
     if(!countsEl) return;
     var total = DATA.nodes.length, y = ST.hidden.size, x = total - y;
-    countsEl.textContent = '\\u00b7 shown ' + x + ' / hidden ' + y + ' / total ' + total;
+    if(MODS){
+      // the canvas shows the QUOTIENT (super-nodes + expanded symbols), not 1769 symbols.
+      // Report the actual rendered node count + symbols + collapsed-module count, so the
+      // bar never reads 'shown 0' against a populated overview.
+      var collapsed = 0; for(var ci=0; ci<MODS.length; ci++){ if(!ST.expanded.has(MODS[ci].id)) collapsed++; }
+      countsEl.textContent = '\\u00b7 displayed ' + displayed.order + ' nodes \\u00b7 '
+        + x + ' / ' + total + ' symbols \\u00b7 ' + collapsed + ' modules collapsed';
+    } else {
+      countsEl.textContent = '\\u00b7 shown ' + x + ' / hidden ' + y + ' / total ' + total;
+    }
   }
 
   // bandLabel(b): the framed-box label for a band index (or '').
@@ -626,6 +751,58 @@ _HTML_BOOTSTRAP = """
     if(foot) foot.textContent = rows.length + ' shown of ' + HP_ROWS.length + ' symbols';
   }
 
+  // ---- MODULES section (the ONLY collapse control). Lists every module grouped by side
+  // with a per-module expand/collapse toggle + LIVE non-hidden member count; row click
+  // toggles ST.expanded then rebuilds the quotient. No-op when the quotient is off. ----
+  function refreshModDelta(){       // pending vs committed expand state -> "Apply: expand N, collapse M"
+    if(!MODS) return;
+    if(!ST.expandPending) ST.expandPending = new Set(ST.expanded);
+    var add=0, rem=0;
+    ST.expandPending.forEach(function(id){ if(!ST.expanded.has(id)) add++; });
+    ST.expanded.forEach(function(id){ if(!ST.expandPending.has(id)) rem++; });
+    var el = document.getElementById('hp-mdelta');
+    if(el) el.textContent = (add||rem) ? ('Apply: expand '+add+', collapse '+rem) : '';
+  }
+  function renderModuleRows(){
+    if(!MODS) return;
+    if(!ST.expandPending) ST.expandPending = new Set(ST.expanded);
+    var box = document.getElementById('hp-mlist'); if(!box) return;
+    box.innerHTML = '';
+    // LIVE non-hidden member tally per module (so a module fully hidden shows 0 + the row
+    // is a no-op; chain-child slices show only modules with surviving members as non-zero).
+    var live = {};
+    graph.forEachNode(function(k,a){
+      if(ST.hidden.has(k)) return; var m = a.module; if(m) live[m] = (live[m]|0) + 1;
+    });
+    var bySide = { target:[], dependency:[] };
+    for(var i=0;i<MODS.length;i++){ var m=MODS[i]; (bySide[m.side]||(bySide[m.side]=[])).push(m); }
+    ['target','dependency'].forEach(function(side){
+      var arr = bySide[side]; if(!arr || !arr.length) return;
+      var grp = document.createElement('div'); grp.className='hp-mod-grp'; grp.textContent = side;
+      box.appendChild(grp);
+      for(var j=0;j<arr.length;j++){ (function(m){
+        var row = document.createElement('div'); row.className='hp-mrow';
+        var exP = ST.expandPending.has(m.id);                 // PENDING (preview) state
+        var exC = ST.expanded.has(m.id);                      // COMMITTED (rendered) state
+        if(exP) row.classList.add('expanded');
+        if(exP !== exC) row.classList.add('mpending');        // pending change until Apply
+        var car = document.createElement('span'); car.className='car';
+        car.textContent = exP ? '\\u25be' : '\\u25b8';
+        var nm = document.createElement('div'); nm.className='mn'; nm.textContent = m.label; nm.title = m.id;
+        var q = document.createElement('div'); q.className='mq';
+        q.textContent = (live[m.id]|0) + '/' + m.members;
+        row.appendChild(car); row.appendChild(nm); row.appendChild(q);
+        row.addEventListener('click', function(){      // STAGE 1: toggle pending only (no relayout)
+          if(ST.expandPending.has(m.id)) ST.expandPending.delete(m.id); else ST.expandPending.add(m.id);
+          renderModuleRows(); refreshModDelta();
+        });
+        box.appendChild(row);
+      })(arr[j]); }
+    });
+    var n = document.getElementById('hp-mods-n');
+    if(n) n.textContent = ST.expanded.size + ' / ' + MODS.length + ' expanded';
+  }
+
   // STAGE 1 — checkbox = INSTANT preview (no relayout).
   function togglePreview(key, on){
     if(on) ST.preview.add(key); else ST.preview.delete(key);
@@ -647,6 +824,9 @@ _HTML_BOOTSTRAP = """
       else { ST.hiddenManual.add(k); ST.unhidden.delete(k); }                  // HIDE
     });
     ST.preview.clear(); refreshDeltaHint(); recomputeHidden();
+    // QUOTIENT: the displayed quotient IS the relayout target — rebuild it (a committed
+    // hide of a member now drops it from buildQuotient, shrinking its super-node).
+    if(MODS){ buildQuotient(); return; }
     var visKeys=[]; graph.forEachNode(function(k){ if(!ST.hidden.has(k)) visKeys.push(k); });
     var sub = (OPS && OPS.subgraph) ? (function(){ try{ return OPS.subgraph(graph, visKeys); }catch(_){ return null; } })() : null;
     if(sub){
@@ -666,11 +846,18 @@ _HTML_BOOTSTRAP = """
   // camera's normalized framed space — do NOT run through graphToViewport) + transient flash.
   function locateNode(key){
     if(!graph.hasNode(key)) return;
+    // QUOTIENT: a member inside a COLLAPSED module is not a displayed node — auto-expand
+    // its module (rebuild the quotient) so the symbol becomes locatable IN PLACE.
+    if(MODS && !displayed.hasNode(key)){
+      var a = graph.getNodeAttributes(key); var mod = a && a.module;
+      if(mod && !ST.expanded.has(mod)){ ST.expanded.add(mod); buildQuotient(); }
+      if(!displayed.hasNode(key)) return;           // still absent (e.g. hidden) => give up
+    }
     var hp = document.getElementById('hp'); if(hp && hp.classList.contains('collapsed')){ /* keep */ }
     var d = renderer.getNodeDisplayData(key);
     if(d){ try{ renderer.getCamera().animate({ x:d.x, y:d.y, ratio:0.45 }, { duration:400 }); }catch(_){} }
-    try{ graph.setNodeAttribute(key,'highlighted',true); renderer.refresh();
-      setTimeout(function(){ if(graph.hasNode(key)) graph.removeNodeAttribute(key,'highlighted'); renderer.refresh(); }, 900);
+    try{ displayed.setNodeAttribute(key,'highlighted',true); renderer.refresh();
+      setTimeout(function(){ if(displayed.hasNode(key)) displayed.removeNodeAttribute(key,'highlighted'); renderer.refresh(); }, 900);
     }catch(_){}
   }
   // graph -> list: scroll the matching row into view + flash it (~1.2s). No-op if filtered out.
@@ -754,13 +941,47 @@ _HTML_BOOTSTRAP = """
       });
       window.addEventListener('mouseup', function(){ if(rz){ rz = false; document.body.style.userSelect=''; } });
     }
+    // ---- MODULES section: the ONLY collapse control (expand/collapse here, never on the
+    // graph). Its markup is emitted ONLY when the quotient is on (the OFF panel is byte-
+    // identical to v0.6.2 and has no hp-tabs / hp-mods / hp-hide-sec elements at all).
+    if(MODS){
+      if(!ST.expandPending) ST.expandPending = new Set(ST.expanded);
+      var mex = document.getElementById('hp-mexpand');     // STAGE 1: set pending, no relayout
+      if(mex) mex.addEventListener('click', function(){ MODS.forEach(function(m){ ST.expandPending.add(m.id); }); renderModuleRows(); refreshModDelta(); });
+      var mco = document.getElementById('hp-mcollapse');
+      if(mco) mco.addEventListener('click', function(){ ST.expandPending.clear(); renderModuleRows(); refreshModDelta(); });
+      var map = document.getElementById('hp-mapply');      // STAGE 2: commit pending -> ONE rebuild/relayout
+      if(map) map.addEventListener('click', function(){ ST.expanded = new Set(ST.expandPending); buildQuotient(); renderModuleRows(); refreshModDelta(); });
+      // tab switch: show one section (Modules | Hide) at a time -> no overlap, full height
+      var tabs = hp.querySelectorAll('.hp-tabb');
+      tabs.forEach(function(tb){
+        tb.addEventListener('click', function(){
+          tabs.forEach(function(x){ x.classList.remove('active'); });
+          tb.classList.add('active');
+          ['hp-mods','hp-hide-sec'].forEach(function(sid){
+            var s = document.getElementById(sid);
+            if(s) s.classList.toggle('active', s.id === tb.getAttribute('data-sec'));
+          });
+        });
+      });
+      renderModuleRows();
+    }
     renderRows(); refreshDeltaHint(); updateCounts();
   }
   setupHidePanel();
   updateCounts();
 
+  // ---- QUOTIENT boot: produce the default ALL-COLLAPSED overview (ST.expanded empty).
+  // applyView (when HAS_ZONES) seeds ST.hiddenView for the initial view THEN calls
+  // buildQuotient; otherwise buildQuotient directly. The OFF path never reaches here
+  // (the v0.6.2 boot FA2 + the HAS_ZONES applyView above already ran). ----
+  if(MODS){ if(HAS_ZONES){ applyView(ST.view); } else { buildQuotient(); } }
+
   renderer.on('doubleClickNode', function(e){
     e.preventSigmaDefault();                       // MUST stay synchronous-first (suppresses sigma's zoom)
+    // a collapsed module super-node has no symbol chain to drill — ignore double-click on it
+    // (expand/collapse is ONLY the side-panel MODULES section). Symbol drill-down unchanged.
+    if(MODS && String(e.node).indexOf('mod:') === 0) return;
     var html = buildChild(e.node);
     var url = URL.createObjectURL(new Blob([html], {type:'text/html'}));
     window.open(url, '_blank');                    // do NOT revoke (races the child load)
@@ -774,36 +995,66 @@ _HTML_BOOTSTRAP = """
 # (zone removed when !HAS_ZONES; band removed when BANDS.length<2), so flat/plain graphs
 # show only kind+fan_in. Starts collapsed. Captured once at boot as pristine markup so
 # drill-down children re-emit it without carrying live preview/checkbox state.
-_HIDE_PANEL_HTML = (
-    "<div id='hp' class='collapsed'>"
-    "<div class='hp-tab' id='hp-tab'>HIDE</div>"
-    "<div class='hp-grip' id='hp-grip' title='drag to resize'></div>"
-    "<div class='hp-hd'>"
-    "<input id='hpq' placeholder='filter symbols...'>"
-    "<select id='hp-kind'><option value=''>kind: any</option></select>"
-    "<select id='hp-zone'><option value=''>zone: any</option></select>"
-    "<select id='hp-band'><option value=''>band: any</option></select>"
-    "<span>fan_in&ge;<input id='hp-fmin' class='hp-num' type='number' min='0' value='0'></span>"
-    "</div>"
-    "<div class='hp-act'>"
-    "<button id='hp-selmatch'>select matching</button>"
-    "<button id='hp-selfan'>select fan_in&ge;X</button>"
-    "<button id='hp-clear'>clear preview</button>"
-    "<span id='hp-delta' class='hp-delta'></span>"
-    "<button id='hp-apply' class='primary'>Apply</button>"
-    "<button id='hp-fit'>fit</button>"
-    "<button id='hp-export'>Export</button>"
-    "</div>"
-    "<div class='hp-cols'>"
-    "<span></span><span class='sortable' data-k='label'>symbol</span>"
-    "<span class='sortable active' data-k='fan_in'>fan_in</span>"
-    "<span class='sortable' data-k='zone'>zone/band</span>"
-    "</div>"
-    "<div class='hp-list' id='hp-list'></div>"
-    "<textarea id='hp-export-ta' readonly placeholder='exported view_hide JSON appears here'></textarea>"
-    "<div class='hp-foot' id='hp-foot'></div>"
-    "</div>"
+# The MODULES section markup (collapsible quotient). Inserted into the panel ONLY when
+# the quotient is on (modules_meta baked) — so an OFF page's panel markup is byte-identical
+# to v0.6.2. Static so PRISTINE_HP carries it verbatim into drill-down children.
+_HP_MODULES_SECTION = (
+    "<div id='hp-mods' class='hp-sec active'>"
+    "<div class='hp-sec-body'>"
+    "<div class='hp-mbulk'><button id='hp-mexpand'>expand all</button>"
+    "<button id='hp-mcollapse'>collapse all</button>"
+    "<span id='hp-mdelta' class='hp-delta'></span>"
+    "<button id='hp-mapply' class='primary'>Apply</button></div>"
+    "<div class='hp-mlist' id='hp-mlist'></div>"
+    "</div></div>"
 )
+
+
+def _hide_panel_html(with_modules: bool) -> str:
+    """The hide panel (#hp) markup. ``with_modules`` False => byte-identical to v0.6.2
+    (the off path); True => prepends the MODULES section + wraps the HIDE block in a
+    collapsible ``.hp-sec`` so the two sub-sections each have a clickable header."""
+    body = (
+        "<div class='hp-hd'>"
+        "<input id='hpq' placeholder='filter symbols...'>"
+        "<select id='hp-kind'><option value=''>kind: any</option></select>"
+        "<select id='hp-zone'><option value=''>zone: any</option></select>"
+        "<select id='hp-band'><option value=''>band: any</option></select>"
+        "<span>fan_in&ge;<input id='hp-fmin' class='hp-num' type='number' min='0' value='0'></span>"
+        "</div>"
+        "<div class='hp-act'>"
+        "<button id='hp-selmatch'>select matching</button>"
+        "<button id='hp-selfan'>select fan_in&ge;X</button>"
+        "<button id='hp-clear'>clear preview</button>"
+        "<span id='hp-delta' class='hp-delta'></span>"
+        "<button id='hp-apply' class='primary'>Apply</button>"
+        "<button id='hp-fit'>fit</button>"
+        "<button id='hp-export'>Export</button>"
+        "</div>"
+        "<div class='hp-cols'>"
+        "<span></span><span class='sortable' data-k='label'>symbol</span>"
+        "<span class='sortable active' data-k='fan_in'>fan_in</span>"
+        "<span class='sortable' data-k='zone'>zone/band</span>"
+        "</div>"
+        "<div class='hp-list' id='hp-list'></div>"
+        "<textarea id='hp-export-ta' readonly placeholder='exported view_hide JSON appears here'></textarea>"
+        "<div class='hp-foot' id='hp-foot'></div>"
+    )
+    head = ("<div id='hp' class='collapsed'>"
+            "<div class='hp-tab' id='hp-tab'>HIDE</div>"
+            "<div class='hp-grip' id='hp-grip' title='drag to resize'></div>")
+    if not with_modules:
+        return head + body + "</div>"             # v0.6.2 markup, byte-identical
+    return (head
+            + "<div class='hp-tabs'>"
+            + "<button class='hp-tabb active' data-sec='hp-mods'>Modules <span id='hp-mods-n' class='mq'></span></button>"
+            + "<button class='hp-tabb' data-sec='hp-hide-sec'>Hide</button>"
+            + "</div>"
+            + _HP_MODULES_SECTION
+            + "<div id='hp-hide-sec' class='hp-sec'><div class='hp-sec-body'>"
+            + body
+            + "</div></div>"
+            + "</div>")
 
 
 def _html_escape(s: str | None) -> str:
@@ -880,7 +1131,8 @@ def _seed_xy(i: int, n_total: int, zone: str | None = None,
 
 def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "both",
             band_of: dict | None = None, bands_meta: list | None = None,
-            default_hidden: list[str] | None = None) -> str:
+            default_hidden: list[str] | None = None,
+            module_of: dict | None = None, modules_meta: list | None = None) -> str:
     """Render a Graph as ONE self-contained interactive HTML file (sigma.js / WebGL).
 
     sigma + graphology + graphology-library (forceAtlas2) are inlined from the vendored
@@ -895,6 +1147,15 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
     the boot layout) but stay LISTED in the hide panel + re-enableable. The renderer
     bakes the SORTED list into a gated ``const HIDDEN=`` line; when ``None`` the line is
     OMITTED entirely, so an unconfigured render is byte-identical to v0.6.0.
+
+    ``module_of`` / ``modules_meta`` (optional, the collapsible MODULE<->SYMBOL quotient
+    view): when BOTH are given, each node gets a gated ``attrs['module']`` (its
+    side-prefixed module id) and a SORTED ``const MODULES=`` list is baked; the bootstrap
+    then renders a default ALL-COLLAPSED quotient (module super-nodes) that the user
+    expands per-module from the side-panel MODULES section. When ``None`` (the default)
+    no module attr / ``MODULES`` line is baked, so the DATA/consts block + runtime
+    behavior are byte/behavior-identical to v0.6.2 (the inert quotient machinery in the
+    static bootstrap never runs because ``MODULES`` is undefined => ``displayed===graph``).
     """
     n_sorted = sorted(g.nodes.values(), key=lambda n: n.id)
     n_total = len(n_sorted)
@@ -958,6 +1219,11 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
         # GATE on band_of is not None: plain/flat DATA bytes are untouched (byte-compat).
         if band_of is not None:
             attrs["band"] = band_of.get(n.id, 0)
+        # GATE on module_of is not None: the collapsible quotient bakes ONE attr — the
+        # side-prefixed module id. The side itself is derived from MODULES[...].side in JS
+        # (single source of truth), so no separate `modside` attr is baked. off => absent.
+        if module_of is not None:
+            attrs["module"] = module_of.get(n.id, "")
         nodes.append({"key": n.id, "attrs": attrs})
 
     # --- edges: {key, source, target, attrs} ---
@@ -1022,6 +1288,29 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
 
     lib = "".join(_script_for(asset, cdn) for asset, cdn in _SIGMA_LIBS)
 
+    # GATED collapsible-quotient CSS: appended after .hp-foot ONLY when MODULES are baked,
+    # so an OFF page's <style> bytes are byte-identical to v0.6.2.
+    modules_css = (
+        ".hp-tabs{display:flex;padding:0 8px 0 24px;background:#222838;border-bottom:1px solid #39415a}"
+        ".hp-tabb{flex:1;background:transparent;color:#9aa6b2;border:none;border-bottom:2px solid transparent;"
+        "padding:6px 4px;cursor:pointer;font-weight:600;font-size:12px;user-select:none}"
+        ".hp-tabb.active{color:#fff;border-bottom-color:#3a9457}"
+        ".hp-sec{display:none}"
+        ".hp-sec.active{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}"
+        ".hp-sec-body{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}"
+        ".hp-mlist{flex:1;overflow:auto;min-height:0}"
+        ".hp-mod-grp{color:#9aa6b2;font-size:10px;padding:4px 8px 2px 24px;text-transform:uppercase}"
+        ".hp-mrow{display:grid;grid-template-columns:16px 1fr 40px;gap:4px;align-items:center;"
+        "padding:2px 8px 2px 24px;cursor:pointer;border-bottom:1px solid #2b3142}"
+        ".hp-mrow.expanded{color:#8ad18a}"
+        ".hp-mrow.mpending{background:rgba(255,207,92,0.13)}"
+        ".hp-mrow .mn{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
+        ".hp-mrow .mq{color:#9aa6b2;font-size:10px;text-align:right}"
+        ".hp-mbulk{display:flex;gap:4px;padding:2px 8px 4px 24px}"
+        ".hp-mbulk button{background:#39415a;color:#dfe3ea;border:1px solid #556;border-radius:4px;"
+        "padding:2px 6px;font-size:11px;cursor:pointer}"
+    ) if modules_meta is not None else ""
+
     head = (
         "<!doctype html><html><head><meta charset='utf-8'>"
         f"<title>{_html_escape(title)}</title><style>"
@@ -1072,6 +1361,7 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
         "#hp-export-ta{margin:4px 8px 4px 24px;max-height:120px;background:#1b2030;color:#a6e3a1;"
         "border:1px solid #556;border-radius:4px;font:11px ui-monospace,Consolas,monospace}"
         ".hp-foot{padding:2px 8px 6px 24px;color:#9aa6b2;font-size:10px}"
+        + modules_css +
         "</style></head><body><div id='bar'>"
         f"<b>{_html_escape(title)}</b><span class='meta'>{meta} &middot; color={legend_kind} &middot; tap node → path</span>"
         + "<span id='ms-counts' class='meta'></span>"
@@ -1080,7 +1370,7 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
         + view_ctl
         + f"<span style='display:flex;gap:8px;flex-wrap:wrap'>{legend}</span>"
         + "</div><div id='cy'></div><div id='info'></div>"
-        + _HIDE_PANEL_HTML
+        + _hide_panel_html(modules_meta is not None)
     )
     consts = (
         f"const DATA={data_json};\n"
@@ -1094,6 +1384,12 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
     # bare-tag count (>=4) and the libTexts() `const `-prefix skip both still hold.
     if default_hidden is not None:
         consts += f"const HIDDEN={json.dumps(sorted(default_hidden))};\n"
+    # GATED collapsible quotient: the SORTED modules_meta. Omitted entirely when None
+    # (v0.6.2 bytes preserved). Rides INSIDE the same bare consts <script> so the offline
+    # bare-tag count (>=4) and the libTexts() `const `-prefix skip both still hold. The
+    # list is already sorted-by-id in Python (assign_modules), so two runs are identical.
+    if modules_meta is not None:
+        consts += f"const MODULES={json.dumps(modules_meta, ensure_ascii=False)};\n"
     # STRUCTURAL: the consts go in a BARE <script> (so the offline guard still counts 4
     # bare lib+consts tags AND the drill-down child can distinguish it by a `const `
     # prefix); the bootstrap gets id="ms-boot" so the child can retrieve it verbatim.

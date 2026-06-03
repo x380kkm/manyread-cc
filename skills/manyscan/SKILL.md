@@ -104,6 +104,24 @@ collapsible **HIDE panel** (grab the tab on the right edge) to hide them:
   `drop`, a different layer). Emitted html bytes stay deterministic (only a SORTED `HIDDEN`
   list is baked; all relayout happens in-browser).
 
+### Collapsible MODULE<->SYMBOL view (`--collapse off|file|dir`, html only)
+A subsystem boundary (e.g. PostProcess) can be ~1769 symbol nodes — unreadable. `--collapse`
+(default `off` = byte-identical to v0.6.2) groups both sides into collapsible MODULES:
+target symbols by FILE (`file`: stem, so a .cpp/.h pair coalesces; `dir`: parent dir),
+dependency symbols by ENGINE MODULE (same resolver as `--rollup-dep`; unresolved by-name
+deps `dep:`/`amb:` go to an `(external)` bucket). DEFAULT = ALL modules COLLAPSED: you see
+~60 module super-nodes (a readable overview), each sized by member count and placed in its
+band. EXPAND specific modules from the side panel MODULES section (above the HIDE list) to
+reveal their original symbols IN PLACE; the rest stay collapsed (progressive disclosure).
+collapse-all / expand-all are there too. Expand/collapse is ONLY in the side panel — the
+graph double-click still drills the up/down chain (no-op on a collapsed super-node). Hiding,
+search, bands, and drill-down all coexist (they operate on the displayed quotient; a hidden
+member drops out of its super-node). Deterministic + offline: only a SORTED `MODULES` const
+is baked, the quotient + all positions are computed in-browser. NOTE: a collapsed file split
+across target-core/target-iface lands in the LOWER band (min member band). Without indexed
+module markers (`*.uplugin`/`*.Build.cs`), the DEPENDENCY side groups by TOP DIRECTORY
+(coarse) — index markers or pass `--dep-root` hints for finer modules.
+
 **Visual:** `--format html > deps.html` emits ONE self-contained file (GPU/WebGL sigma.js +
 forceAtlas2 layout, smooth pan/zoom/drag, search, color-by-kind/zone, red+thick = bridge,
 dashed/dotted = ambiguous/unresolved edge; **tap any node to see its file path**) — open in

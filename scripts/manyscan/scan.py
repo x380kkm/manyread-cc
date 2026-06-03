@@ -158,8 +158,16 @@ def cmd_boundary(args) -> int:
             mr_cfg = stores.manyread_lib()[0]
             vh = mr_cfg.load_view_hide(info.store, Path(args.ignore) if args.ignore else None)
             default_hidden = _default_hidden_keys(g, vh) if vh else None
+            # GATED collapsible module<->symbol quotient view. off (default) => module_of /
+            # modules_meta stay None, so NO module node-attr + NO `const MODULES=` line are
+            # baked => DATA/consts bytes byte-identical to v0.6.2.
+            module_of = modules_meta = None
+            if args.collapse != "off":
+                module_of, modules_meta = boundary.assign_modules(
+                    g, z, level=args.collapse, store=st, band_of=band_of)
             _emit(render.to_html(g, view=args.view, band_of=band_of,
-                                 bands_meta=bands_meta, default_hidden=default_hidden))
+                                 bands_meta=bands_meta, default_hidden=default_hidden,
+                                 module_of=module_of, modules_meta=modules_meta))
         else:
             if args.view == "internal":
                 view = boundary.internal_view(g)
@@ -232,6 +240,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="(html only) view-hide config JSON (names/patterns/min_fan_in, or a "
                          "{view_hide:{...}} wrapper). Default: auto-discover "
                          "manyread.json['view_hide']. Absent + no config => identical to v0.6.0.")
+    pb.add_argument("--collapse", choices=["off", "file", "dir"], default="off",
+                    help="(html only) collapsible MODULE<->SYMBOL quotient view: off "
+                         "(default; byte-identical to v0.6.2) | file (module=file stem, "
+                         ".cpp/.h coalesce) | dir (module=parent dir). Default ALL modules "
+                         "collapsed; expand per-module from the side panel MODULES section.")
     pb.set_defaults(func=cmd_boundary)
 
     args = ap.parse_args(argv)

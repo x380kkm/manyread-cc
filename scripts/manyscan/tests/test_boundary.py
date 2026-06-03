@@ -677,3 +677,132 @@ def test_cli_layers_dep_depth_wiring(boundary_store, capsys):
     assert rc == 0
     without_layers = capsys.readouterr().out
     assert with_layers == without_layers     # bands inert for non-html formats
+
+
+# --- collapsible MODULE<->SYMBOL quotient: assign_modules + CLI --collapse --------
+def test_assign_modules_determinism_and_ids(boundary_store):
+    """assign_modules('file') is deterministic, side-prefixes ids, and routes path-less
+    by-name deps to a per-side '(external)' bucket; modules_meta is sorted-by-id with
+    integer members + a band/zone/color per entry."""
+    with stores.Store(boundary_store) as st:
+        z, g = _build(st)
+        band_of, _ = boundary.assign_bands(g, "four")
+        a = boundary.assign_modules(g, z, "file", st, band_of)
+        b = boundary.assign_modules(g, z, "file", st, band_of)
+        assert a == b                                  # deterministic
+        module_of, meta = a
+        # target Foo (s1, plugin/Foo.cpp) -> 'target:Foo' (side-prefixed file stem)
+        assert module_of["s1"] == "target:Foo"
+        # dependency symbols (s2 engine/Actor.h, s3 engine/Core.h) -> 'dependency:<module>'
+        assert module_of["s2"].startswith("dependency:")
+        assert module_of["s3"].startswith("dependency:")
+        # by-name deps with no path -> '(external)'. In boundary_store both Dup candidates
+        # are DEPENDENCY-zone, so Foo->Dup resolves to dep:Dup (not amb:), side dependency.
+        assert module_of["dep:Missing"] == "dependency:(external)"
+        assert module_of["dep:Dup"] == "dependency:(external)"
+        # modules_meta sorted by id; each entry well-formed
+        assert [m["id"] for m in meta] == sorted(m["id"] for m in meta)
+        for m in meta:
+            assert isinstance(m["members"], int) and m["members"] >= 1
+            assert "band" in m and m["zone"] in ("target", "dependency")
+            assert m["color"] in ("#4e79a7", "#f28e2b")
+            assert m["side"] == m["id"].split(":", 1)[0]
+
+
+def test_assign_modules_amb_external_target_side(tmp_path):
+    """An amb:<name> node (all-target candidates, no path) maps to 'target:(external)'."""
+    files = [(1, "plugin/a.h", ".h", "class W{};\nclass PDup{};\n"),
+             (2, "plugin/b.h", ".h", "class PDup{};\n")]
+    syms = [(1, 1, "W", "class", 1, 1, None), (2, 1, "PDup", "class", 2, 2, None),
+            (3, 2, "PDup", "class", 1, 1, None)]
+    edges = [(1, 1, 1, None, "PDup", "uses_type")]     # W -> PDup (2 target candidates => amb:)
+    db = _mk_store(tmp_path, files, syms, edges)
+    with stores.Store(db) as st:
+        z = boundary.make_zoning(st, "plugin", [])
+        g = boundary.build(st, z, Budget(max_nodes=400, max_depth=2, direction="out"))
+        assert "amb:PDup" in g.nodes                   # the all-target ambiguous node
+        module_of, _ = boundary.assign_modules(g, z, "file", st, None)
+        assert module_of["amb:PDup"] == "target:(external)"
+
+
+def test_assign_modules_dir_level(tmp_path):
+    """level='dir' groups a target symbol by its parent directory."""
+    files = [(1, "plugin/X.uplugin", ".uplugin", "{}"),
+             (2, "plugin/Foo.cpp", ".cpp", "x"),
+             (3, "engine/Dep.h", ".h", "x")]
+    syms = [(1, 2, "Foo", "class", 1, 1, None), (2, 3, "Dep", "class", 1, 1, None)]
+    edges = [(1, 2, 1, 2, None, "uses_type")]
+    db = _mk_store(tmp_path, files, syms, edges)
+    with stores.Store(db) as st:
+        z = boundary.make_zoning(st, "plugin", ["engine"])
+        g = boundary.build(st, z, Budget(max_nodes=400, max_depth=2, direction="out"))
+        module_of, _ = boundary.assign_modules(g, z, "dir", st, None)
+        assert module_of["s1"] == "target:plugin"      # parent dir of plugin/Foo.cpp
+
+
+def test_assign_modules_band_is_min_member(tmp_path):
+    """A file split across target-core (band 0) and target-iface (band 1) collapses to
+    the LOWER band (min member band)."""
+    files = [(1, "plugin/X.uplugin", ".uplugin", "{}"),
+             (2, "plugin/Same.cpp", ".cpp", "x"),       # both A,B live in ONE file => one module
+             (3, "engine/Dep.h", ".h", "x")]
+    # A (s1) has a crossing edge -> target-iface (band 1); B (s2) has none -> target-core (band 0).
+    syms = [(1, 2, "A", "class", 1, 1, None),
+            (2, 2, "B", "class", 2, 2, None),
+            (3, 3, "Dep", "class", 1, 1, None)]
+    edges = [(1, 2, 1, 3, None, "uses_type"),           # A -> Dep (crossing => A iface)
+             (2, 2, 1, 2, None, "uses_type")]           # A -> B (target->target)
+    db = _mk_store(tmp_path, files, syms, edges)
+    with stores.Store(db) as st:
+        z = boundary.make_zoning(st, "plugin", ["engine"])
+        g = boundary.build(st, z, Budget(max_nodes=400, max_depth=2, direction="out"))
+        band_of, _ = boundary.assign_bands(g, "four")
+        assert band_of["s1"] == boundary.TARGET_IFACE and band_of["s2"] == boundary.TARGET_CORE
+        _, meta = boundary.assign_modules(g, z, "file", st, band_of)
+        same = next(m for m in meta if m["id"] == "target:Same")
+        assert same["band"] == 0                        # MIN of {0, 1}
+        assert same["members"] == 2
+
+
+def test_cli_collapse_off_equals_pre_flag(boundary_store, capsys):
+    """boundary --format html with NO --collapse vs --collapse off vs the flag absent ->
+    byte-identical (the gate); two renders also byte-identical."""
+    import scan
+    runs = []
+    for extra in ([], ["--collapse", "off"]):
+        rc = scan.main(["boundary", "--store", str(boundary_store), "--target-root", "plugin",
+                        "--format", "html", *extra])
+        assert rc == 0
+        runs.append(capsys.readouterr().out)
+    assert runs[0] == runs[1]                            # off == flag-absent (byte-identical)
+
+
+def test_collapse_md5_stable_each_level(boundary_store, capsys):
+    """For each of off/file/dir, two html renders are byte-identical + md5 equal
+    (positions are in-browser, so the emitted file carries no quotient coords)."""
+    import hashlib
+
+    import scan
+    for lvl in ("off", "file", "dir"):
+        outs = []
+        for _ in range(2):
+            rc = scan.main(["boundary", "--store", str(boundary_store), "--target-root", "plugin",
+                            "--format", "html", "--collapse", lvl])
+            assert rc == 0
+            outs.append(capsys.readouterr().out)
+        assert outs[0] == outs[1]
+        assert hashlib.md5(outs[0].encode()).hexdigest() == hashlib.md5(outs[1].encode()).hexdigest()
+
+
+def test_collapse_per_node_attrs_baked(boundary_store, capsys):
+    """--collapse file bakes the per-node "module" attr (side-prefixed id); the target Foo
+    node carries 'target:Foo'. Only "module" is baked — no dead "modside" attr."""
+    import scan
+    rc = scan.main(["boundary", "--store", str(boundary_store), "--target-root", "plugin",
+                    "--format", "html", "--collapse", "file"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert '"module":' in out
+    assert '"modside":' not in out                       # dead attr dropped
+    assert '"module": "target:Foo"' in out               # target Foo -> its file-stem module
+    assert "const MODULES=" in out
