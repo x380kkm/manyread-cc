@@ -38,12 +38,12 @@ work as deprecated aliases mapping to `--target-root` / `--dep-root`.
   index as the target (dependency types then surface as the external interface).
 - `--dep-root` is repeatable: the dependency side may aggregate **multiple distinct
   dependency sources**, each labelled/grouped by its own root.
-- **`--format html`** emits ONE self-contained page (open in any browser): a **fast
-  fcose force layout** (lays out hundreds of nodes in a blink, deterministic),
-  **node size = how heavily-depended-on** (hubs are big), **module bridges + hub nodes
-  highlighted** (catch them at bird's-eye), faint target/dependency zones, an in-page
-  **view toggle** (internal/dependency/both), tap a node → its file path. Drag a node to
-  move it; drag the background to pan.
+- **`--format html`** emits ONE self-contained page (open in any browser): a **GPU/WebGL
+  sigma.js renderer + forceAtlas2 layout** (smooth pan/zoom/drag on hundreds–thousands of
+  nodes, deterministic file), **node size = how heavily-depended-on** (hubs are big),
+  **module bridges + hub nodes highlighted** (catch them at bird's-eye), target/dependency
+  zones by color+cluster, an in-page **view toggle** (internal/dependency/both), tap a node
+  → its file path. Drag a node to move it; drag the background to pan.
 
 ## Views
 - **internal** — the target-only coupling graph → split seams + cycles (`scc`).

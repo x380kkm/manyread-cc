@@ -12,6 +12,7 @@ so a budget-capped slice can never be mistaken for a complete one.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict
 from pathlib import Path
 
@@ -101,138 +102,159 @@ def to_dot(g: Graph) -> str:
     return "\n".join(lines) + "\n"
 
 
-# --- self-contained interactive HTML (cytoscape.js + fcose force layout) -----
-# A single file that opens in any browser — no server/node/build. Built to scale
-# to MANY nodes (dependency-level bounded slices): a FAST force-directed layout
-# (cytoscape-fcose) + pan/zoom + search + color-by-kind, with the bounded-truncation
-# banner kept visible. For very large slices, roll up to dir/module first (manyscan's
-# real scale lever). fcose handles compound parents (the faint zone boxes) well and
-# lays out hundreds of nodes far faster than cytoscape's built-in cose.
+# --- self-contained interactive HTML (sigma.js / WebGL + graphology force layout) ---
+# A single file that opens in any browser — no server/node/build. Built to scale to
+# MANY nodes (dependency-level bounded slices): sigma.js renders on the GPU (WebGL),
+# so pan/zoom/drag stay smooth on hundreds–thousands of nodes where the old Canvas2D
+# renderer choked. Layout is graphology-forceAtlas2 (fast, refined in-browser from a
+# deterministic baked seed). Features kept: degree sizing, hub halo, bridge edges,
+# search, target/dependency view toggle, tap→path, drag-node≠pan-canvas, honest
+# truncation banner. Zones are encoded by COLOR + spatial clustering (sigma has no
+# compound parents) instead of the old faint boxes; bridges are red+thick (sigma
+# edges can't dash without an extra program).
+#
+# Offline: sigma + graphology + graphology-library (forceAtlas2) all ship a UMD
+# build, inlined IN ORDER as plain <script> globals — graphology (core,
+# window.graphology) → graphology-library (layouts incl. forceAtlas2,
+# window.graphologyLibrary) → sigma (window.Sigma). Per-file CDN fallback when an
+# asset is missing. The sigma UMD bundles its OWN ES5-consistent events polyfill,
+# so there is no ESM/node-shim class-constructor skew (the reason we don't use the
+# ESM bundles). Emitted bytes (static lib text + DATA + baked seed positions) stay
+# deterministic; the force layout is computed in-browser, so nothing time/random is
+# baked.
 _ASSET_DIR = Path(__file__).resolve().parent.parent / "assets"
-_ASSET_LIB = _ASSET_DIR / "cytoscape.min.js"
-_CDN_LIB = "https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"
-# fcose dependency chain (UMD), inlined IN ORDER after cytoscape: layout-base ←
-# cose-base ← cytoscape-fcose. Each is vendored offline; CDN fallback per-file.
-_ASSET_FCOSE = [_ASSET_DIR / f for f in ("layout-base.js", "cose-base.js", "cytoscape-fcose.js")]
-_CDN_FCOSE = ["https://cdn.jsdelivr.net/npm/layout-base/layout-base.js",
-              "https://cdn.jsdelivr.net/npm/cose-base/cose-base.js",
-              "https://cdn.jsdelivr.net/npm/cytoscape-fcose/cytoscape-fcose.js"]
-# Shared fcose layout literal — deterministic (randomize:false ⇒ spectral init),
-# non-animated, compound-aware. Used for both the initial layout and view re-layouts.
-_FCOSE_LAYOUT = ("{name:'fcose', quality:'default', animate:false, randomize:false, "
-                 "nodeDimensionsIncludeLabels:true, packComponents:true, "
-                 "nodeRepulsion:9000, idealEdgeLength:90, padding:30")
+_SIGMA_LIBS = [
+    (_ASSET_DIR / "graphology.umd.min.js",
+     "https://cdn.jsdelivr.net/npm/graphology@0.25.4/dist/graphology.umd.min.js"),
+    (_ASSET_DIR / "graphology-library.min.js",
+     "https://cdn.jsdelivr.net/npm/graphology-library@0.8.0/dist/graphology-library.min.js"),
+    (_ASSET_DIR / "sigma.umd.min.js",
+     "https://unpkg.com/sigma@2.4.0/build/sigma.min.js"),
+]
 _PALETTE = ["#4e79a7", "#f28e2b", "#59a14f", "#e15759", "#76b7b2",
             "#edc948", "#b07aa1", "#ff9da7", "#9c755f", "#9d7660"]
 
+# Bootstrap is a plain (non-f) string: literal { } braces. Injected values arrive as
+# the const block (DATA, HAS_ZONES, ITER, INITVIEW) — no token rewriting, so no
+# mapData/DEGMAX fragility (node size is baked per-node in DATA). The sigma /
+# graphology / forceAtlas2 globals come from the inlined UMD <script> tags above.
 _HTML_BOOTSTRAP = """
-const cy = cytoscape({
-  container: document.getElementById('cy'),
-  elements: DATA,
-  boxSelectionEnabled: false,
-  userPanningEnabled: true,
-  userZoomingEnabled: true,
-  autoungrabify: false,
-  selectionType: 'single',
-  style: [
-    {selector:'node', style:{'label':'data(label)','font-size':'8px',
-      'width':'mapData(deg,0,DEGMAX,18,64)','height':'mapData(deg,0,DEGMAX,18,64)',
-      'background-color':'data(color)','color':'#223','text-valign':'bottom','text-halign':'center',
-      'text-wrap':'wrap','text-max-width':'140px'}},
-    {selector:'node[frontier > 0]', style:{'border-width':3,'border-color':'#e15759','border-style':'dashed'}},
-    {selector:'edge', style:{'width':1,'line-color':'#c4c9d4','target-arrow-color':'#c4c9d4',
-      'target-arrow-shape':'triangle','arrow-scale':0.7,'curve-style':'bezier'}},
-    {selector:'edge[conf="unique"]', style:{'line-style':'solid'}},
-    {selector:'edge[conf="direct"]', style:{'line-style':'solid'}},
-    {selector:'edge[conf="ambiguous"]', style:{'line-style':'dashed','line-color':'#e15759','target-arrow-color':'#e15759'}},
-    {selector:'edge[conf="unresolved"]', style:{'line-style':'dotted','line-color':'#b07aa1','target-arrow-color':'#b07aa1'}},
-    {selector:'edge.seam', style:{'line-color':'#e15759','target-arrow-color':'#e15759','line-style':'dashed','width':2}},
-    // (3) HUB highlight: heavily-depended-on / articulation nodes — ring + halo + size bump.
-    {selector:'node[hub=1]', style:{'border-width':4,'border-color':'#f5a623','border-opacity':1,
-      'background-blacken':-0.1,'width':'mapData(deg,0,DEGMAX,34,80)','height':'mapData(deg,0,DEGMAX,34,80)',
-      'z-index':50,'font-weight':'bold','underlay-color':'#f5a623','underlay-opacity':0.25,'underlay-padding':6}},
-    // (3) BRIDGE highlight: articulation edges linking two modules — thick solid red, on top.
-    {selector:'edge[bridge=1]', style:{'width':3,'line-color':'#e15759','target-arrow-color':'#e15759',
-      'line-style':'solid','z-index':40}},
-    {selector:'.dim', style:{'opacity':0.1}},
-    {selector:'.vhide', style:{'display':'none'}},
-    {selector:'.hit', style:{'background-color':'#ffec3d','border-width':3,'border-color':'#f5a623','z-index':99}},
-    // (4) ZONE treatment: faint, borderless compound parents with just a soft top-left label
-    // (no '一堆方框'); non-grabbable + events:no so drags/taps fall through to canvas pan.
-    {selector:'node:parent', style:{'background-opacity':0.04,'background-color':'data(zonecolor)',
-      'border-width':0,'shape':'round-rectangle','label':'data(label)','text-valign':'top','text-halign':'left',
-      'font-size':'16px','font-weight':'600','color':'#9aa6b2','text-opacity':0.6,'padding':'30px','events':'no'}}
-  ],
-  layout: __FCOSE__},
-  wheelSensitivity: 0.2
-});
-// seams: edges crossing a cluster boundary (the cuts an SRP split would make)
-cy.edges().forEach(function(ed){
-  const a=ed.source().data('cluster'), b=ed.target().data('cluster');
-  if(a && b && a!==b) ed.addClass('seam');
-});
-// info panel: tap a node to GET ITS FILE PATH (+ kind/cluster); tap blank to close
-const info = document.getElementById('info');
-function showInfo(d){
-  info.innerHTML='';
-  const b=document.createElement('b'); b.textContent=d.label||d.id; info.appendChild(b);
-  const m=document.createElement('div'); m.className='k';
-  m.textContent=(d.kind||'')+(d.cluster?('  ·  '+d.cluster):''); info.appendChild(m);
-  const c=document.createElement('code'); c.textContent=d.path||''; c.title='click to select'; info.appendChild(c);
-  info.style.display='block';
-}
-cy.on('tap','node',function(e){ showInfo(e.target.data()); });
-cy.on('tap',function(e){ if(e.target===cy) info.style.display='none'; });
-const q = document.getElementById('q');
-q.addEventListener('input', function(){
-  const s = q.value.trim().toLowerCase();
-  cy.batch(function(){
-    cy.elements().removeClass('dim hit');
-    if(!s) return;
-    const hits = cy.nodes().filter(function(n){return ((n.data('label')||'')+' '+(n.data('path')||'')).toLowerCase().indexOf(s)>=0;});
-    if(hits.length===0) return;
-    cy.elements().addClass('dim');
-    hits.removeClass('dim').addClass('hit');
-    hits.closedNeighborhood().removeClass('dim');
-    cy.animate({fit:{eles:hits, padding:80}},{duration:300});
+(function(){
+  // ---- resolve UMD globals (graphology core, graphology-library fa2, sigma) ----
+  var GG = window.graphology;
+  var SigmaCls = (typeof window.Sigma === 'function') ? window.Sigma
+    : (window.Sigma && (window.Sigma.Sigma || window.Sigma.default));
+  var FA2 = window.graphologyLibrary && window.graphologyLibrary.layoutForceAtlas2;
+  if(!GG || !SigmaCls){ document.getElementById('cy').innerHTML =
+    '<p style="padding:20px;color:#900">graph renderer failed to load</p>'; return; }
+
+  // ---- build the graphology graph from baked DATA ----
+  var graph = GG.MultiDirectedGraph ? new GG.MultiDirectedGraph()
+    : new (GG.Graph || GG)({ type:'directed', multi:true });
+  DATA.nodes.forEach(function(n){ try{ graph.addNode(n.key, Object.assign({}, n.attrs)); }catch(_){} });
+  DATA.edges.forEach(function(e){ try{ graph.addEdgeWithKey(e.key, e.source, e.target, Object.assign({}, e.attrs)); }catch(_){} });
+
+  // ---- layout: forceAtlas2 from the deterministic baked seed (positions in-browser) ----
+  if(FA2){ try {
+    var settings = Object.assign(FA2.inferSettings(graph),
+      { barnesHutOptimize: graph.order>400, adjustSizes:true, gravity:1, scalingRatio:8, slowDown:2 });
+    FA2.assign(graph, { iterations: ITER, settings: settings });
+  } catch(_){} }
+
+  // ---- interaction state + reducers ----
+  const ST = { q:'', view:(HAS_ZONES?INITVIEW:'both'), hits:null, hidden:new Set(), hiddenE:new Set() };
+  function nodeReducer(key, attr){
+    const r = Object.assign({}, attr);
+    if(ST.hidden.has(key)){ r.hidden = true; return r; }
+    if(attr.hub){ r.highlighted = true; r.forceLabel = true; }     // hub halo via sigma highlight
+    if(ST.q){
+      if(ST.hits && ST.hits.has(key)){ r.highlighted = true; r.forceLabel = true; r.zIndex = 2; }
+      else { r.label = ''; r.color = '#dfe3ea'; r.zIndex = 0; }    // dim non-hits
+    }
+    return r;
+  }
+  function edgeReducer(key, attr){
+    const r = Object.assign({}, attr);
+    const ex = graph.extremities(key);
+    if(ST.hiddenE.has(key) || ST.hidden.has(ex[0]) || ST.hidden.has(ex[1])){ r.hidden = true; return r; }
+    if(attr.bridge){ r.color = '#e15759'; r.size = Math.max(r.size||1, 3); r.zIndex = 3; }  // bridge: red+thick
+    if(ST.q){ const both = ST.hits && ST.hits.has(ex[0]) && ST.hits.has(ex[1]); if(!both) r.color = '#eef0f4'; }
+    return r;
+  }
+
+  const renderer = new SigmaCls(graph, document.getElementById('cy'), {
+    defaultEdgeType:'line', renderEdgeLabels:false, zIndex:true,
+    labelRenderedSizeThreshold: 7, labelDensity: 0.7, labelGridCellSize: 80,
+    nodeReducer: nodeReducer, edgeReducer: edgeReducer,
+    minCameraRatio: 0.05, maxCameraRatio: 12
   });
-});
-// (5) ONE-PAGE VIEW TOGGLE: internal | dependency | both — show/hide only (deterministic,
-// single file). 'internal' = target-only; 'dependency' = boundary target + dependency +
-// cross edges; 'both' = everything. Re-layouts the visible eles + fits.
-const viewSel = document.getElementById('view');
-const HASZONES = (typeof HAS_ZONES !== 'undefined') && HAS_ZONES;
-if(!HASZONES && viewSel){ viewSel.parentNode.style.display = 'none'; }
-function realNodes(){ return cy.nodes().filter(function(n){ return !n.isParent(); }); }
-function applyView(v){
-  if(!HASZONES) return;
-  cy.batch(function(){
-    cy.elements().removeClass('vhide');
-    if(v==='internal'){
-      const dep = realNodes().filter(function(n){ return n.data('zone')==='dependency'; });
-      dep.addClass('vhide');
-      dep.connectedEdges().addClass('vhide');
-    } else if(v==='dependency'){
-      // hide pure target->target edges; keep cross edges + their target endpoints + dependency nodes
-      const ttEdges = cy.edges().filter(function(ed){
-        return ed.source().data('zone')==='target' && ed.target().data('zone')==='target';
-      });
-      ttEdges.addClass('vhide');
-      // target nodes with no crossing edge are not on the boundary -> hide
-      realNodes().filter(function(n){ return n.data('zone')==='target'; }).forEach(function(n){
-        const hasCross = n.connectedEdges().some(function(ed){ return ed.data('cross')===1; });
-        if(!hasCross){ n.addClass('vhide'); }
+
+  // ---- tap a node to GET ITS FILE PATH (+ kind/cluster); tap blank closes ----
+  const info = document.getElementById('info');
+  function showInfo(d){
+    info.innerHTML='';
+    const b=document.createElement('b'); b.textContent=d.label||d.key||''; info.appendChild(b);
+    const m=document.createElement('div'); m.className='k';
+    m.textContent=(d.kind||'')+(d.cluster?('  \\u00b7  '+d.cluster):''); info.appendChild(m);
+    const c=document.createElement('code'); c.textContent=d.path||''; info.appendChild(c);
+    info.style.display='block';
+  }
+  renderer.on('clickNode', function(e){ showInfo(graph.getNodeAttributes(e.node)); });
+  renderer.on('clickStage', function(){ info.style.display='none'; });
+
+  // ---- search: dim non-matches, highlight hits (label + path) ----
+  const q = document.getElementById('q');
+  if(q){ q.addEventListener('input', function(){
+    ST.q = q.value.trim().toLowerCase();
+    ST.hits = null;
+    if(ST.q){ ST.hits = new Set();
+      graph.forEachNode(function(k,a){
+        if(((a.label||'')+' '+(a.path||'')).toLowerCase().indexOf(ST.q) >= 0) ST.hits.add(k);
       });
     }
+    renderer.refresh();
+  }); }
+
+  // ---- view toggle: internal | dependency | both (show/hide only; no relayout) ----
+  const viewSel = document.getElementById('view');
+  if(!HAS_ZONES && viewSel){ viewSel.parentNode.style.display = 'none'; }
+  function applyView(v){
+    ST.view = v; ST.hidden = new Set(); ST.hiddenE = new Set();
+    if(HAS_ZONES && v !== 'both'){
+      if(v === 'internal'){
+        graph.forEachNode(function(k,a){ if(a.zone==='dependency') ST.hidden.add(k); });
+      } else if(v === 'dependency'){
+        // hide pure target->target edges
+        graph.forEachEdge(function(k,a,s,t,sa,ta){ if(sa.zone==='target' && ta.zone==='target') ST.hiddenE.add(k); });
+        // hide target nodes with NO crossing (target->dependency) edge — off the boundary
+        graph.forEachNode(function(k,a){
+          if(a.zone!=='target') return;
+          let cross=false;
+          graph.forEachEdge(k, function(ek,ea,s,t,sa,ta){ if(sa.zone==='target' && ta.zone==='dependency') cross=true; });
+          if(!cross) ST.hidden.add(k);
+        });
+      }
+    }
+    renderer.refresh();
+  }
+  if(viewSel){ viewSel.addEventListener('change', function(){ applyView(viewSel.value); }); }
+  if(HAS_ZONES) applyView(ST.view);
+
+  // ---- drag a NODE (≠ pan): canvas drag still pans (sigma default) ----
+  let dragged=null, dragging=false;
+  renderer.on('downNode', function(e){ dragging=true; dragged=e.node;
+    graph.setNodeAttribute(dragged,'highlighted',true); });
+  renderer.getMouseCaptor().on('mousemovebody', function(e){
+    if(!dragging) return;
+    const p = renderer.viewportToGraph(e);
+    graph.setNodeAttribute(dragged,'x',p.x); graph.setNodeAttribute(dragged,'y',p.y);
+    e.preventSigmaDefault(); e.original.preventDefault(); e.original.stopPropagation();
   });
-  const vis = cy.elements().not('.vhide');
-  cy.layout(__FCOSE__, eles:vis}).run();
-  cy.fit(cy.elements().not('.vhide'), 30);
-}
-if(HASZONES && viewSel){
-  viewSel.addEventListener('change', function(){ applyView(viewSel.value); });
-  applyView(viewSel.value);
-}
+  renderer.getMouseCaptor().on('mouseup', function(){
+    if(dragged) graph.removeNodeAttribute(dragged,'highlighted');
+    dragging=false; dragged=null;
+  });
+})();
 """
 
 
@@ -278,89 +300,119 @@ def _importance(g: Graph) -> dict[str, dict]:
     return info
 
 
-def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "both") -> str:
-    """Render a Graph as ONE self-contained interactive HTML file (cytoscape.js).
+# zone identity + tints (shared by to_html). The dependency zone may hold MANY
+# distinct dependency sources; zones are encoded by node COLOR + spatial clustering.
+_ZONES = ("target", "dependency")
+_ZONE_COLOR = {"target": "#4e79a7", "dependency": "#f28e2b"}
 
-    The cytoscape lib AND the cytoscape-fcose layout chain are inlined from the
-    vendored assets (offline; per-file CDN fallback if an asset is missing), as is
-    the graph data — so the output is a single file that renders a fast force-directed
-    (fcose), zoomable, searchable graph in any browser. fcose is deterministic
-    (randomize:false) and far faster than cytoscape's built-in cose on large slices.
+
+def _seed_xy(i: int, n_total: int, zone: str | None) -> tuple[float, float]:
+    """Deterministic initial layout seed (circle by sorted index; zone x-bias so the
+    two zones start apart). forceAtlas2 refines from here in-browser; rounding keeps
+    the emitted bytes stable."""
+    ang = 2.0 * math.pi * i / max(1, n_total)
+    x = math.cos(ang) * 120.0
+    y = math.sin(ang) * 120.0
+    if zone == "target":
+        x -= 220.0
+    elif zone == "dependency":
+        x += 220.0
+    return round(x, 3), round(y, 3)
+
+
+def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "both") -> str:
+    """Render a Graph as ONE self-contained interactive HTML file (sigma.js / WebGL).
+
+    sigma + graphology + forceAtlas2 are inlined from the vendored ESM bundles as
+    base64 and loaded in-browser via blob URLs + dynamic ``import()`` (offline;
+    per-module esm.sh fallback if an asset is missing), as is the graph data — so the
+    output is a single file that renders a GPU-accelerated, zoomable, searchable graph
+    in any browser. WebGL keeps pan/zoom/drag smooth where the old Canvas2D renderer
+    lagged. Node positions are computed in-browser (forceAtlas2 from a deterministic
+    baked seed), so the emitted bytes stay byte-identical across runs.
     """
-    # Color by cohesive cluster (attrs['cluster']) when present (SRP view), else by kind.
+    n_sorted = sorted(g.nodes.values(), key=lambda n: n.id)
+    n_total = len(n_sorted)
+
+    # Color by ZONE when this is a boundary graph (makes target↔dependency pop), else
+    # by cohesive cluster (attrs['cluster']) when present, else by kind.
+    zoned = any(n.attrs.get("zone") in _ZONES for n in g.nodes.values())
     clustered = any(n.attrs.get("cluster") for n in g.nodes.values())
-    if clustered:
+    if zoned:
+        keys = list(_ZONES)
+        kcolor = dict(_ZONE_COLOR)
+        legend_kind = "zone"
+    elif clustered:
         keys = sorted({(n.attrs.get("cluster") or "?") for n in g.nodes.values()})
+        kcolor = {k: _PALETTE[i % len(_PALETTE)] for i, k in enumerate(keys)}
+        legend_kind = "cluster"
     else:
         keys = sorted({(n.kind or "node") for n in g.nodes.values()})
-    kcolor = {k: _PALETTE[i % len(_PALETTE)] for i, k in enumerate(keys)}
+        kcolor = {k: _PALETTE[i % len(_PALETTE)] for i, k in enumerate(keys)}
+        legend_kind = "kind"
 
     def _path_of(n) -> str:
         if n.evidence is not None and getattr(n.evidence, "path", None):
             return n.evidence.path
         return n.label or n.id
 
-    # Light ZONE grouping (symbol-boundary view): when any node carries a
-    # target/dependency zone, place every real node inside one of two cytoscape
-    # COMPOUND PARENT boxes — but the parents are rendered FAINT (transparent fill,
-    # no border, just a soft top-left label) and are non-grabbable / events:no, so
-    # they group the layout without the heavy nested-box look or hijacking pan/drag.
-    # fcose lays compound parents out cleanly. The dependency box may hold MANY
-    # distinct dependency sources. Backward compatible: a graph with no 'zone' emits
-    # no parent nodes.
-    _ZONES = ("target", "dependency")
-    _ZONE_COLOR = {"target": "#4e79a7", "dependency": "#f28e2b"}
-    zoned = any(n.attrs.get("zone") in _ZONES for n in g.nodes.values())
-
     # (2)(3) Importance: degree-sizing for ALL graphs + hub/bridge highlight markers.
     imp = _importance(g)
     degmax = max([1] + [v["deg"] for v in imp.values()])
 
-    elements: list[dict] = []
-    if zoned:  # target before dependency, deterministic; faint + non-grabbable parents
-        for z in _ZONES:
-            elements.append({
-                "data": {"id": f"__zone_{z}__", "label": z, "zone": z,
-                         "zonecolor": _ZONE_COLOR[z]},
-                "grabbable": False, "selectable": False, "pannable": True,
-            })
-    for n in sorted(g.nodes.values(), key=lambda n: n.id):
+    def _size(deg: int, hub: int) -> float:
+        base = 4.0 + (deg / degmax) * 11.0          # 4 .. 15 by degree
+        if hub:
+            base = max(base, 12.0) + 4.0            # hubs bump up + get a halo (reducer)
+        return round(base, 2)
+
+    # --- nodes: {key, attrs} with baked position / size / color (graphology model) ---
+    nodes: list[dict] = []
+    for i, n in enumerate(n_sorted):
         extra = g.frontier.get(n.id, 0)
         label = n.label or n.id
         if extra:
             label = f"{label}  +{extra}⤳"
         cluster = n.attrs.get("cluster") or ""
-        ckey = cluster if clustered else (n.kind or "node")
+        zone = n.attrs.get("zone")
+        ckey = zone if zoned else (cluster if clustered else (n.kind or "node"))
         ni = imp.get(n.id, {"deg": 0, "fan_in": 0, "hub": 0})
-        data = {
-            "id": n.id, "label": label, "kind": n.kind or "node",
-            "color": kcolor.get(ckey, "#888"), "frontier": extra,
-            "path": _path_of(n), "cluster": cluster,
-            "evidence": str(n.evidence) if n.evidence else "",
+        x, y = _seed_xy(i, n_total, zone if zoned else None)
+        attrs = {
+            "label": label, "x": x, "y": y, "size": _size(ni["deg"], ni["hub"]),
+            "color": kcolor.get(ckey, "#888"), "kind": n.kind or "node",
+            "path": _path_of(n), "cluster": cluster, "frontier": extra,
             "deg": ni["deg"], "fan_in": ni["fan_in"], "hub": ni["hub"],
         }
-        zone = n.attrs.get("zone")
         if zoned and zone in _ZONES:
-            data["parent"] = f"__zone_{zone}__"
-            data["zone"] = zone
-        elements.append({"data": data})
+            attrs["zone"] = zone
+        nodes.append({"key": n.id, "attrs": attrs})
+
+    # --- edges: {key, source, target, attrs} ---
     edge_conf = getattr(g, "edge_confidence", {})
     bridge_keys = {(a, b, r) for a, b, r in analyze.bridges(g)}
+    edges: list[dict] = []
     for i, e in enumerate(sorted(g.edges, key=lambda e: (e.src, e.dst, e.relation))):
-        ed = {"id": f"e{i}", "source": e.src, "target": e.dst, "rel": e.relation}
+        ea = {"rel": e.relation, "size": 1, "color": "#c4c9d4"}
         conf = edge_conf.get(e.key())
         if conf:
-            ed["conf"] = conf
+            ea["conf"] = conf
+            if conf == "ambiguous":
+                ea["color"] = "#d98a8a"
+            elif conf == "unresolved":
+                ea["color"] = "#c3a3bd"
         if e.key() in bridge_keys:
-            ed["bridge"] = 1
-        # (5) tag target->dependency crossings so the dependency view can keep just them.
+            ea["bridge"] = 1                       # reducer paints red + thick
         if zoned:
             s, d = g.nodes.get(e.src), g.nodes.get(e.dst)
             if (s is not None and d is not None
                     and s.attrs.get("zone") == "target" and d.attrs.get("zone") == "dependency"):
-                ed["cross"] = 1
-        elements.append({"data": ed})
-    data_json = json.dumps(elements, ensure_ascii=False)
+                ea["cross"] = 1                    # target->dependency crossing (the seam)
+                ea["size"] = 1.5
+                ea["color"] = "#7f8a9c"
+        edges.append({"key": f"e{i}", "source": e.src, "target": e.dst, "attrs": ea})
+
+    data_json = json.dumps({"nodes": nodes, "edges": edges}, ensure_ascii=False)
 
     banner = ""
     if g.truncated:
@@ -371,7 +423,6 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
     legend = "".join(
         f'<span class="lg"><i style="background:{kcolor[k]}"></i>{_html_escape(k)}</span>' for k in keys
     )
-    legend_kind = "cluster" if clustered else "kind"
     meta = f"{len(g.nodes)} nodes &middot; {len(g.edges)} edges"
 
     # (5) one-page view toggle (only meaningful for zoned graphs; JS hides it otherwise).
@@ -385,21 +436,19 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
         if zoned else ""
     )
 
-    # Inline cytoscape FIRST, then the fcose dependency chain (layout-base ←
-    # cose-base ← cytoscape-fcose) IN ORDER, each from its vendored asset (offline)
-    # with a per-file CDN fallback when the asset is missing — then register fcose
-    # before the bootstrap runs. Positions are computed in-browser, so the emitted
-    # bytes (static asset text + DATA) stay deterministic.
+    # forceAtlas2 iteration budget — fewer iterations for big graphs (layout is the
+    # only in-browser CPU cost; WebGL handles the rendering). Deterministic per size.
+    iters = 200 if n_total <= 200 else (90 if n_total <= 1200 else 45)
+
+    # Inline the vendored UMD libs IN ORDER as plain <script> globals (graphology →
+    # graphology-library → sigma); per-file CDN fallback (<script src>) when an asset
+    # is missing. Deterministic: static file text + DATA.
     def _script_for(asset: Path, cdn: str) -> str:
         if asset.is_file():
             return "<script>" + asset.read_text(encoding="utf-8") + "</script>"
         return f'<script src="{cdn}"></script>'
 
-    lib = _script_for(_ASSET_LIB, _CDN_LIB)
-    for asset, cdn in zip(_ASSET_FCOSE, _CDN_FCOSE):
-        lib += _script_for(asset, cdn)
-    lib += ("<script>if(window.cytoscape && window.cytoscapeFcose)"
-            " cytoscape.use(window.cytoscapeFcose);</script>")
+    lib = "".join(_script_for(asset, cdn) for asset, cdn in _SIGMA_LIBS)
 
     head = (
         "<!doctype html><html><head><meta charset='utf-8'>"
@@ -428,17 +477,11 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
     )
     consts = (
         f"const DATA={data_json};\n"
-        f"const DEGMAX={degmax};\n"
         f"const HAS_ZONES={'true' if zoned else 'false'};\n"
+        f"const ITER={iters};\n"
+        f"const INITVIEW={json.dumps(view)};\n"
     )
-    # mapData() parses its mapper string literally (it can't read a JS const), so the
-    # DEGMAX token inside the style mappers is substituted with the actual integer.
-    # __FCOSE__ is the (open) fcose layout literal — closed by '}' at the initial
-    # layout and by ', eles:vis}' in applyView — substituted as one canonical place.
-    bootstrap = (_HTML_BOOTSTRAP
-                 .replace("mapData(deg,0,DEGMAX,", f"mapData(deg,0,{degmax},")
-                 .replace("__FCOSE__", _FCOSE_LAYOUT))
-    script = "<script>" + consts + bootstrap + "</script>"
+    script = "<script>" + consts + _HTML_BOOTSTRAP + "</script>"
     return head + lib + script + "</body></html>"
 
 

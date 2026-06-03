@@ -36,8 +36,8 @@ uv run --python 3.12 "$MR/scripts/manyscan/scan.py" export  <seed> --store <dir|
 `--store` takes a hub alias, a store dir, or a `source.db` path; or use `--root <repo>`.
 `<seed>` = a symbol / file / dir / keyword.
 
-**Visual output:** `--format html > deps.html` writes ONE self-contained file (cytoscape
-force-directed layout, pan/zoom/search, color-by-kind, dashed-red = capped frontier node;
+**Visual output:** `--format html > deps.html` writes ONE self-contained file (GPU/WebGL
+sigma.js + forceAtlas2 layout, smooth pan/zoom/drag, search, color-by-kind, red+thick = bridge;
 **tap a node to see its file path**) — open in any browser, no install. Large slice → `--level
 dir|module` first.
 

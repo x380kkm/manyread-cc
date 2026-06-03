@@ -66,16 +66,25 @@ def test_metrics_text_summary_and_warning():
 def test_to_html_self_contained_and_interactive():
     out = render.to_html(_slice())
     assert out.startswith("<!doctype html>") and out.rstrip().endswith("</html>")
-    # cytoscape lib + fcose chain inlined from the vendored assets (offline, single file)
-    assert "cytoscape" in out and len(out) > 300_000
-    assert "name:'fcose'" in out         # fast force-directed layout (fcose)
-    assert "randomize:false" in out      # deterministic spectral init
-    assert "cytoscapeFcose" in out       # fcose UMD inlined
-    assert "cytoscape.use(" in out       # fcose registered
+    # sigma + graphology + graphology-library (forceAtlas2) inlined as UMD <script>
+    # globals (offline, single file)
+    assert "new SigmaCls(" in out and len(out) > 200_000
+    assert "graphologyLibrary" in out    # graphology-library (forceAtlas2) UMD
+    assert "window.graphology" in out    # graphology core UMD global
+    assert "FA2.assign(" in out          # forceAtlas2 layout
     assert "a.py" in out and "b.py" in out
     assert "+7⤳" in out                  # frontier node tagged in its label
     assert "7 deps elided" in out        # honest truncation banner
     assert "search node" in out          # interactive search box
+
+
+def test_to_html_offline_no_network_load():
+    # the renderer must inline all libs (no <script src=...> / no http(s) URL fetched
+    # at runtime). CDN URLs live ONLY in the per-file fallback branch (not emitted
+    # when the asset exists), so a generated page contains zero network references.
+    out = render.to_html(_slice())
+    assert "<script src=" not in out     # nothing fetched over the network
+    assert out.count("<script>") >= 4    # 3 UMD libs + the bootstrap, all inlined
 
 
 def test_to_html_deterministic():
@@ -103,7 +112,8 @@ def test_html_colors_by_cluster_when_present():
     out = render.to_html(g)
     assert '"cluster": "mod#0"' in out and '"cluster": "mod#1"' in out
     assert "color=cluster" in out           # legend switched to cluster mode
-    assert "edge.seam" in out               # cross-cluster edges dash as seams
+    # cluster colors come from the palette (not the zone tints)
+    assert '"color": "#4e79a7"' in out and '"color": "#f28e2b"' in out
 
 
 def test_render_unknown_format_raises():
@@ -150,28 +160,32 @@ def test_importance_degree_hub_bridge():
 
 
 def test_html_has_degree_sizing_all_graphs():
-    # degree-based node sizing applies to ALL graphs (incl. plain no-zone slice)
+    # degree-based node sizing applies to ALL graphs (incl. plain no-zone slice).
+    # In sigma the size is BAKED per node (no client-side mapper), so assert the
+    # per-node size + degree attrs are present in DATA.
     out = render.to_html(_slice())
-    assert "const DEGMAX=" in out
-    assert "mapData(deg,0," in out          # width/height mapped from degree
+    assert '"size":' in out                 # baked per-node size (degree-scaled)
     assert '"deg":' in out                  # every node carries its degree
+    assert "mapData(" not in out            # no cytoscape mapper leaked
+    assert "DEGMAX" not in out              # no cytoscape DEGMAX token leaked
 
 
 def test_html_hub_and_bridge_markers():
     out = render.to_html(_zoned_hub_graph())
-    assert "node[hub=1]" in out             # hub ring/halo style present
-    assert "edge[bridge=1]" in out          # bridge edge highlight style present
     assert '"hub": 1' in out                # the hub node is tagged in DATA
     assert '"bridge": 1' in out             # the bridge edge is tagged in DATA
-    assert "underlay-color" in out          # hub halo
+    assert "highlighted" in out             # hub halo via sigma highlighted flag
+    assert "attr.bridge" in out             # edge reducer paints bridges red+thick
+    assert "#e15759" in out                 # bridge red
 
 
 def test_html_drag_pan_config():
     out = render.to_html(_zoned_hub_graph())
-    # (1) drag/pan fix: box-selection off; zone parents non-grabbable + events fall through
-    assert "boxSelectionEnabled: false" in out
-    assert '"grabbable": false' in out      # zone-parent elements are non-grabbable
-    assert "'events':'no'" in out           # parent taps/drags fall through to pan
+    # drag a NODE moves it; dragging the canvas pans (sigma default). The node-drag
+    # recipe is downNode -> mousemovebody -> mouseup with preventSigmaDefault.
+    assert "downNode" in out
+    assert "mousemovebody" in out
+    assert "preventSigmaDefault" in out
 
 
 def test_html_view_toggle_one_page():
@@ -184,13 +198,16 @@ def test_html_view_toggle_one_page():
     assert '"cross": 1' in out              # target->dependency crossings tagged
 
 
-def test_html_light_zone_treatment():
+def test_html_zone_encoding_color_and_cluster():
     out = render.to_html(_zoned_hub_graph())
-    # faint, borderless compound parents (no '一堆方框'): transparent fill, soft label
-    assert "'background-opacity':0.04" in out
-    assert "data(zonecolor)" in out
-    assert '"zonecolor": "#4e79a7"' in out  # target zone tint
-    assert '"zonecolor": "#f28e2b"' in out  # dependency zone tint
+    # sigma has no compound parents: zones are encoded by node COLOR + spatial
+    # clustering (no '一堆方框'). Every real node carries its zone + a zone tint, and
+    # the layout seed biases the two zones apart (no '__zone_*__' pseudo-nodes).
+    assert "__zone_" not in out
+    assert '"zone": "target"' in out
+    assert '"zone": "dependency"' in out
+    assert '"color": "#4e79a7"' in out      # target zone tint
+    assert '"color": "#f28e2b"' in out      # dependency zone tint
 
 
 def test_html_no_zone_no_toggle_but_sized():
@@ -200,7 +217,7 @@ def test_html_no_zone_no_toggle_but_sized():
     assert "id='view'" not in out           # toggle hidden for plain graphs
     assert "__zone_" not in out
     assert "const HAS_ZONES=false" in out
-    assert "mapData(deg,0," in out          # degree sizing still applies
+    assert '"size":' in out                 # degree sizing still applies (baked)
 
 
 def test_html_redesign_deterministic():
@@ -209,18 +226,14 @@ def test_html_redesign_deterministic():
     assert render.to_html(_slice()) == render.to_html(_slice())
 
 
-def test_html_degmax_token_fully_substituted():
-    # invalid-cytoscape guard: mapData() parses its mapper string literally and CANNOT
-    # read a JS const, so every `DEGMAX` token in the style mappers MUST be replaced with
-    # the literal int. Both the base (18,64) and hub (34,80) mappers share the prefix
-    # `mapData(deg,0,DEGMAX,` — assert no literal DEGMAX survives anywhere in the style.
+def test_html_no_cytoscape_leftovers():
+    # migration guard: no cytoscape-era tokens may survive in the sigma renderer
+    # (a stray mapData/fcose/DEGMAX/underlay would mean a half-migrated template).
     for g in (_zoned_hub_graph(), _slice()):
         out = render.to_html(g)
-        style = out.split("const DEGMAX=", 1)[1]  # everything AFTER the const decl
-        assert "mapData(deg,0,DEGMAX" not in style   # no un-substituted mapper
-        assert "mapData(deg,0," in style             # mappers still present
-        # both size ramps survive substitution (base + hub size bump)
-        assert ",18,64)" in style and ",34,80)" in style
+        for tok in ("cytoscape", "mapData(", "fcose", "DEGMAX", "underlay-color",
+                    "boxSelectionEnabled", "__zone_", "data(zonecolor)"):
+            assert tok not in out, tok
 
 
 def test_dependency_view_hide_logic_leaves_no_dangling_edge():

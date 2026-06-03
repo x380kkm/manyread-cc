@@ -231,37 +231,39 @@ def test_determinism(boundary_store):
     assert a == c
 
 
-# --- render compound zones (backward compatible) -----------------------------
+# --- render zone encoding (sigma: color + spatial, no compound parents) -------
 def _data_payload(html: str) -> str:
-    """Extract just the injected ``const DATA=[...];`` JSON array (not the inlined lib)."""
+    """Extract just the injected ``const DATA={...};`` JSON object (not the inlined lib)."""
     marker = "const DATA="
     start = html.index(marker) + len(marker)
     end = html.index(";\n", start)
     return html[start:end]
 
 
-def test_render_compound(boundary_store):
+def test_render_zone_encoding(boundary_store):
     with stores.Store(boundary_store) as st:
         _, g = _build(st)
         html = render.to_html(g)
     payload = _data_payload(html)
-    assert "__zone_target__" in payload
-    assert "__zone_dependency__" in payload
-    assert '"parent"' in payload  # real nodes carry a cytoscape parent
-    # confidence reaches the elements as edge data
+    # sigma encodes zones as node attrs + color (no '__zone_*__' compound parents)
+    assert "__zone_" not in payload
+    assert '"zone": "target"' in payload
+    assert '"zone": "dependency"' in payload
+    assert '"color": "#4e79a7"' in payload      # target tint
+    assert '"color": "#f28e2b"' in payload      # dependency tint
+    # confidence reaches the edges as attrs
     assert '"conf"' in payload
-    # target box injected before dependency box (deterministic order)
-    assert payload.index("__zone_target__") < payload.index("__zone_dependency__")
 
 
 def test_render_no_zone_unchanged(synth_store):
-    """A plain (no-zone) graph must render with NO compound parent injection."""
+    """A plain (no-zone) graph must render with NO zone attrs / pseudo-nodes."""
     from lib import scope
     with stores.Store(synth_store) as st:
         g = scope.scan(st, "pkg/a.py", Budget(max_nodes=50, max_depth=2, direction="out"))
         html = render.to_html(g)
     payload = _data_payload(html)
     assert "__zone_" not in payload
+    assert '"zone":' not in payload
     assert '"parent"' not in payload
 
 
@@ -345,7 +347,7 @@ def test_cli_html_is_one_page_with_toggle(boundary_store, capsys):
     assert "<option value='internal' selected>" in out  # --view threaded as initial
     # full graph emitted (dependency nodes present even though --view internal): the
     # projection is now client-side, so dependency symbols are still in the page.
-    assert "__zone_dependency__" in out and "__zone_target__" in out
+    assert '"zone": "dependency"' in out and '"zone": "target"' in out
 
 
 def test_roots_by_len_total_order(module_store):

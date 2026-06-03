@@ -45,17 +45,18 @@ separate INTERNAL deps (the TARGET — the code analyzed) from what it DEPENDS O
 dependencies, possibly MANY distinct sources), at the SYMBOL level, and mark the
 dependency interface. Edges (`extends`/`implements`/`uses_type`) resolve with a confidence
 (`unique`/`ambiguous`/`unresolved` — never silently picked); the dependency side is a
-depth-1 sink. `--view internal|dependency|both`; `--format html` is ONE page (fast fcose
-force layout, node size = fan-in/hubs big, bridges+hubs highlighted, faint target/dependency
-zones, in-page view toggle, tap→path). Pass `--target-root` explicitly (markers aren't
+depth-1 sink. `--view internal|dependency|both`; `--format html` is ONE page (GPU/WebGL
+sigma.js + forceAtlas2, node size = fan-in/hubs big, bridges+hubs highlighted, target/dependency
+zones by color+cluster, in-page view toggle, tap→path). Pass `--target-root` explicitly (markers aren't
 indexed); `--target-root ""` = whole index is the target; `--dep-root` is repeatable for
 multiple dependency sources. Use it to find split seams + the dependency API surface to
 abstract. (The old `plugin-boundary` / `--plugin-root` / `--engine-root` names still work.)
 
-**Visual:** `--format html > deps.html` emits ONE self-contained file (cytoscape force
-layout, pan/zoom/search, color-by-kind, dashed-red = bounded/capped node; **tap any node to
-see its file path**) — open in any browser, no install. `mermaid`/`dot` render in VS Code /
-GitHub / mermaid.live. For a many-node engine-scale slice, roll up with `--level dir|module`.
+**Visual:** `--format html > deps.html` emits ONE self-contained file (GPU/WebGL sigma.js +
+forceAtlas2 layout, smooth pan/zoom/drag, search, color-by-kind/zone, red+thick = bridge,
+dashed/dotted = ambiguous/unresolved edge; **tap any node to see its file path**) — open in
+any browser, no install. `mermaid`/`dot` render in VS Code / GitHub / mermaid.live. For a
+many-node engine-scale slice, roll up with `--level dir|module`.
 
 
 ## Rules
