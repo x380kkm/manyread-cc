@@ -221,6 +221,27 @@ _CPP_PREPROC = {
 }
 
 
+def _collect_type_idents(node: Node | None, src: bytes, out: list[str]) -> None:
+    """Gather `type_identifier` leaf texts under node (skips primitive_type, so
+    int/float/void/bool never become deps — only named/engine types like UObject)."""
+    if node is None:
+        return
+    if node.type == "type_identifier":
+        t = _text(node, src).strip()
+        if t:
+            out.append(t)
+    for ch in node.children:
+        _collect_type_idents(ch, src, out)
+
+
+def _cpp_function_type_idents(node: Node, src: bytes) -> list[str]:
+    """Named types in a function's return + parameter declarations (deduped)."""
+    out: list[str] = []
+    _collect_type_idents(node.child_by_field_name("type"), src, out)       # return type
+    _collect_type_idents(node.child_by_field_name("declarator"), src, out)  # params
+    return list(dict.fromkeys(out))
+
+
 def _cpp_ifdef_label(node: Node, src: bytes) -> str:
     """A readable label for a preproc branch (the macro / condition tested)."""
     cond = node.child_by_field_name("name") or node.child_by_field_name("condition")
@@ -248,7 +269,22 @@ def _walk_cpp(node: Node, src: bytes, pend: Pending, parent_local: int | None) -
                             bn = bn[len(kw):].strip()
                     if bn and b.type not in ("access_specifier", "virtual"):
                         pend.inherit.append((idx, bn, "extends"))
+        # uses_type: a function's return/param named types are dependencies of it
+        # (member/param/return on engine types like UObject/FString = the engine surface).
+        if t == "function_definition":
+            for tn in _cpp_function_type_idents(node, src):
+                pend.inherit.append((idx, tn, "uses_type"))
         cur_parent = idx
+
+    elif t == "field_declaration":
+        # a class/struct member's named type is a dependency of the enclosing type;
+        # for a method DECLARATION (no body) the declarator holds param types too.
+        if parent_local is not None:
+            tnames: list[str] = []
+            _collect_type_idents(node.child_by_field_name("type"), src, tnames)
+            _collect_type_idents(node.child_by_field_name("declarator"), src, tnames)
+            for tn in dict.fromkeys(tnames):
+                pend.inherit.append((parent_local, tn, "uses_type"))
 
     elif t in _CPP_PREPROC:
         label = _cpp_ifdef_label(node, src)

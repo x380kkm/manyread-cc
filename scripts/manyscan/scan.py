@@ -25,7 +25,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from lib import analyze, cache, render, rollup, scope, stores  # noqa: E402
+from lib import analyze, boundary, cache, render, rollup, scope, stores  # noqa: E402
 from lib.graph import Budget  # noqa: E402
 
 
@@ -84,6 +84,44 @@ def cmd_analyze(args) -> int:
     return 0
 
 
+def cmd_plugin_boundary(args) -> int:
+    info = _store_info(args)
+    with stores.Store(info.db_path) as st:
+        # SOUNDNESS GUARD: autodetect relies on indexed module markers
+        # (*.uplugin / *.Build.cs). The L1 indexer only stores configured source
+        # extensions, so these markers are usually NOT indexed — autodetect would
+        # then return "" and silently classify the ENTIRE repo (engine included) as
+        # plugin, which is unsound. Require an explicit --plugin-root in that case.
+        # Pass --plugin-root "" to deliberately opt into whole-repo = plugin.
+        if args.plugin_root is None and not boundary.has_module_markers(st):
+            print("error: cannot autodetect --plugin-root (no *.uplugin / *.Build.cs "
+                  "markers are indexed; the L1 index only stores source extensions). "
+                  "Pass --plugin-root <dir> explicitly (or --plugin-root \"\" to treat "
+                  "the whole index as plugin).", file=sys.stderr)
+            return 2
+        z = boundary.make_zoning(st, args.plugin_root, args.engine_root)
+        budget = Budget(max_nodes=args.max_nodes, max_depth=max(2, args.depth), direction="out")
+        g = boundary.build(st, z, budget, alias=info.alias)
+        if not g.nodes:
+            print(f"warning: no plugin-zone symbols under plugin-root "
+                  f"{z.plugin_root!r}", file=sys.stderr)
+        # HTML is ONE self-contained, in-page-toggleable page: always emit the FULL
+        # graph (both zones + crossings) and let render.to_html's view selector switch
+        # internal|engine|both client-side. The internal_view / engine_surface
+        # projections stay for the non-HTML formats (json/text/dot), which are static.
+        if args.format == "html":
+            _emit(render.to_html(g, view=args.view))
+        else:
+            if args.view == "internal":
+                view = boundary.internal_view(g)
+            elif args.view == "engine":
+                view = boundary.engine_surface(g, rollup_modules=args.rollup_engine, store=st)
+            else:
+                view = g
+            _emit(render.render(view, args.format))
+    return 0
+
+
 def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("seed", help="symbol / file path / dir / keyword to scan from")
     p.add_argument("--store", default=None, help="store dir, source.db path, or hub alias")
@@ -119,6 +157,22 @@ def main(argv: list[str] | None = None) -> int:
     _add_common(ex)
     ex.add_argument("--format", choices=list(render.FORMATS), default="dot")
     ex.set_defaults(func=cmd_scan)
+
+    pb = sub.add_parser("plugin-boundary", help="symbol-level plugin↔engine boundary")
+    pb.add_argument("--store", default=None, help="store dir, source.db path, or hub alias")
+    pb.add_argument("--alias", default=None, help="hub alias (synonym for --store)")
+    pb.add_argument("--root", default=None, help="source root to discover the store from")
+    pb.add_argument("--plugin-root", dest="plugin_root", default=None,
+                    help="plugin root prefix (default: autodetect nearest *.uplugin/*.Build.cs)")
+    pb.add_argument("--engine-root", dest="engine_root", action="append", default=[],
+                    help="engine root hint for labelling (repeatable)")
+    pb.add_argument("--max-nodes", dest="max_nodes", type=int, default=4000)
+    pb.add_argument("--depth", type=int, default=2, help=">=2: plugin layer + engine sink")
+    pb.add_argument("--view", choices=["internal", "engine", "both"], default="both")
+    pb.add_argument("--rollup-engine", dest="rollup_engine", action="store_true",
+                    help="(engine view) group engine targets by module root")
+    pb.add_argument("--format", choices=list(render.FORMATS), default="html")
+    pb.set_defaults(func=cmd_plugin_boundary)
 
     args = ap.parse_args(argv)
     try:

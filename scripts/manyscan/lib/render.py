@@ -115,16 +115,39 @@ _HTML_BOOTSTRAP = """
 const cy = cytoscape({
   container: document.getElementById('cy'),
   elements: DATA,
+  boxSelectionEnabled: false,
+  userPanningEnabled: true,
+  userZoomingEnabled: true,
+  autoungrabify: false,
+  selectionType: 'single',
   style: [
-    {selector:'node', style:{'label':'data(label)','font-size':'8px','width':16,'height':16,
+    {selector:'node', style:{'label':'data(label)','font-size':'8px',
+      'width':'mapData(deg,0,DEGMAX,18,64)','height':'mapData(deg,0,DEGMAX,18,64)',
       'background-color':'data(color)','color':'#223','text-valign':'bottom','text-halign':'center',
       'text-wrap':'wrap','text-max-width':'140px'}},
     {selector:'node[frontier > 0]', style:{'border-width':3,'border-color':'#e15759','border-style':'dashed'}},
     {selector:'edge', style:{'width':1,'line-color':'#c4c9d4','target-arrow-color':'#c4c9d4',
       'target-arrow-shape':'triangle','arrow-scale':0.7,'curve-style':'bezier'}},
+    {selector:'edge[conf="unique"]', style:{'line-style':'solid'}},
+    {selector:'edge[conf="direct"]', style:{'line-style':'solid'}},
+    {selector:'edge[conf="ambiguous"]', style:{'line-style':'dashed','line-color':'#e15759','target-arrow-color':'#e15759'}},
+    {selector:'edge[conf="unresolved"]', style:{'line-style':'dotted','line-color':'#b07aa1','target-arrow-color':'#b07aa1'}},
+    {selector:'edge.seam', style:{'line-color':'#e15759','target-arrow-color':'#e15759','line-style':'dashed','width':2}},
+    // (3) HUB highlight: heavily-depended-on / articulation nodes — ring + halo + size bump.
+    {selector:'node[hub=1]', style:{'border-width':4,'border-color':'#f5a623','border-opacity':1,
+      'background-blacken':-0.1,'width':'mapData(deg,0,DEGMAX,34,80)','height':'mapData(deg,0,DEGMAX,34,80)',
+      'z-index':50,'font-weight':'bold','underlay-color':'#f5a623','underlay-opacity':0.25,'underlay-padding':6}},
+    // (3) BRIDGE highlight: articulation edges linking two modules — thick solid red, on top.
+    {selector:'edge[bridge=1]', style:{'width':3,'line-color':'#e15759','target-arrow-color':'#e15759',
+      'line-style':'solid','z-index':40}},
     {selector:'.dim', style:{'opacity':0.1}},
+    {selector:'.vhide', style:{'display':'none'}},
     {selector:'.hit', style:{'background-color':'#ffec3d','border-width':3,'border-color':'#f5a623','z-index':99}},
-    {selector:'edge.seam', style:{'line-color':'#e15759','target-arrow-color':'#e15759','line-style':'dashed','width':2}}
+    // (4) ZONE treatment: faint, borderless compound parents with just a soft top-left label
+    // (no '一堆方框'); non-grabbable + events:no so drags/taps fall through to canvas pan.
+    {selector:'node:parent', style:{'background-opacity':0.04,'background-color':'data(zonecolor)',
+      'border-width':0,'shape':'round-rectangle','label':'data(label)','text-valign':'top','text-halign':'left',
+      'font-size':'16px','font-weight':'600','color':'#9aa6b2','text-opacity':0.6,'padding':'30px','events':'no'}}
   ],
   layout: {name:'cose', animate:false, padding:30, nodeRepulsion:9000, idealEdgeLength:90, nodeOverlap:8},
   wheelSensitivity: 0.2
@@ -160,6 +183,43 @@ q.addEventListener('input', function(){
     cy.animate({fit:{eles:hits, padding:80}},{duration:300});
   });
 });
+// (5) ONE-PAGE VIEW TOGGLE: internal | engine | both — show/hide only (deterministic,
+// single file). 'internal' = plugin-only; 'engine' = boundary plugin + engine + cross
+// edges; 'both' = everything. Re-layouts the visible eles + fits.
+const viewSel = document.getElementById('view');
+const HASZONES = (typeof HAS_ZONES !== 'undefined') && HAS_ZONES;
+if(!HASZONES && viewSel){ viewSel.parentNode.style.display = 'none'; }
+function realNodes(){ return cy.nodes().filter(function(n){ return !n.isParent(); }); }
+function applyView(v){
+  if(!HASZONES) return;
+  cy.batch(function(){
+    cy.elements().removeClass('vhide');
+    if(v==='internal'){
+      const eng = realNodes().filter(function(n){ return n.data('zone')==='engine'; });
+      eng.addClass('vhide');
+      eng.connectedEdges().addClass('vhide');
+    } else if(v==='engine'){
+      // hide pure plugin->plugin edges; keep cross edges + their plugin endpoints + engine nodes
+      const ppEdges = cy.edges().filter(function(ed){
+        return ed.source().data('zone')==='plugin' && ed.target().data('zone')==='plugin';
+      });
+      ppEdges.addClass('vhide');
+      // plugin nodes with no crossing edge are not on the boundary -> hide
+      realNodes().filter(function(n){ return n.data('zone')==='plugin'; }).forEach(function(n){
+        const hasCross = n.connectedEdges().some(function(ed){ return ed.data('cross')===1; });
+        if(!hasCross){ n.addClass('vhide'); }
+      });
+    }
+  });
+  const vis = cy.elements().not('.vhide');
+  cy.layout({name:'cose', animate:false, padding:30, nodeRepulsion:9000,
+             idealEdgeLength:90, nodeOverlap:8, eles:vis}).run();
+  cy.fit(cy.elements().not('.vhide'), 30);
+}
+if(HASZONES && viewSel){
+  viewSel.addEventListener('change', function(){ applyView(viewSel.value); });
+  applyView(viewSel.value);
+}
 """
 
 
@@ -167,7 +227,45 @@ def _html_escape(s: str | None) -> str:
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def to_html(g: Graph, title: str = "manyscan dependency slice") -> str:
+def _importance(g: Graph) -> dict[str, dict]:
+    """Per-node importance signals (pure, deterministic):
+
+    ``{deg, fan_in, fan_out, hub, bridge}`` for every node id. ``fan_in``/``fan_out``
+    mirror :func:`analyze.node_metrics` (distinct neighbours, self-loops excluded);
+    ``deg = fan_in + fan_out`` drives node sizing for ALL graphs. ``hub`` flags the
+    heavily-depended-on / fragile centres — the union of ``analyze.cut_nodes`` and the
+    top-fan_in nodes (``fan_in >= max(2, p90)``). ``bridge`` flags a node touched by an
+    ``analyze.bridges`` articulation edge (the per-edge bridge set is returned separately).
+    Everything is integer-only and sorted, so two runs are byte-identical.
+    """
+    info: dict[str, dict] = {}
+    fan_in: dict[str, int] = {}
+    for nid in sorted(g.nodes):
+        ce = len({s for s in g.successors(nid) if s != nid})
+        ca = len({p for p in g.predecessors(nid) if p != nid})
+        fan_in[nid] = ca
+        info[nid] = {"deg": ca + ce, "fan_in": ca, "fan_out": ce, "hub": 0, "bridge": 0}
+
+    hubs: set[str] = set(analyze.cut_nodes(g))
+    fins = sorted(fan_in.values())
+    if fins:
+        # p90 (nearest-rank) over fan_in; gate at >= max(2, p90) so only the truly
+        # depended-on centres light up (and tiny graphs need >=2 incoming).
+        p90 = fins[min(len(fins) - 1, (90 * len(fins)) // 100)]
+        gate = max(2, p90)
+        hubs |= {nid for nid in g.nodes if fan_in[nid] >= gate}
+    for nid in sorted(hubs):
+        if nid in info:
+            info[nid]["hub"] = 1
+
+    for a, b, _rel in analyze.bridges(g):
+        for nid in (a, b):
+            if nid in info:
+                info[nid]["bridge"] = 1
+    return info
+
+
+def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "both") -> str:
     """Render a Graph as ONE self-contained interactive HTML file (cytoscape.js).
 
     The cytoscape lib is inlined from the vendored asset (offline; CDN fallback if
@@ -187,7 +285,28 @@ def to_html(g: Graph, title: str = "manyscan dependency slice") -> str:
             return n.evidence.path
         return n.label or n.id
 
+    # Light ZONE grouping (symbol-boundary view): when any node carries a
+    # plugin/engine zone, place every real node inside one of two cytoscape
+    # COMPOUND PARENT boxes — but the parents are rendered FAINT (transparent fill,
+    # no border, just a soft top-left label) and are non-grabbable / events:no, so
+    # they group the layout without the heavy nested-box look or hijacking pan/drag.
+    # Backward compatible: a graph with no 'zone' emits no parent nodes.
+    _ZONES = ("plugin", "engine")
+    _ZONE_COLOR = {"plugin": "#4e79a7", "engine": "#f28e2b"}
+    zoned = any(n.attrs.get("zone") in _ZONES for n in g.nodes.values())
+
+    # (2)(3) Importance: degree-sizing for ALL graphs + hub/bridge highlight markers.
+    imp = _importance(g)
+    degmax = max([1] + [v["deg"] for v in imp.values()])
+
     elements: list[dict] = []
+    if zoned:  # plugin before engine, deterministic; faint + non-grabbable parents
+        for z in _ZONES:
+            elements.append({
+                "data": {"id": f"__zone_{z}__", "label": z, "zone": z,
+                         "zonecolor": _ZONE_COLOR[z]},
+                "grabbable": False, "selectable": False, "pannable": True,
+            })
     for n in sorted(g.nodes.values(), key=lambda n: n.id):
         extra = g.frontier.get(n.id, 0)
         label = n.label or n.id
@@ -195,14 +314,35 @@ def to_html(g: Graph, title: str = "manyscan dependency slice") -> str:
             label = f"{label}  +{extra}⤳"
         cluster = n.attrs.get("cluster") or ""
         ckey = cluster if clustered else (n.kind or "node")
-        elements.append({"data": {
+        ni = imp.get(n.id, {"deg": 0, "fan_in": 0, "hub": 0})
+        data = {
             "id": n.id, "label": label, "kind": n.kind or "node",
             "color": kcolor.get(ckey, "#888"), "frontier": extra,
             "path": _path_of(n), "cluster": cluster,
             "evidence": str(n.evidence) if n.evidence else "",
-        }})
+            "deg": ni["deg"], "fan_in": ni["fan_in"], "hub": ni["hub"],
+        }
+        zone = n.attrs.get("zone")
+        if zoned and zone in _ZONES:
+            data["parent"] = f"__zone_{zone}__"
+            data["zone"] = zone
+        elements.append({"data": data})
+    edge_conf = getattr(g, "edge_confidence", {})
+    bridge_keys = {(a, b, r) for a, b, r in analyze.bridges(g)}
     for i, e in enumerate(sorted(g.edges, key=lambda e: (e.src, e.dst, e.relation))):
-        elements.append({"data": {"id": f"e{i}", "source": e.src, "target": e.dst, "rel": e.relation}})
+        ed = {"id": f"e{i}", "source": e.src, "target": e.dst, "rel": e.relation}
+        conf = edge_conf.get(e.key())
+        if conf:
+            ed["conf"] = conf
+        if e.key() in bridge_keys:
+            ed["bridge"] = 1
+        # (5) tag plugin->engine crossings so the engine view can keep just them.
+        if zoned:
+            s, d = g.nodes.get(e.src), g.nodes.get(e.dst)
+            if (s is not None and d is not None
+                    and s.attrs.get("zone") == "plugin" and d.attrs.get("zone") == "engine"):
+                ed["cross"] = 1
+        elements.append({"data": ed})
     data_json = json.dumps(elements, ensure_ascii=False)
 
     banner = ""
@@ -216,6 +356,17 @@ def to_html(g: Graph, title: str = "manyscan dependency slice") -> str:
     )
     legend_kind = "cluster" if clustered else "kind"
     meta = f"{len(g.nodes)} nodes &middot; {len(g.edges)} edges"
+
+    # (5) one-page view toggle (only meaningful for zoned graphs; JS hides it otherwise).
+    view = view if view in ("both", "internal", "engine") else "both"
+    view_opts = "".join(
+        f"<option value='{v}'{' selected' if v == view else ''}>{v}</option>"
+        for v in ("both", "internal", "engine")
+    )
+    view_ctl = (
+        "<span class='vc'>view <select id='view'>" + view_opts + "</select></span>"
+        if zoned else ""
+    )
 
     if _ASSET_LIB.is_file():
         lib = "<script>" + _ASSET_LIB.read_text(encoding="utf-8") + "</script>"
@@ -232,6 +383,8 @@ def to_html(g: Graph, title: str = "manyscan dependency slice") -> str:
         "#q{width:200px;padding:3px 6px;border-radius:4px;border:1px solid #556;background:#2b3142;color:#eee}"
         ".lg{display:inline-flex;align-items:center;gap:4px;color:#cdd6e0}"
         ".lg i{width:10px;height:10px;border-radius:50%;display:inline-block}"
+        ".vc{color:#cdd6e0;display:inline-flex;align-items:center;gap:4px}"
+        ".vc select{padding:2px 4px;border-radius:4px;border:1px solid #556;background:#2b3142;color:#eee}"
         "#cy{position:fixed;top:44px;left:0;right:0;bottom:0;background:#fbfbfd}"
         "#info{display:none;position:fixed;left:10px;bottom:10px;max-width:60%;z-index:20;"
         "background:#1f2430;color:#eee;padding:8px 10px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,.3)}"
@@ -241,10 +394,19 @@ def to_html(g: Graph, title: str = "manyscan dependency slice") -> str:
         f"<b>{_html_escape(title)}</b><span class='meta'>{meta} &middot; color={legend_kind} &middot; tap node → path</span>"
         + (f"<span class='warn'>&#9888; {_html_escape(banner)}</span>" if banner else "")
         + "<input id='q' placeholder='search node/path...'>"
-        f"<span style='display:flex;gap:8px;flex-wrap:wrap'>{legend}</span>"
-        "</div><div id='cy'></div><div id='info'></div>"
+        + view_ctl
+        + f"<span style='display:flex;gap:8px;flex-wrap:wrap'>{legend}</span>"
+        + "</div><div id='cy'></div><div id='info'></div>"
     )
-    script = "<script>const DATA=" + data_json + ";\n" + _HTML_BOOTSTRAP + "</script>"
+    consts = (
+        f"const DATA={data_json};\n"
+        f"const DEGMAX={degmax};\n"
+        f"const HAS_ZONES={'true' if zoned else 'false'};\n"
+    )
+    # mapData() parses its mapper string literally (it can't read a JS const), so the
+    # DEGMAX token inside the style mappers is substituted with the actual integer.
+    bootstrap = _HTML_BOOTSTRAP.replace("mapData(deg,0,DEGMAX,", f"mapData(deg,0,{degmax},")
+    script = "<script>" + consts + bootstrap + "</script>"
     return head + lib + script + "</body></html>"
 
 

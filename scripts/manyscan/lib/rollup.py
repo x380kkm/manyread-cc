@@ -49,6 +49,18 @@ def module_roots(store: "stores.Store") -> set[str]:
     return roots
 
 
+def roots_by_len(store: "stores.Store | None") -> list[str]:
+    """Module roots, TOTAL-ORDERED longest-first then lexicographically.
+
+    The longest-first order is what makes ``_module_of`` pick the most specific
+    ancestor; the secondary ``str`` key removes the hash-seed nondeterminism of
+    iterating the underlying ``set`` when two roots share a length.
+    """
+    if store is None:
+        return []
+    return sorted(module_roots(store), key=lambda r: (-len(r), r))
+
+
 def _path_of(node: Node) -> str:
     return (node.label or node.id).replace("\\", "/")
 
@@ -74,7 +86,10 @@ def _group_fn(level: str, store: "stores.Store | None") -> Callable[[Node], str]
     if level == "dir":
         return _dir_of
     if level == "module":
-        roots = sorted(module_roots(store), key=len, reverse=True) if store else []
+        # Total-ordered (len desc, then str) so the rolled output is byte-identical
+        # across runs: module_roots() is a set, and sorting by length ALONE leaves
+        # equal-length roots in set-iteration (hash-seed) order — non-deterministic.
+        roots = roots_by_len(store) if store else []
         return lambda n: _module_of(n, roots)
     raise ValueError(f"unknown rollup level: {level!r} (use file|dir|module)")
 

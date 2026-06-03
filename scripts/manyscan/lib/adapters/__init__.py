@@ -147,4 +147,58 @@ class CodeAdapter:
                         break
 
 
+class SymbolAdapter:
+    """SYMBOL-LEVEL adapter: ``extends``/``implements``/``uses_type`` edges with a
+    depth-1 engine SINK.
+
+    Each node is a single symbol (``s<id>``) or an external engine target
+    (``ext:<name>``). ``neighbors`` yields a symbol's boundary out-edges, resolved
+    to concrete targets WITH a soundness confidence (carried on the yielded
+    ``Step.edge`` as a private ``_confidence`` attribute so ``boundary.build`` can
+    stash it on the Graph). An engine-zone or ``ext:`` node is a SINK — its
+    neighbours are never expanded — which is what keeps the slice to plugin + its
+    one-layer engine interface.
+
+    ``boundary`` is imported lazily inside methods to avoid an import cycle
+    (``adapters`` ← ``boundary`` ← ``adapters``).
+    """
+
+    name = "symbol"
+
+    def __init__(self, zoning: "object"):
+        self.z = zoning
+
+    def seed_nodes(self, store: "stores.Store", seed: str, alias: str | None = None,
+                   max_seeds: int = 25) -> list[Node]:
+        from lib import boundary
+        out: dict[str, Node] = {}
+        for r in store.symbols_named(seed, limit=max_seeds):
+            sid = int(r["id"])
+            node = boundary.symbol_node(store, sid, self.z, alias)
+            if node.attrs.get("zone") == boundary.PLUGIN:
+                out.setdefault(node.id, node)
+        return [out[k] for k in sorted(out, key=lambda nid: int(nid[1:]) if nid[1:].isdigit() else 0)]
+
+    def neighbors(self, store: "stores.Store", node_id: str, *, direction: str = "out",
+                  index: "deps.PathIndex | None" = None, alias: str | None = None
+                  ) -> Iterator[Step]:
+        from lib import boundary
+        if not node_id.startswith("s") or not node_id[1:].isdigit():
+            return  # ext:/engine nodes are SINKS (depth-1)
+        sid = int(node_id[1:])
+        row = store.symbol(sid)
+        if row is None:
+            return
+        if boundary.zone_of_path(row["path"], self.z) == boundary.ENGINE:
+            return  # engine symbol is a SINK
+        for er in boundary.out_edges(store, sid):
+            r = boundary.resolve_target(store, er, self.z, alias)
+            edge = Edge(src=node_id, dst=r.target_id, relation=er["relation"],
+                        evidence=Evidence(boundary._NORM(row["path"]) if row["path"] else None,
+                                          row["start_line"]))
+            # Carry confidence on the edge so build() can record it on the Graph.
+            edge._confidence = r.confidence  # type: ignore[attr-defined]
+            yield Step(edge=edge, node=r.node)
+
+
 DEFAULT_ADAPTER: SourceAdapter = CodeAdapter()

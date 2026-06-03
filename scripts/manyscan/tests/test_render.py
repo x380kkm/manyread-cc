@@ -109,3 +109,144 @@ def test_render_unknown_format_raises():
         assert False
     except ValueError:
         pass
+
+
+# --- REDESIGN: importance sizing, hub/bridge highlight, drag/pan, view toggle ---
+def _zoned_hub_graph():
+    """A tiny zoned graph with a clear hub + a bridge edge.
+
+    plugin: p1,p2,p3 are mutually wired (a 3-cycle so none is a leaf) and all
+    -> hub h (engine); hub h -> leaf l (engine). The edge h->l is the unique
+    articulation BRIDGE (removing it splits l off). h has fan_in 3.
+    """
+    g = Graph()
+    for nid in ("p1", "p2", "p3"):
+        g.add_node(Node(nid, "class", label=nid, attrs={"zone": "plugin", "cluster": "plugin"}))
+    g.add_node(Node("h", "class", label="Hub", attrs={"zone": "engine", "cluster": "engine"}))
+    g.add_node(Node("l", "class", label="Leaf", attrs={"zone": "engine", "cluster": "engine"}))
+    # plugin 3-cycle: p1->p2->p3->p1 (keeps each plugin node multiply-connected)
+    g.add_edge(Edge("p1", "p2", "uses_type"))
+    g.add_edge(Edge("p2", "p3", "uses_type"))
+    g.add_edge(Edge("p3", "p1", "uses_type"))
+    for nid in ("p1", "p2", "p3"):
+        g.add_edge(Edge(nid, "h", "uses_type"))
+    g.add_edge(Edge("h", "l", "uses_type"))
+    return g
+
+
+def test_importance_degree_hub_bridge():
+    g = _zoned_hub_graph()
+    imp = render._importance(g)
+    # hub h: fan_in=3 (p1,p2,p3) + fan_out=1 (l) -> deg=4, flagged hub
+    assert imp["h"]["fan_in"] == 3 and imp["h"]["fan_out"] == 1 and imp["h"]["deg"] == 4
+    assert imp["h"]["hub"] == 1
+    # the only articulation BRIDGE edge is h->l; h and l carry the bridge flag
+    assert imp["h"]["bridge"] == 1 and imp["l"]["bridge"] == 1
+    # plugin nodes are inside a cycle: not on a bridge edge
+    assert imp["p1"]["bridge"] == 0
+
+
+def test_html_has_degree_sizing_all_graphs():
+    # degree-based node sizing applies to ALL graphs (incl. plain no-zone slice)
+    out = render.to_html(_slice())
+    assert "const DEGMAX=" in out
+    assert "mapData(deg,0," in out          # width/height mapped from degree
+    assert '"deg":' in out                  # every node carries its degree
+
+
+def test_html_hub_and_bridge_markers():
+    out = render.to_html(_zoned_hub_graph())
+    assert "node[hub=1]" in out             # hub ring/halo style present
+    assert "edge[bridge=1]" in out          # bridge edge highlight style present
+    assert '"hub": 1' in out                # the hub node is tagged in DATA
+    assert '"bridge": 1' in out             # the bridge edge is tagged in DATA
+    assert "underlay-color" in out          # hub halo
+
+
+def test_html_drag_pan_config():
+    out = render.to_html(_zoned_hub_graph())
+    # (1) drag/pan fix: box-selection off; zone parents non-grabbable + events fall through
+    assert "boxSelectionEnabled: false" in out
+    assert '"grabbable": false' in out      # zone-parent elements are non-grabbable
+    assert "'events':'no'" in out           # parent taps/drags fall through to pan
+
+
+def test_html_view_toggle_one_page():
+    out = render.to_html(_zoned_hub_graph(), view="engine")
+    assert "id='view'" in out               # single in-page view toggle
+    assert "<option value='internal'>" in out
+    assert "<option value='engine' selected>" in out  # initial state threaded from view=
+    assert "<option value='both'>" in out
+    assert "applyView" in out               # client-side show/hide handler
+    assert '"cross": 1' in out              # plugin->engine crossings tagged
+
+
+def test_html_light_zone_treatment():
+    out = render.to_html(_zoned_hub_graph())
+    # faint, borderless compound parents (no '一堆方框'): transparent fill, soft label
+    assert "'background-opacity':0.04" in out
+    assert "data(zonecolor)" in out
+    assert '"zonecolor": "#4e79a7"' in out  # plugin zone tint
+    assert '"zonecolor": "#f28e2b"' in out  # engine zone tint
+
+
+def test_html_no_zone_no_toggle_but_sized():
+    # backward compat: a no-zone graph renders with NO view toggle + NO zone parents,
+    # but STILL gets degree sizing.
+    out = render.to_html(_slice())
+    assert "id='view'" not in out           # toggle hidden for plain graphs
+    assert "__zone_" not in out
+    assert "const HAS_ZONES=false" in out
+    assert "mapData(deg,0," in out          # degree sizing still applies
+
+
+def test_html_redesign_deterministic():
+    # two renders of the zoned + a plain graph are byte-identical (no random/time)
+    assert render.to_html(_zoned_hub_graph()) == render.to_html(_zoned_hub_graph())
+    assert render.to_html(_slice()) == render.to_html(_slice())
+
+
+def test_html_degmax_token_fully_substituted():
+    # invalid-cytoscape guard: mapData() parses its mapper string literally and CANNOT
+    # read a JS const, so every `DEGMAX` token in the style mappers MUST be replaced with
+    # the literal int. Both the base (18,64) and hub (34,80) mappers share the prefix
+    # `mapData(deg,0,DEGMAX,` — assert no literal DEGMAX survives anywhere in the style.
+    for g in (_zoned_hub_graph(), _slice()):
+        out = render.to_html(g)
+        style = out.split("const DEGMAX=", 1)[1]  # everything AFTER the const decl
+        assert "mapData(deg,0,DEGMAX" not in style   # no un-substituted mapper
+        assert "mapData(deg,0," in style             # mappers still present
+        # both size ramps survive substitution (base + hub size bump)
+        assert ",18,64)" in style and ",34,80)" in style
+
+
+def test_engine_view_hide_logic_leaves_no_dangling_edge():
+    """Regression guard for the engine-view JS contract (render.py applyView('engine')).
+
+    The JS hides (a) pure plugin->plugin edges and (b) plugin nodes with no crossing
+    edge. A VISIBLE edge must never reference a HIDDEN node, or cose's eles re-layout
+    can choke. A plugin node only gets hidden when ALL its incident edges are
+    plugin->plugin (hence already hidden), so no visible edge can dangle. This mirrors
+    that invariant in Python so a future JS change that breaks it fails a test.
+    """
+    g = _zoned_hub_graph()
+    # add an isolated plugin node wired ONLY into other plugin nodes (no crossing edge)
+    g.add_node(Node("p_iso", "class", label="iso", attrs={"zone": "plugin", "cluster": "plugin"}))
+    g.add_edge(Edge("p_iso", "p1", "uses_type"))
+    zone = {n.id: n.attrs.get("zone") for n in g.nodes.values()}
+
+    def cross(e):
+        return zone[e.src] == "plugin" and zone[e.dst] == "engine"
+
+    hidden_edges = {(e.src, e.dst) for e in g.edges
+                    if zone[e.src] == "plugin" and zone[e.dst] == "plugin"}
+    hidden_nodes = {
+        nid for nid in g.nodes
+        if zone[nid] == "plugin"
+        and not any(cross(e) for e in g.edges if nid in (e.src, e.dst))
+    }
+    assert "p_iso" in hidden_nodes  # the iso plugin node IS hidden
+    for e in g.edges:
+        if (e.src, e.dst) in hidden_edges:  # edge itself hidden -> can't dangle
+            continue
+        assert e.src not in hidden_nodes and e.dst not in hidden_nodes

@@ -38,6 +38,16 @@ uv run --python 3.12 "$MR/scripts/manyscan/scan.py" export  <seed> --store <dir|
 `--store` takes a hub alias, a store dir, or a `source.db` path; or use `--root <repo>`.
 Also available as the `/mr-deps` command.
 
+**Plugin↔engine boundary (symbol-level)** — `scan.py plugin-boundary --root <repo>
+--plugin-root <rel>` (or `/mr-boundary`): for a coupled engine plugin, deterministically
+separate INTERNAL deps from dependencies ON the engine, at the SYMBOL level, and mark the
+engine interface. Edges (`extends`/`implements`/`uses_type`) resolve with a confidence
+(`unique`/`ambiguous`/`unresolved` — never silently picked); engine is a depth-1 sink.
+`--view internal|engine|both`; `--format html` is ONE page (force layout, node size =
+fan-in/hubs big, bridges+hubs highlighted, faint plugin/engine zones, in-page view toggle,
+tap→path). Pass `--plugin-root` explicitly (markers aren't indexed); `--plugin-root ""` =
+whole index is the plugin. Use it to find split seams + the engine API surface to abstract.
+
 **Visual:** `--format html > deps.html` emits ONE self-contained file (cytoscape force
 layout, pan/zoom/search, color-by-kind, dashed-red = bounded/capped node; **tap any node to
 see its file path**) — open in any browser, no install. `mermaid`/`dot` render in VS Code /
