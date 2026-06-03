@@ -101,13 +101,27 @@ def to_dot(g: Graph) -> str:
     return "\n".join(lines) + "\n"
 
 
-# --- self-contained interactive HTML (cytoscape.js, force-directed cose) -----
+# --- self-contained interactive HTML (cytoscape.js + fcose force layout) -----
 # A single file that opens in any browser — no server/node/build. Built to scale
-# to MANY nodes (engine-level bounded slices): force layout + pan/zoom + search +
-# color-by-kind, with the bounded-truncation banner kept visible. For very large
-# slices, roll up to dir/module first (manyscan's real scale lever).
-_ASSET_LIB = Path(__file__).resolve().parent.parent / "assets" / "cytoscape.min.js"
+# to MANY nodes (dependency-level bounded slices): a FAST force-directed layout
+# (cytoscape-fcose) + pan/zoom + search + color-by-kind, with the bounded-truncation
+# banner kept visible. For very large slices, roll up to dir/module first (manyscan's
+# real scale lever). fcose handles compound parents (the faint zone boxes) well and
+# lays out hundreds of nodes far faster than cytoscape's built-in cose.
+_ASSET_DIR = Path(__file__).resolve().parent.parent / "assets"
+_ASSET_LIB = _ASSET_DIR / "cytoscape.min.js"
 _CDN_LIB = "https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"
+# fcose dependency chain (UMD), inlined IN ORDER after cytoscape: layout-base ←
+# cose-base ← cytoscape-fcose. Each is vendored offline; CDN fallback per-file.
+_ASSET_FCOSE = [_ASSET_DIR / f for f in ("layout-base.js", "cose-base.js", "cytoscape-fcose.js")]
+_CDN_FCOSE = ["https://cdn.jsdelivr.net/npm/layout-base/layout-base.js",
+              "https://cdn.jsdelivr.net/npm/cose-base/cose-base.js",
+              "https://cdn.jsdelivr.net/npm/cytoscape-fcose/cytoscape-fcose.js"]
+# Shared fcose layout literal — deterministic (randomize:false ⇒ spectral init),
+# non-animated, compound-aware. Used for both the initial layout and view re-layouts.
+_FCOSE_LAYOUT = ("{name:'fcose', quality:'default', animate:false, randomize:false, "
+                 "nodeDimensionsIncludeLabels:true, packComponents:true, "
+                 "nodeRepulsion:9000, idealEdgeLength:90, padding:30")
 _PALETTE = ["#4e79a7", "#f28e2b", "#59a14f", "#e15759", "#76b7b2",
             "#edc948", "#b07aa1", "#ff9da7", "#9c755f", "#9d7660"]
 
@@ -149,7 +163,7 @@ const cy = cytoscape({
       'border-width':0,'shape':'round-rectangle','label':'data(label)','text-valign':'top','text-halign':'left',
       'font-size':'16px','font-weight':'600','color':'#9aa6b2','text-opacity':0.6,'padding':'30px','events':'no'}}
   ],
-  layout: {name:'cose', animate:false, padding:30, nodeRepulsion:9000, idealEdgeLength:90, nodeOverlap:8},
+  layout: __FCOSE__},
   wheelSensitivity: 0.2
 });
 // seams: edges crossing a cluster boundary (the cuts an SRP split would make)
@@ -183,9 +197,9 @@ q.addEventListener('input', function(){
     cy.animate({fit:{eles:hits, padding:80}},{duration:300});
   });
 });
-// (5) ONE-PAGE VIEW TOGGLE: internal | engine | both — show/hide only (deterministic,
-// single file). 'internal' = plugin-only; 'engine' = boundary plugin + engine + cross
-// edges; 'both' = everything. Re-layouts the visible eles + fits.
+// (5) ONE-PAGE VIEW TOGGLE: internal | dependency | both — show/hide only (deterministic,
+// single file). 'internal' = target-only; 'dependency' = boundary target + dependency +
+// cross edges; 'both' = everything. Re-layouts the visible eles + fits.
 const viewSel = document.getElementById('view');
 const HASZONES = (typeof HAS_ZONES !== 'undefined') && HAS_ZONES;
 if(!HASZONES && viewSel){ viewSel.parentNode.style.display = 'none'; }
@@ -195,25 +209,24 @@ function applyView(v){
   cy.batch(function(){
     cy.elements().removeClass('vhide');
     if(v==='internal'){
-      const eng = realNodes().filter(function(n){ return n.data('zone')==='engine'; });
-      eng.addClass('vhide');
-      eng.connectedEdges().addClass('vhide');
-    } else if(v==='engine'){
-      // hide pure plugin->plugin edges; keep cross edges + their plugin endpoints + engine nodes
-      const ppEdges = cy.edges().filter(function(ed){
-        return ed.source().data('zone')==='plugin' && ed.target().data('zone')==='plugin';
+      const dep = realNodes().filter(function(n){ return n.data('zone')==='dependency'; });
+      dep.addClass('vhide');
+      dep.connectedEdges().addClass('vhide');
+    } else if(v==='dependency'){
+      // hide pure target->target edges; keep cross edges + their target endpoints + dependency nodes
+      const ttEdges = cy.edges().filter(function(ed){
+        return ed.source().data('zone')==='target' && ed.target().data('zone')==='target';
       });
-      ppEdges.addClass('vhide');
-      // plugin nodes with no crossing edge are not on the boundary -> hide
-      realNodes().filter(function(n){ return n.data('zone')==='plugin'; }).forEach(function(n){
+      ttEdges.addClass('vhide');
+      // target nodes with no crossing edge are not on the boundary -> hide
+      realNodes().filter(function(n){ return n.data('zone')==='target'; }).forEach(function(n){
         const hasCross = n.connectedEdges().some(function(ed){ return ed.data('cross')===1; });
         if(!hasCross){ n.addClass('vhide'); }
       });
     }
   });
   const vis = cy.elements().not('.vhide');
-  cy.layout({name:'cose', animate:false, padding:30, nodeRepulsion:9000,
-             idealEdgeLength:90, nodeOverlap:8, eles:vis}).run();
+  cy.layout(__FCOSE__, eles:vis}).run();
   cy.fit(cy.elements().not('.vhide'), 30);
 }
 if(HASZONES && viewSel){
@@ -268,9 +281,11 @@ def _importance(g: Graph) -> dict[str, dict]:
 def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "both") -> str:
     """Render a Graph as ONE self-contained interactive HTML file (cytoscape.js).
 
-    The cytoscape lib is inlined from the vendored asset (offline; CDN fallback if
-    the asset is missing), as is the graph data — so the output is a single file
-    that renders a force-directed, zoomable, searchable graph in any browser.
+    The cytoscape lib AND the cytoscape-fcose layout chain are inlined from the
+    vendored assets (offline; per-file CDN fallback if an asset is missing), as is
+    the graph data — so the output is a single file that renders a fast force-directed
+    (fcose), zoomable, searchable graph in any browser. fcose is deterministic
+    (randomize:false) and far faster than cytoscape's built-in cose on large slices.
     """
     # Color by cohesive cluster (attrs['cluster']) when present (SRP view), else by kind.
     clustered = any(n.attrs.get("cluster") for n in g.nodes.values())
@@ -286,13 +301,15 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
         return n.label or n.id
 
     # Light ZONE grouping (symbol-boundary view): when any node carries a
-    # plugin/engine zone, place every real node inside one of two cytoscape
+    # target/dependency zone, place every real node inside one of two cytoscape
     # COMPOUND PARENT boxes — but the parents are rendered FAINT (transparent fill,
     # no border, just a soft top-left label) and are non-grabbable / events:no, so
     # they group the layout without the heavy nested-box look or hijacking pan/drag.
-    # Backward compatible: a graph with no 'zone' emits no parent nodes.
-    _ZONES = ("plugin", "engine")
-    _ZONE_COLOR = {"plugin": "#4e79a7", "engine": "#f28e2b"}
+    # fcose lays compound parents out cleanly. The dependency box may hold MANY
+    # distinct dependency sources. Backward compatible: a graph with no 'zone' emits
+    # no parent nodes.
+    _ZONES = ("target", "dependency")
+    _ZONE_COLOR = {"target": "#4e79a7", "dependency": "#f28e2b"}
     zoned = any(n.attrs.get("zone") in _ZONES for n in g.nodes.values())
 
     # (2)(3) Importance: degree-sizing for ALL graphs + hub/bridge highlight markers.
@@ -300,7 +317,7 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
     degmax = max([1] + [v["deg"] for v in imp.values()])
 
     elements: list[dict] = []
-    if zoned:  # plugin before engine, deterministic; faint + non-grabbable parents
+    if zoned:  # target before dependency, deterministic; faint + non-grabbable parents
         for z in _ZONES:
             elements.append({
                 "data": {"id": f"__zone_{z}__", "label": z, "zone": z,
@@ -336,11 +353,11 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
             ed["conf"] = conf
         if e.key() in bridge_keys:
             ed["bridge"] = 1
-        # (5) tag plugin->engine crossings so the engine view can keep just them.
+        # (5) tag target->dependency crossings so the dependency view can keep just them.
         if zoned:
             s, d = g.nodes.get(e.src), g.nodes.get(e.dst)
             if (s is not None and d is not None
-                    and s.attrs.get("zone") == "plugin" and d.attrs.get("zone") == "engine"):
+                    and s.attrs.get("zone") == "target" and d.attrs.get("zone") == "dependency"):
                 ed["cross"] = 1
         elements.append({"data": ed})
     data_json = json.dumps(elements, ensure_ascii=False)
@@ -358,20 +375,31 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
     meta = f"{len(g.nodes)} nodes &middot; {len(g.edges)} edges"
 
     # (5) one-page view toggle (only meaningful for zoned graphs; JS hides it otherwise).
-    view = view if view in ("both", "internal", "engine") else "both"
+    view = view if view in ("both", "internal", "dependency") else "both"
     view_opts = "".join(
         f"<option value='{v}'{' selected' if v == view else ''}>{v}</option>"
-        for v in ("both", "internal", "engine")
+        for v in ("both", "internal", "dependency")
     )
     view_ctl = (
         "<span class='vc'>view <select id='view'>" + view_opts + "</select></span>"
         if zoned else ""
     )
 
-    if _ASSET_LIB.is_file():
-        lib = "<script>" + _ASSET_LIB.read_text(encoding="utf-8") + "</script>"
-    else:
-        lib = f'<script src="{_CDN_LIB}"></script>'
+    # Inline cytoscape FIRST, then the fcose dependency chain (layout-base ←
+    # cose-base ← cytoscape-fcose) IN ORDER, each from its vendored asset (offline)
+    # with a per-file CDN fallback when the asset is missing — then register fcose
+    # before the bootstrap runs. Positions are computed in-browser, so the emitted
+    # bytes (static asset text + DATA) stay deterministic.
+    def _script_for(asset: Path, cdn: str) -> str:
+        if asset.is_file():
+            return "<script>" + asset.read_text(encoding="utf-8") + "</script>"
+        return f'<script src="{cdn}"></script>'
+
+    lib = _script_for(_ASSET_LIB, _CDN_LIB)
+    for asset, cdn in zip(_ASSET_FCOSE, _CDN_FCOSE):
+        lib += _script_for(asset, cdn)
+    lib += ("<script>if(window.cytoscape && window.cytoscapeFcose)"
+            " cytoscape.use(window.cytoscapeFcose);</script>")
 
     head = (
         "<!doctype html><html><head><meta charset='utf-8'>"
@@ -405,7 +433,11 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
     )
     # mapData() parses its mapper string literally (it can't read a JS const), so the
     # DEGMAX token inside the style mappers is substituted with the actual integer.
-    bootstrap = _HTML_BOOTSTRAP.replace("mapData(deg,0,DEGMAX,", f"mapData(deg,0,{degmax},")
+    # __FCOSE__ is the (open) fcose layout literal — closed by '}' at the initial
+    # layout and by ', eles:vis}' in applyView — substituted as one canonical place.
+    bootstrap = (_HTML_BOOTSTRAP
+                 .replace("mapData(deg,0,DEGMAX,", f"mapData(deg,0,{degmax},")
+                 .replace("__FCOSE__", _FCOSE_LAYOUT))
     script = "<script>" + consts + bootstrap + "</script>"
     return head + lib + script + "</body></html>"
 

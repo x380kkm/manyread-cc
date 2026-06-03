@@ -17,6 +17,7 @@ Every result is grounded in manyread's real symbols/edges + import parsing, and 
 ## When to use
 - "what does `<X>` depend on?" / "who depends on `<X>`?" (impact analysis)
 - module/dir boundaries, coupling, instability, cycles, cut points (refactoring)
+- target↔dependency boundary: separate the code analyzed from what it depends on
 
 ## Mental model
 `seed` (symbol / file / dir / keyword) → **bounded, level-complete** dependency
@@ -38,15 +39,18 @@ uv run --python 3.12 "$MR/scripts/manyscan/scan.py" export  <seed> --store <dir|
 `--store` takes a hub alias, a store dir, or a `source.db` path; or use `--root <repo>`.
 Also available as the `/mr-deps` command.
 
-**Plugin↔engine boundary (symbol-level)** — `scan.py plugin-boundary --root <repo>
---plugin-root <rel>` (or `/mr-boundary`): for a coupled engine plugin, deterministically
-separate INTERNAL deps from dependencies ON the engine, at the SYMBOL level, and mark the
-engine interface. Edges (`extends`/`implements`/`uses_type`) resolve with a confidence
-(`unique`/`ambiguous`/`unresolved` — never silently picked); engine is a depth-1 sink.
-`--view internal|engine|both`; `--format html` is ONE page (force layout, node size =
-fan-in/hubs big, bridges+hubs highlighted, faint plugin/engine zones, in-page view toggle,
-tap→path). Pass `--plugin-root` explicitly (markers aren't indexed); `--plugin-root ""` =
-whole index is the plugin. Use it to find split seams + the engine API surface to abstract.
+**Target↔dependency boundary (symbol-level)** — `scan.py boundary --root <repo>
+--target-root <rel>` (or `/mr-boundary`): for a coupled body of code, deterministically
+separate INTERNAL deps (the TARGET — the code analyzed) from what it DEPENDS ON (its
+dependencies, possibly MANY distinct sources), at the SYMBOL level, and mark the
+dependency interface. Edges (`extends`/`implements`/`uses_type`) resolve with a confidence
+(`unique`/`ambiguous`/`unresolved` — never silently picked); the dependency side is a
+depth-1 sink. `--view internal|dependency|both`; `--format html` is ONE page (fast fcose
+force layout, node size = fan-in/hubs big, bridges+hubs highlighted, faint target/dependency
+zones, in-page view toggle, tap→path). Pass `--target-root` explicitly (markers aren't
+indexed); `--target-root ""` = whole index is the target; `--dep-root` is repeatable for
+multiple dependency sources. Use it to find split seams + the dependency API surface to
+abstract. (The old `plugin-boundary` / `--plugin-root` / `--engine-root` names still work.)
 
 **Visual:** `--format html > deps.html` emits ONE self-contained file (cytoscape force
 layout, pan/zoom/search, color-by-kind, dashed-red = bounded/capped node; **tap any node to

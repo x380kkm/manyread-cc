@@ -66,9 +66,12 @@ def test_metrics_text_summary_and_warning():
 def test_to_html_self_contained_and_interactive():
     out = render.to_html(_slice())
     assert out.startswith("<!doctype html>") and out.rstrip().endswith("</html>")
-    # cytoscape lib inlined from the vendored asset (offline, single file)
+    # cytoscape lib + fcose chain inlined from the vendored assets (offline, single file)
     assert "cytoscape" in out and len(out) > 300_000
-    assert "name:'cose'" in out          # force-directed layout
+    assert "name:'fcose'" in out         # fast force-directed layout (fcose)
+    assert "randomize:false" in out      # deterministic spectral init
+    assert "cytoscapeFcose" in out       # fcose UMD inlined
+    assert "cytoscape.use(" in out       # fcose registered
     assert "a.py" in out and "b.py" in out
     assert "+7⤳" in out                  # frontier node tagged in its label
     assert "7 deps elided" in out        # honest truncation banner
@@ -115,16 +118,16 @@ def test_render_unknown_format_raises():
 def _zoned_hub_graph():
     """A tiny zoned graph with a clear hub + a bridge edge.
 
-    plugin: p1,p2,p3 are mutually wired (a 3-cycle so none is a leaf) and all
-    -> hub h (engine); hub h -> leaf l (engine). The edge h->l is the unique
+    target: p1,p2,p3 are mutually wired (a 3-cycle so none is a leaf) and all
+    -> hub h (dependency); hub h -> leaf l (dependency). The edge h->l is the unique
     articulation BRIDGE (removing it splits l off). h has fan_in 3.
     """
     g = Graph()
     for nid in ("p1", "p2", "p3"):
-        g.add_node(Node(nid, "class", label=nid, attrs={"zone": "plugin", "cluster": "plugin"}))
-    g.add_node(Node("h", "class", label="Hub", attrs={"zone": "engine", "cluster": "engine"}))
-    g.add_node(Node("l", "class", label="Leaf", attrs={"zone": "engine", "cluster": "engine"}))
-    # plugin 3-cycle: p1->p2->p3->p1 (keeps each plugin node multiply-connected)
+        g.add_node(Node(nid, "class", label=nid, attrs={"zone": "target", "cluster": "target"}))
+    g.add_node(Node("h", "class", label="Hub", attrs={"zone": "dependency", "cluster": "dependency"}))
+    g.add_node(Node("l", "class", label="Leaf", attrs={"zone": "dependency", "cluster": "dependency"}))
+    # target 3-cycle: p1->p2->p3->p1 (keeps each target node multiply-connected)
     g.add_edge(Edge("p1", "p2", "uses_type"))
     g.add_edge(Edge("p2", "p3", "uses_type"))
     g.add_edge(Edge("p3", "p1", "uses_type"))
@@ -172,13 +175,13 @@ def test_html_drag_pan_config():
 
 
 def test_html_view_toggle_one_page():
-    out = render.to_html(_zoned_hub_graph(), view="engine")
+    out = render.to_html(_zoned_hub_graph(), view="dependency")
     assert "id='view'" in out               # single in-page view toggle
     assert "<option value='internal'>" in out
-    assert "<option value='engine' selected>" in out  # initial state threaded from view=
+    assert "<option value='dependency' selected>" in out  # initial state threaded from view=
     assert "<option value='both'>" in out
     assert "applyView" in out               # client-side show/hide handler
-    assert '"cross": 1' in out              # plugin->engine crossings tagged
+    assert '"cross": 1' in out              # target->dependency crossings tagged
 
 
 def test_html_light_zone_treatment():
@@ -186,8 +189,8 @@ def test_html_light_zone_treatment():
     # faint, borderless compound parents (no '一堆方框'): transparent fill, soft label
     assert "'background-opacity':0.04" in out
     assert "data(zonecolor)" in out
-    assert '"zonecolor": "#4e79a7"' in out  # plugin zone tint
-    assert '"zonecolor": "#f28e2b"' in out  # engine zone tint
+    assert '"zonecolor": "#4e79a7"' in out  # target zone tint
+    assert '"zonecolor": "#f28e2b"' in out  # dependency zone tint
 
 
 def test_html_no_zone_no_toggle_but_sized():
@@ -220,32 +223,32 @@ def test_html_degmax_token_fully_substituted():
         assert ",18,64)" in style and ",34,80)" in style
 
 
-def test_engine_view_hide_logic_leaves_no_dangling_edge():
-    """Regression guard for the engine-view JS contract (render.py applyView('engine')).
+def test_dependency_view_hide_logic_leaves_no_dangling_edge():
+    """Regression guard for the dependency-view JS contract (render.py applyView('dependency')).
 
-    The JS hides (a) pure plugin->plugin edges and (b) plugin nodes with no crossing
-    edge. A VISIBLE edge must never reference a HIDDEN node, or cose's eles re-layout
-    can choke. A plugin node only gets hidden when ALL its incident edges are
-    plugin->plugin (hence already hidden), so no visible edge can dangle. This mirrors
+    The JS hides (a) pure target->target edges and (b) target nodes with no crossing
+    edge. A VISIBLE edge must never reference a HIDDEN node, or fcose's eles re-layout
+    can choke. A target node only gets hidden when ALL its incident edges are
+    target->target (hence already hidden), so no visible edge can dangle. This mirrors
     that invariant in Python so a future JS change that breaks it fails a test.
     """
     g = _zoned_hub_graph()
-    # add an isolated plugin node wired ONLY into other plugin nodes (no crossing edge)
-    g.add_node(Node("p_iso", "class", label="iso", attrs={"zone": "plugin", "cluster": "plugin"}))
+    # add an isolated target node wired ONLY into other target nodes (no crossing edge)
+    g.add_node(Node("p_iso", "class", label="iso", attrs={"zone": "target", "cluster": "target"}))
     g.add_edge(Edge("p_iso", "p1", "uses_type"))
     zone = {n.id: n.attrs.get("zone") for n in g.nodes.values()}
 
     def cross(e):
-        return zone[e.src] == "plugin" and zone[e.dst] == "engine"
+        return zone[e.src] == "target" and zone[e.dst] == "dependency"
 
     hidden_edges = {(e.src, e.dst) for e in g.edges
-                    if zone[e.src] == "plugin" and zone[e.dst] == "plugin"}
+                    if zone[e.src] == "target" and zone[e.dst] == "target"}
     hidden_nodes = {
         nid for nid in g.nodes
-        if zone[nid] == "plugin"
+        if zone[nid] == "target"
         and not any(cross(e) for e in g.edges if nid in (e.src, e.dst))
     }
-    assert "p_iso" in hidden_nodes  # the iso plugin node IS hidden
+    assert "p_iso" in hidden_nodes  # the iso target node IS hidden
     for e in g.edges:
         if (e.src, e.dst) in hidden_edges:  # edge itself hidden -> can't dangle
             continue

@@ -59,9 +59,9 @@ def synth_store(tmp_path) -> Path:
     return db_path
 
 
-# --- symbol-level plugin↔engine boundary fixture ----------------------------
-# plugin/Foo.cpp (INTERNAL) depends on engine/{Core.h,Actor.h} (EXTERNAL); a
-# *.uplugin marker drives plugin-root autodetect. `Dup` exists in TWO engine
+# --- symbol-level target↔dependency boundary fixture ------------------------
+# plugin/Foo.cpp (TARGET) depends on engine/{Core.h,Actor.h} (DEPENDENCY); a
+# *.uplugin marker drives target-root autodetect. `Dup` exists in TWO dependency
 # files to exercise ambiguous (>1) resolution.
 _B_FILES = [
     (1, "plugin/X.uplugin", ".uplugin", "{}"),
@@ -71,11 +71,11 @@ _B_FILES = [
 ]
 # (id, file_id, name, kind, start_line, end_line, parent_id)
 _B_SYMS = [
-    (1, 2, "Foo", "class", 1, 1, None),       # plugin
-    (2, 4, "Actor", "class", 1, 1, None),      # engine
-    (3, 3, "Core", "class", 1, 1, None),       # engine
-    (4, 3, "Dup", "class", 2, 2, None),        # engine (dup #1, Core.h)
-    (5, 4, "Dup", "class", 2, 2, None),        # engine (dup #2, Actor.h)
+    (1, 2, "Foo", "class", 1, 1, None),       # target
+    (2, 4, "Actor", "class", 1, 1, None),      # dependency
+    (3, 3, "Core", "class", 1, 1, None),       # dependency
+    (4, 3, "Dup", "class", 2, 2, None),        # dependency (dup #1, Core.h)
+    (5, 4, "Dup", "class", 2, 2, None),        # dependency (dup #2, Actor.h)
 ]
 # (id, file_id, src_symbol_id, dst_symbol_id, dst_name, relation)
 _B_EDGES = [
@@ -88,8 +88,8 @@ _B_EDGES = [
 
 @pytest.fixture
 def boundary_store(tmp_path) -> Path:
-    """A symbol-level plugin↔engine store: one plugin symbol with direct/unique/
-    unresolved/ambiguous edges into the engine; returns its source.db path."""
+    """A symbol-level target↔dependency store: one target symbol with direct/unique/
+    unresolved/ambiguous edges into its dependencies; returns its source.db path."""
     _, mr_db = stores.manyread_lib()
     store = tmp_path / "manyread"
     store.mkdir(parents=True)
@@ -127,8 +127,8 @@ _NM_FILES = [
     (2, "Engine/Source/Actor.h", ".h", "class AActor {};\n"),
 ]
 _NM_SYMS = [
-    (1, 1, "Foo", "class", 1, 1, None),     # would-be plugin
-    (2, 2, "AActor", "class", 1, 1, None),  # would-be engine
+    (1, 1, "Foo", "class", 1, 1, None),     # would-be target
+    (2, 2, "AActor", "class", 1, 1, None),  # would-be dependency
 ]
 _NM_EDGES = [
     (1, 1, 1, 2, None, "extends"),          # Foo -> AActor
@@ -139,8 +139,8 @@ _NM_EDGES = [
 def cpp_no_marker_store(tmp_path) -> Path:
     """A cpp index with NO *.uplugin/*.Build.cs marker indexed (the real-index case).
 
-    ``boundary.has_module_markers`` must be False here, so plugin-root autodetect is
-    untrustworthy and the CLI must refuse without an explicit --plugin-root.
+    ``boundary.has_module_markers`` must be False here, so target-root autodetect is
+    untrustworthy and the CLI must refuse without an explicit --target-root.
     """
     _, mr_db = stores.manyread_lib()
     store = tmp_path / "manyread"

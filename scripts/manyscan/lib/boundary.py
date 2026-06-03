@@ -2,25 +2,26 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""manyscan.lib.boundary — SYMBOL-LEVEL plugin↔engine dependency boundary.
+"""manyscan.lib.boundary — SYMBOL-LEVEL target↔dependency boundary.
 
 File-level deps are useless for C++ refactoring; this module works at the symbol
-level. It classifies every symbol into a ZONE (``plugin`` = internal, the code
-you own / ``engine`` = external, the code you depend on), resolves each symbol
-edge (``extends`` / ``implements`` / ``uses_type``) to a concrete target WITH a
-soundness CONFIDENCE (never silently picking one of many by-name candidates),
-and expands a depth-1 *engine-sink* slice: plugin symbols plus their one-layer
-engine interface, regardless of how large the engine index is.
+level. It classifies every symbol into a ZONE (``target`` = the code you are
+analyzing / ``dependency`` = what it depends on — and the dependency side may
+hold MANY distinct dependency sources), resolves each symbol edge (``extends`` /
+``implements`` / ``uses_type``) to a concrete target WITH a soundness CONFIDENCE
+(never silently picking one of many by-name candidates), and expands a depth-1
+*dependency-sink* slice: target symbols plus their one-layer dependency interface,
+regardless of how large the dependency index is.
 
 Two derived views:
-  * INTERNAL coupling — the plugin-zone subgraph (plugin→plugin edges only),
+  * INTERNAL coupling — the target-zone subgraph (target→target edges only),
     for split seams / SCC.
-  * ENGINE surface — the bipartite boundary (plugin symbols that reach engine) →
-    their engine targets, optionally rolled up by engine module.
+  * DEPENDENCY surface — the bipartite boundary (target symbols that reach a
+    dependency) → their dependency targets, optionally rolled up by module.
 
 DETERMINISM is mandatory: every query is total-ordered, every set iterated
 sorted, counts are integers (no floats here), and ambiguous resolution always
-yields an ``ext:`` node — so the same index + same roots ⇒ byte-identical output.
+yields a ``dep:`` node — so the same index + same roots ⇒ byte-identical output.
 """
 from __future__ import annotations
 
@@ -31,8 +32,8 @@ from dataclasses import dataclass
 from lib import deps, rollup
 from lib.graph import Budget, Edge, Evidence, Graph, Node
 
-PLUGIN = "plugin"
-ENGINE = "engine"
+TARGET = "target"
+DEPENDENCY = "dependency"
 
 # UE export macros (e.g. MATBP2FP_API) parse as a leading type_identifier on a
 # declaration; they are NOT real types — skip them as boundary noise.
@@ -48,16 +49,17 @@ _NORM = deps.PathIndex._norm
 # --- zoning ------------------------------------------------------------------
 @dataclass(frozen=True)
 class Zoning:
-    """How to split symbols into the plugin (internal) and engine (external) zones.
+    """How to split symbols into the target (analyzed) and dependency zones.
 
-    ``plugin_root`` is the normalized, trailing-slash-free directory prefix that
-    defines INTERNAL (``""`` means the whole repo is plugin). ``engine_roots`` are
-    LABEL/grouping hints for the engine side only — they NEVER change the internal
-    bit (a symbol is engine iff it is not under ``plugin_root``).
+    ``target_root`` is the normalized, trailing-slash-free directory prefix that
+    defines the TARGET (``""`` means the whole repo is the target). ``dep_roots``
+    are LABEL/grouping hints for the dependency side only — they NEVER change the
+    target bit (a symbol is a dependency iff it is not under ``target_root``). The
+    dependency side may aggregate MULTIPLE distinct dependency sources, one per hint.
     """
 
-    plugin_root: str
-    engine_roots: tuple[str, ...] = ()  # normalized, sorted longest-first
+    target_root: str
+    dep_roots: tuple[str, ...] = ()  # normalized, sorted longest-first
 
 
 def norm_root(p: str) -> str:
@@ -65,14 +67,14 @@ def norm_root(p: str) -> str:
     return _NORM(p or "").rstrip("/")
 
 
-def detect_plugin_root(store) -> str:
-    """Autodetect the plugin root: the shortest module root (``*.uplugin`` / ``*.Build.cs`` / …).
+def detect_target_root(store) -> str:
+    """Autodetect the target root: the shortest module root (``*.uplugin`` / ``*.Build.cs`` / …).
 
     Picks ``min`` by ``(len, str)`` for determinism; ``""`` (whole repo) if no
     module markers are present. NOTE: ``""`` is AMBIGUOUS — it is also the legitimate
     repo-root marker. Callers that must NOT silently classify the whole repo (incl.
-    the engine) as plugin should use :func:`has_module_markers` to tell the two
-    cases apart, or supply an explicit ``plugin_root``.
+    the dependencies) as target should use :func:`has_module_markers` to tell the two
+    cases apart, or supply an explicit ``target_root``.
     """
     roots = rollup.module_roots(store)
     if not roots:
@@ -83,54 +85,55 @@ def detect_plugin_root(store) -> str:
 def has_module_markers(store) -> bool:
     """True iff the index contains ANY module-marker file (``*.uplugin`` / ``*.Build.cs`` / …).
 
-    When this is False, :func:`detect_plugin_root` cannot tell the plugin from the
-    engine (the L1 indexer only stores configured source extensions, so ``.uplugin``
-    markers are typically absent) — so autodetect must NOT be trusted and an explicit
-    ``--plugin-root`` is required. This avoids the SILENT, UNSOUND classification of
-    the entire repo (engine included) as plugin.
+    When this is False, :func:`detect_target_root` cannot tell the target from its
+    dependencies (the L1 indexer only stores configured source extensions, so
+    ``.uplugin`` markers are typically absent) — so autodetect must NOT be trusted
+    and an explicit ``--target-root`` is required. This avoids the SILENT, UNSOUND
+    classification of the entire repo (dependencies included) as the target.
     """
     return bool(rollup.module_roots(store))
 
 
-def make_zoning(store, plugin_root: str | None, engine_roots: list[str] | None) -> Zoning:
-    """Build a :class:`Zoning`, autodetecting ``plugin_root`` when not given.
+def make_zoning(store, target_root: str | None, dep_roots: list[str] | None) -> Zoning:
+    """Build a :class:`Zoning`, autodetecting ``target_root`` when not given.
 
-    ``engine_roots`` are normalized, de-duplicated, and sorted LONGEST-FIRST so
-    that the most specific engine module wins in :func:`engine_label`.
+    ``dep_roots`` are normalized, de-duplicated, and sorted LONGEST-FIRST so that
+    the most specific dependency module wins in :func:`dependency_label`. Multiple
+    distinct dependency sources may be supplied.
     """
-    pr = norm_root(plugin_root) if plugin_root is not None else detect_plugin_root(store)
-    ers = sorted({norm_root(e) for e in (engine_roots or []) if norm_root(e)},
+    pr = norm_root(target_root) if target_root is not None else detect_target_root(store)
+    ers = sorted({norm_root(e) for e in (dep_roots or []) if norm_root(e)},
                  key=lambda r: (-len(r), r))
-    return Zoning(plugin_root=pr, engine_roots=tuple(ers))
+    return Zoning(target_root=pr, dep_roots=tuple(ers))
 
 
 def zone_of_path(path: str | None, z: Zoning) -> str:
-    """Classify a defining file path into ``plugin`` or ``engine`` (sound containment).
+    """Classify a defining file path into ``target`` or ``dependency`` (sound containment).
 
-    A symbol is PLUGIN iff its normalized path equals ``plugin_root`` or starts
-    with ``plugin_root + '/'``. ``plugin_root == ""`` ⇒ everything is plugin.
-    A missing path (no file) is conservatively ENGINE.
+    A symbol is TARGET iff its normalized path equals ``target_root`` or starts
+    with ``target_root + '/'``. ``target_root == ""`` ⇒ everything is target.
+    A missing path (no file) is conservatively a DEPENDENCY.
     """
     if path is None:
-        return ENGINE
+        return DEPENDENCY
     p = _NORM(path)
-    pr = z.plugin_root
+    pr = z.target_root
     if pr == "":
-        return PLUGIN
+        return TARGET
     if p == pr or p.startswith(pr + "/"):
-        return PLUGIN
-    return ENGINE
+        return TARGET
+    return DEPENDENCY
 
 
-def engine_label(path: str, z: Zoning) -> str:
-    """A human label for an engine-side symbol's file: ``<engine_root>::<basename>``.
+def dependency_label(path: str, z: Zoning) -> str:
+    """A human label for a dependency-side symbol's file: ``<dep_root>::<basename>``.
 
-    Uses the longest matching ``engine_root`` prefix (roots are longest-first);
-    falls back to the bare basename when no engine root matches.
+    Uses the longest matching ``dep_root`` prefix (roots are longest-first);
+    falls back to the bare basename when no dependency root matches.
     """
     p = _NORM(path or "")
     base = p.rsplit("/", 1)[-1]
-    for er in z.engine_roots:  # already longest-first
+    for er in z.dep_roots:  # already longest-first
         if er and (p == er or p.startswith(er + "/")):
             return f"{er}::{base}"
     return base
@@ -181,19 +184,19 @@ def symbol_node(store, symbol_id: int, z: Zoning, alias: str | None = None) -> N
 
 
 def external_node(name: str, ambiguity: int = 0) -> Node:
-    """Build an engine/unresolved external :class:`Node` (``ext:<name>``)."""
-    attrs: dict = {"zone": ENGINE, "cluster": ENGINE, "unresolved": True}
+    """Build a dependency/unresolved external :class:`Node` (``dep:<name>``)."""
+    attrs: dict = {"zone": DEPENDENCY, "cluster": DEPENDENCY, "unresolved": True}
     if ambiguity:
         attrs["ambiguity"] = ambiguity
-    return Node(id=f"ext:{name}", kind="external", label=name, attrs=attrs)
+    return Node(id=f"dep:{name}", kind="external", label=name, attrs=attrs)
 
 
 def ambiguous_internal_node(name: str, ambiguity: int) -> Node:
-    """A plugin-zone type known to be internal but not pinned to one symbol
-    (e.g. header definition + forward declaration). Kept INTERNAL, off the engine
-    boundary, but marked ambiguous (never silently resolved to one symbol)."""
+    """A target-zone type known to be internal but not pinned to one symbol
+    (e.g. header definition + forward declaration). Kept in the target zone, off the
+    dependency boundary, but marked ambiguous (never silently resolved to one symbol)."""
     return Node(id=f"amb:{name}", kind="ambiguous", label=name,
-                attrs={"zone": PLUGIN, "cluster": PLUGIN, "ambiguity": ambiguity})
+                attrs={"zone": TARGET, "cluster": TARGET, "ambiguity": ambiguity})
 
 
 # --- resolution with confidence ----------------------------------------------
@@ -201,7 +204,7 @@ def ambiguous_internal_node(name: str, ambiguity: int) -> Node:
 class Resolved:
     """The outcome of resolving one edge: target node id + soundness confidence."""
 
-    target_id: str           # 's<id>' or 'ext:<name>'
+    target_id: str           # 's<id>' or 'dep:<name>'
     confidence: str          # 'direct' | 'unique' | 'ambiguous' | 'unresolved'
     ambiguity: int           # 0, 1, or N
     node: Node
@@ -212,9 +215,9 @@ def resolve_target(store, row, z: Zoning, alias: str | None = None) -> Resolved:
 
     * ``dst_symbol_id`` set → that symbol, ``direct``.
     * else resolve ``dst_name`` globally by exact name:
-        - 0 candidates → ``ext:<name>``, ``unresolved`` (engine / absent).
+        - 0 candidates → ``dep:<name>``, ``unresolved`` (dependency / absent).
         - exactly 1    → that symbol, ``unique``.
-        - N > 1        → ``ext:<name>`` with ``ambiguity=N``, ``ambiguous``
+        - N > 1        → ``dep:<name>`` with ``ambiguity=N``, ``ambiguous``
                          (NEVER silently picks one — C++ by-name is unsound).
     """
     dst_sid = row["dst_symbol_id"]
@@ -224,18 +227,19 @@ def resolve_target(store, row, z: Zoning, alias: str | None = None) -> Resolved:
     cands = sorted(deps.resolve_edge_targets(store, name),
                    key=lambda r: (r["path"], r["id"]))
     if not cands:
-        return Resolved(f"ext:{name}", "unresolved", 0, external_node(name))
+        return Resolved(f"dep:{name}", "unresolved", 0, external_node(name))
     if len(cands) == 1:
         sid = int(cands[0]["id"])
         return Resolved(f"s{sid}", "unique", 1, symbol_node(store, sid, z, alias))
-    # N>1: ambiguous — never pick one. But if EVERY candidate is plugin-zone (e.g. a
-    # header definition + a forward declaration of the plugin's own type), it is
-    # definitely INTERNAL, just not pinned to one symbol → keep it in the plugin zone
-    # (off the engine boundary). Only when a candidate is engine/mixed is it engine.
+    # N>1: ambiguous — never pick one. But if EVERY candidate is target-zone (e.g. a
+    # header definition + a forward declaration of the target's own type), it is
+    # definitely INTERNAL, just not pinned to one symbol → keep it in the target zone
+    # (off the dependency boundary). Only when a candidate is a dependency/mixed is
+    # it a dependency.
     n = len(cands)
-    if {zone_of_path(c["path"], z) for c in cands} == {PLUGIN}:
+    if {zone_of_path(c["path"], z) for c in cands} == {TARGET}:
         return Resolved(f"amb:{name}", "ambiguous", n, ambiguous_internal_node(name, n))
-    return Resolved(f"ext:{name}", "ambiguous", n, external_node(name, n))
+    return Resolved(f"dep:{name}", "ambiguous", n, external_node(name, n))
 
 
 # --- store edge access (no by-src accessor on Store; query conn read-only) ---
@@ -250,24 +254,24 @@ def out_edges(store, symbol_id: int) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-# --- the depth-1 engine-sink symbol graph ------------------------------------
-def _plugin_seed_rows(store, z: Zoning) -> list[sqlite3.Row]:
-    """Every plugin-zone symbol, ordered by ``(path, id)``."""
+# --- the depth-1 dependency-sink symbol graph --------------------------------
+def _target_seed_rows(store, z: Zoning) -> list[sqlite3.Row]:
+    """Every target-zone symbol, ordered by ``(path, id)``."""
     rows = store.conn.execute(
         "SELECT s.id AS id, f.path AS path FROM symbols s "
         "JOIN files f ON f.id = s.file_id ORDER BY f.path, s.id"
     ).fetchall()
-    return [r for r in rows if zone_of_path(r["path"], z) == PLUGIN]
+    return [r for r in rows if zone_of_path(r["path"], z) == TARGET]
 
 
 def build(store, z: Zoning, budget: Budget, alias: str | None = None) -> Graph:
-    """Whole plugin + its depth-1 engine interface, by DIRECT construction.
+    """Whole target + its depth-1 dependency interface, by DIRECT construction.
 
-    Every plugin-zone symbol is included (the plugin is finite and fully wanted —
+    Every target-zone symbol is included (the target is finite and fully wanted —
     NOT bounded-BFS'd from seeds, which would let the budget die on the seeds
-    themselves). Each plugin symbol's boundary edges (``extends``/``implements``/
-    ``uses_type``) are resolved; targets are added — engine/``ext:`` targets as
-    depth-1 SINKS (their own edges are never followed, since only plugin symbols
+    themselves). Each target symbol's boundary edges (``extends``/``implements``/
+    ``uses_type``) are resolved; targets are added — dependency/``dep:`` targets as
+    depth-1 SINKS (their own edges are never followed, since only target symbols
     are iterated). ``budget.max_nodes`` is a safety cap with honest truncation.
     Per-edge confidence on ``g.edge_confidence``; UE ``*_API`` macros are skipped.
     """
@@ -277,17 +281,17 @@ def build(store, z: Zoning, budget: Budget, alias: str | None = None) -> Graph:
     truncated = False
     elided = 0
 
-    plugin_ids: list[str] = []
-    for r in _plugin_seed_rows(store, z):
+    target_ids: list[str] = []
+    for r in _target_seed_rows(store, z):
         if len(g.nodes) >= cap:
             truncated = True
             elided += 1
             continue
         node = symbol_node(store, int(r["id"]), z, alias)
         g.add_node(node)
-        plugin_ids.append(node.id)
+        target_ids.append(node.id)
 
-    for nid in plugin_ids:
+    for nid in target_ids:
         sid = int(nid[1:])
         src_path = g.nodes[nid].attrs.get("path")
         for er in out_edges(store, sid):
@@ -320,52 +324,53 @@ def _carry_confidence(src: Graph, dst: Graph) -> None:
 
 
 def internal_view(g: Graph) -> Graph:
-    """The plugin-zone subgraph (plugin→plugin edges only) for split seams / SCC."""
-    ids = sorted(nid for nid, n in g.nodes.items() if n.attrs.get("zone") == PLUGIN)
+    """The target-zone subgraph (target→target edges only) for split seams / SCC."""
+    ids = sorted(nid for nid, n in g.nodes.items() if n.attrs.get("zone") == TARGET)
     sub = g.subgraph(ids)
     _carry_confidence(g, sub)
     return sub
 
 
 def boundary_nodes(g: Graph) -> list[str]:
-    """Sorted ids of plugin-zone nodes that have at least one out-edge into the engine zone."""
+    """Sorted ids of target-zone nodes that have at least one out-edge into the dependency zone."""
     out: set[str] = set()
     for e in g.edges:
         src = g.nodes.get(e.src)
         dst = g.nodes.get(e.dst)
         if src is None or dst is None:
             continue
-        if src.attrs.get("zone") == PLUGIN and dst.attrs.get("zone") == ENGINE:
+        if src.attrs.get("zone") == TARGET and dst.attrs.get("zone") == DEPENDENCY:
             out.add(e.src)
     return sorted(out)
 
 
-def engine_surface(g: Graph, rollup_modules: bool = False, store=None) -> Graph:
-    """The bipartite boundary surface: plugin boundary symbols → their engine targets.
+def dependency_surface(g: Graph, rollup_modules: bool = False, store=None) -> Graph:
+    """The bipartite boundary surface: target boundary symbols → their dependency targets.
 
-    Keeps only crossing (plugin→engine) edges + their endpoints. When
-    ``rollup_modules`` is set, engine targets are grouped by their module root
-    (via :func:`rollup.module_roots` / ``_module_of``); plugin nodes are kept as-is
-    and crossing edges re-aggregated onto the engine groups.
+    Keeps only crossing (target→dependency) edges + their endpoints. When
+    ``rollup_modules`` is set, dependency targets are grouped by their module root
+    (via :func:`rollup.module_roots` / ``_module_of``); target nodes are kept as-is
+    and crossing edges re-aggregated onto the dependency groups. The dependency side
+    may span MULTIPLE dependency sources.
     """
     bset = set(boundary_nodes(g))
-    keep_plugin = sorted(bset)
-    engine_targets: set[str] = set()
+    keep_target = sorted(bset)
+    dep_targets: set[str] = set()
     crossing: list[Edge] = []
     base_conf = getattr(g, "edge_confidence", {})
     for e in g.edges:
         if e.src in bset:
             dst = g.nodes.get(e.dst)
-            if dst is not None and dst.attrs.get("zone") == ENGINE:
-                engine_targets.add(e.dst)
+            if dst is not None and dst.attrs.get("zone") == DEPENDENCY:
+                dep_targets.add(e.dst)
                 crossing.append(e)
 
     out = Graph()
-    for nid in keep_plugin:
+    for nid in keep_target:
         out.add_node(g.nodes[nid])
 
     if not rollup_modules:
-        for nid in sorted(engine_targets):
+        for nid in sorted(dep_targets):
             out.add_node(g.nodes[nid])
         conf: dict[tuple[str, str, str], str] = {}
         for e in sorted(crossing, key=lambda e: (e.src, e.dst, e.relation)):
@@ -377,21 +382,21 @@ def engine_surface(g: Graph, rollup_modules: bool = False, store=None) -> Graph:
         out.edge_confidence = conf
         return out
 
-    # Rollup engine targets by module root. Reuse rollup.roots_by_len so the
+    # Rollup dependency targets by module root. Reuse rollup.roots_by_len so the
     # ordering (and thus the chosen module) is the SAME total order rollup uses.
     roots = rollup.roots_by_len(store)
     group_of: dict[str, str] = {}
-    for nid in sorted(engine_targets):
+    for nid in sorted(dep_targets):
         node = g.nodes[nid]
         path = node.attrs.get("path") or (node.evidence.path if node.evidence else "") or node.label
-        gid = "engine:" + rollup._module_of(_FakeNode(path), roots)
+        gid = "dep:" + rollup._module_of(_FakeNode(path), roots)
         group_of[nid] = gid
     members: dict[str, int] = {}
     for gid in group_of.values():
         members[gid] = members.get(gid, 0) + 1
     for gid in sorted(members):
         out.add_node(Node(id=gid, kind="external", label=gid,
-                          attrs={"zone": ENGINE, "cluster": ENGINE,
+                          attrs={"zone": DEPENDENCY, "cluster": DEPENDENCY,
                                  "members": members[gid], "unresolved": True}))
     conf = {}
     for e in sorted(crossing, key=lambda e: (e.src, e.dst, e.relation)):
@@ -416,7 +421,7 @@ class _FakeNode:
 # --- crossings (for text/json) -----------------------------------------------
 @dataclass(frozen=True)
 class Crossing:
-    """One plugin→engine boundary crossing: the seam an engine dependency creates."""
+    """One target→dependency boundary crossing: the seam a dependency creates."""
 
     src: str
     dst: str
@@ -426,7 +431,7 @@ class Crossing:
 
 
 def crossings(g: Graph) -> list[Crossing]:
-    """All plugin→engine crossings, sorted by ``(src, dst, relation)``."""
+    """All target→dependency crossings, sorted by ``(src, dst, relation)``."""
     bset = set(boundary_nodes(g))
     conf = getattr(g, "edge_confidence", {})
     out: list[Crossing] = []
@@ -434,7 +439,7 @@ def crossings(g: Graph) -> list[Crossing]:
         if e.src not in bset:
             continue
         dst = g.nodes.get(e.dst)
-        if dst is None or dst.attrs.get("zone") != ENGINE:
+        if dst is None or dst.attrs.get("zone") != DEPENDENCY:
             continue
         out.append(Crossing(
             src=e.src, dst=e.dst, relation=e.relation,

@@ -149,15 +149,15 @@ class CodeAdapter:
 
 class SymbolAdapter:
     """SYMBOL-LEVEL adapter: ``extends``/``implements``/``uses_type`` edges with a
-    depth-1 engine SINK.
+    depth-1 dependency SINK.
 
-    Each node is a single symbol (``s<id>``) or an external engine target
-    (``ext:<name>``). ``neighbors`` yields a symbol's boundary out-edges, resolved
+    Each node is a single symbol (``s<id>``) or an external dependency target
+    (``dep:<name>``). ``neighbors`` yields a symbol's boundary out-edges, resolved
     to concrete targets WITH a soundness confidence (carried on the yielded
     ``Step.edge`` as a private ``_confidence`` attribute so ``boundary.build`` can
-    stash it on the Graph). An engine-zone or ``ext:`` node is a SINK — its
-    neighbours are never expanded — which is what keeps the slice to plugin + its
-    one-layer engine interface.
+    stash it on the Graph). A dependency-zone or ``dep:`` node is a SINK — its
+    neighbours are never expanded — which is what keeps the slice to the target plus
+    its one-layer dependency interface.
 
     ``boundary`` is imported lazily inside methods to avoid an import cycle
     (``adapters`` ← ``boundary`` ← ``adapters``).
@@ -175,7 +175,7 @@ class SymbolAdapter:
         for r in store.symbols_named(seed, limit=max_seeds):
             sid = int(r["id"])
             node = boundary.symbol_node(store, sid, self.z, alias)
-            if node.attrs.get("zone") == boundary.PLUGIN:
+            if node.attrs.get("zone") == boundary.TARGET:
                 out.setdefault(node.id, node)
         return [out[k] for k in sorted(out, key=lambda nid: int(nid[1:]) if nid[1:].isdigit() else 0)]
 
@@ -184,13 +184,13 @@ class SymbolAdapter:
                   ) -> Iterator[Step]:
         from lib import boundary
         if not node_id.startswith("s") or not node_id[1:].isdigit():
-            return  # ext:/engine nodes are SINKS (depth-1)
+            return  # dep:/dependency nodes are SINKS (depth-1)
         sid = int(node_id[1:])
         row = store.symbol(sid)
         if row is None:
             return
-        if boundary.zone_of_path(row["path"], self.z) == boundary.ENGINE:
-            return  # engine symbol is a SINK
+        if boundary.zone_of_path(row["path"], self.z) == boundary.DEPENDENCY:
+            return  # dependency symbol is a SINK
         for er in boundary.out_edges(store, sid):
             r = boundary.resolve_target(store, er, self.z, alias)
             edge = Edge(src=node_id, dst=r.target_id, relation=er["relation"],

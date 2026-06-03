@@ -1,8 +1,8 @@
-"""Tests for manyscan.lib.boundary — symbol-level plugin↔engine boundary.
+"""Tests for manyscan.lib.boundary — symbol-level target↔dependency boundary.
 
 Covers: classifier (path containment incl. normalization + autodetect), resolution
 confidence (0/1/N → unresolved/unique/ambiguous, never silently picks one),
-depth-1 engine sink (engine nodes present but not expanded), boundary set +
+depth-1 dependency sink (dependency nodes present but not expanded), boundary set +
 crossings, the two views, determinism, and render compound zones (backward compat).
 """
 from __future__ import annotations
@@ -20,44 +20,44 @@ def _build(st):
 
 
 # --- classifier --------------------------------------------------------------
-def test_detect_plugin_root(boundary_store):
+def test_detect_target_root(boundary_store):
     with stores.Store(boundary_store) as st:
-        assert boundary.detect_plugin_root(st) == "plugin"
+        assert boundary.detect_target_root(st) == "plugin"
         assert boundary.has_module_markers(st) is True
 
 
 def test_no_markers_autodetect_unsound(cpp_no_marker_store):
     """Real-index case: a cpp index has NO *.uplugin/*.Build.cs in `files`, so
-    autodetect yields "" (whole repo = plugin) — which is UNSOUND. has_module_markers
-    must report False so the CLI can refuse rather than misclassify the engine."""
+    autodetect yields "" (whole repo = target) — which is UNSOUND. has_module_markers
+    must report False so the CLI can refuse rather than misclassify the dependencies."""
     with stores.Store(cpp_no_marker_store) as st:
         assert boundary.has_module_markers(st) is False
-        assert boundary.detect_plugin_root(st) == ""
-        # The unsound consequence the guard prevents: with autodetect, the engine
-        # symbol AActor would be classified PLUGIN (whole-repo zone).
+        assert boundary.detect_target_root(st) == ""
+        # The unsound consequence the guard prevents: with autodetect, the dependency
+        # symbol AActor would be classified TARGET (whole-repo zone).
         z = boundary.make_zoning(st, None, None)
-        assert boundary.zone_of_path("Engine/Source/Actor.h", z) == boundary.PLUGIN
+        assert boundary.zone_of_path("Engine/Source/Actor.h", z) == boundary.TARGET
 
 
 def test_make_zoning_override(boundary_store):
     with stores.Store(boundary_store) as st:
         z = boundary.make_zoning(st, "./other/", ["Engine\\Source", "engine"])
-        assert z.plugin_root == "other"
-        # engine roots normalized + sorted longest-first
-        assert z.engine_roots == ("Engine/Source", "engine")
+        assert z.target_root == "other"
+        # dependency roots normalized + sorted longest-first
+        assert z.dep_roots == ("Engine/Source", "engine")
 
 
 def test_zone_of_path():
-    z = boundary.Zoning(plugin_root="plugin")
-    assert boundary.zone_of_path("plugin/Foo.cpp", z) == boundary.PLUGIN
-    assert boundary.zone_of_path("plugin", z) == boundary.PLUGIN
-    assert boundary.zone_of_path(".\\plugin\\Bar.h", z) == boundary.PLUGIN  # normalization
-    assert boundary.zone_of_path("engine/Core.h", z) == boundary.ENGINE
-    assert boundary.zone_of_path("pluginX/Foo.cpp", z) == boundary.ENGINE  # prefix not a dir boundary
-    assert boundary.zone_of_path(None, z) == boundary.ENGINE
-    # pr=="" => all plugin
-    z0 = boundary.Zoning(plugin_root="")
-    assert boundary.zone_of_path("anything/here.cpp", z0) == boundary.PLUGIN
+    z = boundary.Zoning(target_root="plugin")
+    assert boundary.zone_of_path("plugin/Foo.cpp", z) == boundary.TARGET
+    assert boundary.zone_of_path("plugin", z) == boundary.TARGET
+    assert boundary.zone_of_path(".\\plugin\\Bar.h", z) == boundary.TARGET  # normalization
+    assert boundary.zone_of_path("engine/Core.h", z) == boundary.DEPENDENCY
+    assert boundary.zone_of_path("pluginX/Foo.cpp", z) == boundary.DEPENDENCY  # prefix not a dir boundary
+    assert boundary.zone_of_path(None, z) == boundary.DEPENDENCY
+    # pr=="" => all target
+    z0 = boundary.Zoning(target_root="")
+    assert boundary.zone_of_path("anything/here.cpp", z0) == boundary.TARGET
 
 
 def test_qualified_name(boundary_store):
@@ -84,10 +84,10 @@ def test_qualified_name_nested(tmp_path):
 
 
 # --- resolution confidence ---------------------------------------------------
-def test_resolve_ambiguous_all_plugin_stays_internal(tmp_path):
-    """A type defined in TWO plugin files (header def + fwd-decl) is ambiguous but
-    DEFINITELY internal -> amb:<name> in the plugin zone, NOT ext: engine (so it
-    never pollutes the engine API surface)."""
+def test_resolve_ambiguous_all_target_stays_internal(tmp_path):
+    """A type defined in TWO target files (header def + fwd-decl) is ambiguous but
+    DEFINITELY internal -> amb:<name> in the target zone, NOT dep: dependency (so it
+    never pollutes the dependency API surface)."""
     _, mr_db = stores.manyread_lib()
     store = tmp_path / "manyread"
     store.mkdir(parents=True)
@@ -111,8 +111,8 @@ def test_resolve_ambiguous_all_plugin_stays_internal(tmp_path):
         row = boundary.out_edges(st, 1)[0]
         r = boundary.resolve_target(st, row, z)
         assert r.confidence == "ambiguous" and r.ambiguity == 2
-        assert r.target_id == "amb:PDup"                  # NOT ext:
-        assert r.node.attrs["zone"] == boundary.PLUGIN    # stays internal, off engine surface
+        assert r.target_id == "amb:PDup"                  # NOT dep:
+        assert r.node.attrs["zone"] == boundary.TARGET    # stays internal, off dependency surface
 
 
 def test_resolve_target(boundary_store):
@@ -126,38 +126,38 @@ def test_resolve_target(boundary_store):
         # edge 2: implements Core, 1 candidate -> unique
         r = boundary.resolve_target(st, rows[2], z)
         assert r.confidence == "unique" and r.target_id == "s3" and r.ambiguity == 1
-        # edge 3: uses_type Missing, 0 candidates -> unresolved external
+        # edge 3: uses_type Missing, 0 candidates -> unresolved external (dependency)
         r = boundary.resolve_target(st, rows[3], z)
-        assert r.confidence == "unresolved" and r.target_id == "ext:Missing" and r.ambiguity == 0
+        assert r.confidence == "unresolved" and r.target_id == "dep:Missing" and r.ambiguity == 0
         # edge 4: uses_type Dup, 2 candidates -> ambiguous external (NEVER picks one)
         r = boundary.resolve_target(st, rows[4], z)
-        assert r.confidence == "ambiguous" and r.target_id == "ext:Dup" and r.ambiguity == 2
+        assert r.confidence == "ambiguous" and r.target_id == "dep:Dup" and r.ambiguity == 2
         assert r.node.attrs["ambiguity"] == 2
         assert not r.target_id.startswith("s")  # never a symbol id
 
 
 def test_external_node():
     n = boundary.external_node("UObject")
-    assert n.id == "ext:UObject" and n.kind == "external" and n.label == "UObject"
-    assert n.attrs["zone"] == boundary.ENGINE and n.attrs["unresolved"] is True
+    assert n.id == "dep:UObject" and n.kind == "external" and n.label == "UObject"
+    assert n.attrs["zone"] == boundary.DEPENDENCY and n.attrs["unresolved"] is True
     n2 = boundary.external_node("Dup", 2)
     assert n2.attrs["ambiguity"] == 2
 
 
-# --- depth-1 engine sink -----------------------------------------------------
+# --- depth-1 dependency sink -------------------------------------------------
 def test_build_depth1_sink(boundary_store):
     with stores.Store(boundary_store) as st:
         z, g = _build(st)
-        # plugin symbol present
-        assert "s1" in g.nodes and g.nodes["s1"].attrs["zone"] == boundary.PLUGIN
-        # engine targets present: Actor (s2), Core (s3), ext:Missing, ext:Dup
-        assert "s2" in g.nodes and g.nodes["s2"].attrs["zone"] == boundary.ENGINE
-        assert "s3" in g.nodes and g.nodes["s3"].attrs["zone"] == boundary.ENGINE
-        assert "ext:Missing" in g.nodes and "ext:Dup" in g.nodes
-        # ENGINE nodes are SINKS: no out-edges from any engine-zone / ext node
+        # target symbol present
+        assert "s1" in g.nodes and g.nodes["s1"].attrs["zone"] == boundary.TARGET
+        # dependency targets present: Actor (s2), Core (s3), dep:Missing, dep:Dup
+        assert "s2" in g.nodes and g.nodes["s2"].attrs["zone"] == boundary.DEPENDENCY
+        assert "s3" in g.nodes and g.nodes["s3"].attrs["zone"] == boundary.DEPENDENCY
+        assert "dep:Missing" in g.nodes and "dep:Dup" in g.nodes
+        # DEPENDENCY nodes are SINKS: no out-edges from any dependency-zone / dep node
         for nid, node in g.nodes.items():
-            if node.attrs.get("zone") == boundary.ENGINE:
-                assert g.out_edges(nid) == [], f"engine node {nid} was expanded"
+            if node.attrs.get("zone") == boundary.DEPENDENCY:
+                assert g.out_edges(nid) == [], f"dependency node {nid} was expanded"
         assert len(g) <= 400
 
 
@@ -167,8 +167,8 @@ def test_build_confidence_recorded(boundary_store):
         conf = g.edge_confidence
         assert conf[("s1", "s2", "extends")] == "direct"
         assert conf[("s1", "s3", "implements")] == "unique"
-        assert conf[("s1", "ext:Missing", "uses_type")] == "unresolved"
-        assert conf[("s1", "ext:Dup", "uses_type")] == "ambiguous"
+        assert conf[("s1", "dep:Missing", "uses_type")] == "unresolved"
+        assert conf[("s1", "dep:Dup", "uses_type")] == "ambiguous"
 
 
 # --- views -------------------------------------------------------------------
@@ -176,30 +176,30 @@ def test_internal_view(boundary_store):
     with stores.Store(boundary_store) as st:
         _, g = _build(st)
         iv = boundary.internal_view(g)
-        assert set(iv.nodes) == {"s1"}  # only the plugin symbol
-        assert all(iv.nodes[n].attrs["zone"] == boundary.PLUGIN for n in iv.nodes)
-        assert iv.edges == []  # no plugin->plugin edges in this fixture
+        assert set(iv.nodes) == {"s1"}  # only the target symbol
+        assert all(iv.nodes[n].attrs["zone"] == boundary.TARGET for n in iv.nodes)
+        assert iv.edges == []  # no target->target edges in this fixture
 
 
-def test_engine_surface(boundary_store):
+def test_dependency_surface(boundary_store):
     with stores.Store(boundary_store) as st:
         _, g = _build(st)
-        es = boundary.engine_surface(g, rollup_modules=False)
-        # bipartite: s1 (plugin boundary) -> engine targets
+        es = boundary.dependency_surface(g, rollup_modules=False)
+        # bipartite: s1 (target boundary) -> dependency targets
         assert "s1" in es.nodes
-        engine = {n for n in es.nodes if es.nodes[n].attrs["zone"] == boundary.ENGINE}
-        assert engine == {"s2", "s3", "ext:Missing", "ext:Dup"}
+        dep = {n for n in es.nodes if es.nodes[n].attrs["zone"] == boundary.DEPENDENCY}
+        assert dep == {"s2", "s3", "dep:Missing", "dep:Dup"}
         assert all(e.src == "s1" for e in es.edges)
 
 
-def test_engine_surface_rollup(boundary_store):
+def test_dependency_surface_rollup(boundary_store):
     with stores.Store(boundary_store) as st:
         _, g = _build(st)
-        es = boundary.engine_surface(g, rollup_modules=True, store=st)
-        # the *.uplugin under plugin/ is the only module marker, so engine symbols
+        es = boundary.dependency_surface(g, rollup_modules=True, store=st)
+        # the *.uplugin under plugin/ is the only module marker, so dependency symbols
         # (s2,s3) under engine/ roll into the "(root)" module group.
-        engine_groups = sorted(n for n in es.nodes if n.startswith("engine:"))
-        assert engine_groups  # at least one grouped engine node
+        dep_groups = sorted(n for n in es.nodes if n.startswith("dep:"))
+        assert dep_groups  # at least one grouped dependency node
         assert all(e.src == "s1" for e in es.edges)
 
 
@@ -212,9 +212,9 @@ def test_crossings(boundary_store):
         by_dst = {c.dst: c for c in cs}
         assert by_dst["s2"].confidence == "direct" and by_dst["s2"].relation == "extends"
         assert by_dst["s3"].confidence == "unique"
-        assert by_dst["ext:Missing"].confidence == "unresolved"
-        assert by_dst["ext:Dup"].confidence == "ambiguous"
-        # evidence is plugin-side path:line
+        assert by_dst["dep:Missing"].confidence == "unresolved"
+        assert by_dst["dep:Dup"].confidence == "ambiguous"
+        # evidence is target-side path:line
         assert all(c.evidence.startswith("plugin/Foo.cpp") for c in cs)
 
 
@@ -245,13 +245,13 @@ def test_render_compound(boundary_store):
         _, g = _build(st)
         html = render.to_html(g)
     payload = _data_payload(html)
-    assert "__zone_plugin__" in payload
-    assert "__zone_engine__" in payload
+    assert "__zone_target__" in payload
+    assert "__zone_dependency__" in payload
     assert '"parent"' in payload  # real nodes carry a cytoscape parent
     # confidence reaches the elements as edge data
     assert '"conf"' in payload
-    # plugin box injected before engine box (deterministic order)
-    assert payload.index("__zone_plugin__") < payload.index("__zone_engine__")
+    # target box injected before dependency box (deterministic order)
+    assert payload.index("__zone_target__") < payload.index("__zone_dependency__")
 
 
 def test_render_no_zone_unchanged(synth_store):
@@ -276,63 +276,76 @@ def test_render_no_zone_byte_compat(synth_store):
 
 # --- CLI soundness guard (autodetect refusal) --------------------------------
 def test_cli_refuses_unsound_autodetect(cpp_no_marker_store, capsys):
-    """plugin-boundary must REFUSE (exit 2) when no markers are indexed and no
-    --plugin-root is given, instead of silently classifying the engine as plugin."""
+    """boundary must REFUSE (exit 2) when no markers are indexed and no
+    --target-root is given, instead of silently classifying a dependency as target."""
     import scan
-    rc = scan.main(["plugin-boundary", "--store", str(cpp_no_marker_store), "--format", "json"])
+    rc = scan.main(["boundary", "--store", str(cpp_no_marker_store), "--format", "json"])
     assert rc == 2
     err = capsys.readouterr().err
-    assert "--plugin-root" in err
+    assert "--target-root" in err
 
 
-def test_cli_explicit_plugin_root_runs(cpp_no_marker_store, capsys):
-    """With an explicit --plugin-root the same store scans fine (guard not tripped),
-    and the engine symbol is correctly classified ENGINE (not plugin)."""
+def test_cli_explicit_target_root_runs(cpp_no_marker_store, capsys):
+    """With an explicit --target-root the same store scans fine (guard not tripped),
+    and the dependency symbol is correctly classified DEPENDENCY (not target)."""
     import scan
-    rc = scan.main(["plugin-boundary", "--store", str(cpp_no_marker_store),
-                    "--plugin-root", "MyPlugin", "--engine-root", "Engine",
-                    "--view", "engine", "--format", "json"])
+    rc = scan.main(["boundary", "--store", str(cpp_no_marker_store),
+                    "--target-root", "MyPlugin", "--dep-root", "Engine",
+                    "--view", "dependency", "--format", "json"])
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
     ids = {n["id"] for n in out["nodes"]}
-    assert "s1" in ids       # plugin Foo
-    assert "s2" in ids       # engine AActor present as a depth-1 sink target
+    assert "s1" in ids       # target Foo
+    assert "s2" in ids       # dependency AActor present as a depth-1 sink target
 
 
-def test_cli_empty_plugin_root_opts_in(cpp_no_marker_store, capsys):
-    """--plugin-root \"\" is an explicit opt-in to whole-repo=plugin (guard not tripped)."""
+def test_cli_empty_target_root_opts_in(cpp_no_marker_store, capsys):
+    """--target-root \"\" is an explicit opt-in to whole-repo=target (guard not tripped)."""
     import scan
-    rc = scan.main(["plugin-boundary", "--store", str(cpp_no_marker_store),
-                    "--plugin-root", "", "--view", "internal", "--format", "json"])
+    rc = scan.main(["boundary", "--store", str(cpp_no_marker_store),
+                    "--target-root", "", "--view", "internal", "--format", "json"])
     assert rc == 0
 
 
-# --- engine-surface rollup determinism (set→sorted by (len,str)) -------------
-def test_engine_surface_rollup_deterministic(boundary_store):
+def test_cli_backcompat_plugin_boundary_and_flags(cpp_no_marker_store, capsys):
+    """Back-compat: the old `plugin-boundary` subcommand + `--plugin-root`/`--engine-root`
+    flags still work, mapping onto the new target/dependency dests."""
+    import scan
+    rc = scan.main(["plugin-boundary", "--store", str(cpp_no_marker_store),
+                    "--plugin-root", "MyPlugin", "--engine-root", "Engine",
+                    "--view", "dependency", "--format", "json"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    ids = {n["id"] for n in out["nodes"]}
+    assert "s1" in ids and "s2" in ids
+
+
+# --- dependency-surface rollup determinism (set→sorted by (len,str)) ---------
+def test_dependency_surface_rollup_deterministic(boundary_store):
     """The rollup module ordering must be total-ordered (len,str), so the grouped
     surface is byte-identical run to run regardless of set/hash-seed iteration."""
     outs = []
     for _ in range(3):
         with stores.Store(boundary_store) as st:
             _, g = _build(st)
-            outs.append(render.to_json(boundary.engine_surface(g, rollup_modules=True, store=st)))
+            outs.append(render.to_json(boundary.dependency_surface(g, rollup_modules=True, store=st)))
     assert outs[0] == outs[1] == outs[2]
 
 
 def test_cli_html_is_one_page_with_toggle(boundary_store, capsys):
-    """plugin-boundary --format html emits ONE self-contained page with the in-page
-    view toggle (regardless of --view), not the projected internal/engine subgraph."""
+    """boundary --format html emits ONE self-contained page with the in-page
+    view toggle (regardless of --view), not the projected internal/dependency subgraph."""
     import scan
-    rc = scan.main(["plugin-boundary", "--store", str(boundary_store),
-                    "--plugin-root", "plugin", "--view", "internal", "--format", "html"])
+    rc = scan.main(["boundary", "--store", str(boundary_store),
+                    "--target-root", "plugin", "--view", "internal", "--format", "html"])
     assert rc == 0
     out = capsys.readouterr().out
     assert out.startswith("<!doctype html>")
     assert "id='view'" in out                  # in-page toggle present
     assert "<option value='internal' selected>" in out  # --view threaded as initial
-    # full graph emitted (engine nodes present even though --view internal): the
-    # projection is now client-side, so engine symbols are still in the page.
-    assert "__zone_engine__" in out and "__zone_plugin__" in out
+    # full graph emitted (dependency nodes present even though --view internal): the
+    # projection is now client-side, so dependency symbols are still in the page.
+    assert "__zone_dependency__" in out and "__zone_target__" in out
 
 
 def test_roots_by_len_total_order(module_store):
