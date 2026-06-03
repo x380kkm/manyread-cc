@@ -41,11 +41,6 @@ force-directed layout, pan/zoom/search, color-by-kind, dashed-red = capped front
 **tap a node to see its file path**) — open in any browser, no install. Large slice → `--level
 dir|module` first.
 
-**SRP check (`--srp`):** confirm a dependency-driven module split respects single-responsibility.
-`analyze <seed> --srp` reports each module's cohesive clusters (candidate responsibilities) + the
-import seams to cut; `scan <seed> --srp --format html` colors nodes by cluster + dashes the seams.
-Structural proxy — suggests/confirms; a human verifies semantics.
-
 ## Rules
 
 - Truncation is never silent: an over-budget node is tagged `+N⤳` and the slice prints a

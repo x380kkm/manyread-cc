@@ -43,13 +43,6 @@ layout, pan/zoom/search, color-by-kind, dashed-red = bounded/capped node; **tap 
 see its file path**) — open in any browser, no install. `mermaid`/`dot` render in VS Code /
 GitHub / mermaid.live. For a many-node engine-scale slice, roll up with `--level dir|module`.
 
-**SRP (single-responsibility) check** — `--srp` (on `scan` or `analyze`): finds each module's
-cohesive internal clusters (= candidate responsibilities) and the import **seams to cut**.
-`analyze <seed> --srp [--level dir|module] [--min-cohesion F]` prints per-module K + cohesion +
-clusters + seams (flags genuine multi-responsibility; flat independent files are NOT flagged).
-`scan <seed> --srp --format html` colors nodes by cluster + dashes the cross-cluster seams —
-use it to CONFIRM a proposed dependency split respects SRP. It is a STRUCTURAL PROXY (suggests
-candidates; a human confirms semantics), grounded in real edges.
 
 ## Rules
 - Needs a manyread store (`<repo>/manyread/source.db`). If absent, build it first

@@ -103,19 +103,6 @@ def test_html_colors_by_cluster_when_present():
     assert "edge.seam" in out               # cross-cluster edges dash as seams
 
 
-def test_srp_text_reports_modules():
-    from lib.graph import Edge as E, Node as N
-    g = Graph()
-    for nid in ["mod/a", "mod/b", "mod/c", "mod/d"]:
-        g.add_node(N(nid, "file", label=nid))
-    g.add_edge(E("mod/a", "mod/b", "imports"))
-    g.add_edge(E("mod/c", "mod/d", "imports"))
-    reports = analyze.srp(g, lambda n: n.id.split("/")[0])
-    txt = render.srp_text(reports)
-    assert "multi-responsibility" in txt and "K=2" in txt
-    assert "cluster#0" in txt and "cluster#1" in txt
-
-
 def test_render_unknown_format_raises():
     try:
         render.render(_slice(), "yaml")

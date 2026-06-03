@@ -292,39 +292,6 @@ def metrics_text(m: analyze.Metrics) -> str:
     return "\n".join(lines) + "\n"
 
 
-# --- SRP report views --------------------------------------------------------
-def srp_to_json(reports: list, indent: int | None = 2) -> str:
-    """Serialize a list of analyze.SrpReport (deterministic)."""
-    return json.dumps([asdict(r) for r in reports], ensure_ascii=False, indent=indent)
-
-
-def srp_text(reports: list) -> str:
-    """Human-readable SRP report: per module K + cohesion + clusters + seams to cut."""
-    lines: list[str] = []
-    flagged = [r for r in reports if r.multi_responsibility]
-    lines.append(f"SRP: {len(reports)} modules, {len(flagged)} flagged multi-responsibility "
-                 f"(structural proxy — confirm semantically)")
-    for r in reports:
-        if r.multi_responsibility:
-            mark = " ⚠ multi-responsibility"
-        elif r.internal_edges == 0 and r.n_members > 1:
-            mark = " ○ independent files (no internal coupling)"
-        else:
-            mark = " ✓ cohesive"
-        lines.append(f"\n[{r.module}] K={r.components} cohesion={r.cohesion} "
-                     f"members={r.n_members} fan-in-from={len(r.fan_in_sources)}{mark}")
-        if r.components > 1:
-            for i, c in enumerate(r.clusters):
-                head = ", ".join(c.members[:6]) + (" …" if c.size > 6 else "")
-                lines.append(f"   cluster#{i} ({c.size}): {head}")
-            if r.seams:
-                lines.append("   seams to cut: " + "; ".join(f"{a} --{rel}--> {b}" for a, b, rel in r.seams[:8]))
-        if r.fan_in_sources:
-            lines.append("   consumers: " + ", ".join(r.fan_in_sources[:8]))
-    lines.append(f"\nnote: {reports[0].note}" if reports else "note: (no modules)")
-    return "\n".join(lines) + "\n"
-
-
 FORMATS = {"json": to_json, "mermaid": to_mermaid, "dot": to_dot, "text": to_text, "html": to_html}
 
 
