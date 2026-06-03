@@ -350,6 +350,130 @@ def test_cli_html_is_one_page_with_toggle(boundary_store, capsys):
     assert '"zone": "dependency"' in out and '"zone": "target"' in out
 
 
+# --- view-hide config: default-hidden bake + --ignore CLI wiring -----------------
+def test_default_hidden_keys_sorted_deterministic():
+    """scan._default_hidden_keys returns a SORTED, deterministic list, hitting both
+    name matches and high-fan_in nodes via the reused render._importance metric."""
+    import scan
+    from lib import render
+    from test_render import _zoned_hub_graph
+    g = _zoned_hub_graph()
+    # 'Hub' is the label of node id 'h' (fan_in=3); min_fan_in=3 also catches it.
+    keys = scan._default_hidden_keys(g, {"names": ["Hub"], "min_fan_in": 3})
+    assert keys == sorted(keys)                     # SORTED
+    assert "h" in keys                              # Hub matched by name AND fan_in
+    again = scan._default_hidden_keys(g, {"names": ["Hub"], "min_fan_in": 3})
+    assert keys == again                            # deterministic
+    # the baked HIDDEN const reflects the SORTED list
+    out = render.to_html(g, default_hidden=keys)
+    assert "const HIDDEN=" + json_dumps_sorted(keys) in out
+
+
+def json_dumps_sorted(keys):
+    import json
+    return json.dumps(sorted(keys))
+
+
+def test_default_hidden_keys_segment_and_pattern(tmp_path):
+    """label-OR-trailing-segment matching + fnmatch patterns (union semantics)."""
+    import scan
+    from lib.graph import Edge, Graph, Node
+    g = Graph()
+    g.add_node(Node("amb:FString", "ambiguous", label="FString"))         # bare-name external
+    g.add_node(Node("s9", "class", label="Outer::Inner::FString"))        # qualified internal
+    g.add_node(Node("dep:TArrayView", "external", label="TArrayView"))    # pattern target
+    g.add_node(Node("s10", "class", label="Keep"))                        # untouched
+    g.add_edge(Edge("s10", "amb:FString", "uses_type"))
+    keys = scan._default_hidden_keys(g, {"names": ["FString"], "patterns": ["TArray*"]})
+    assert "amb:FString" in keys          # bare label match
+    assert "s9" in keys                   # trailing-segment match on qualified label
+    assert "dep:TArrayView" in keys       # fnmatch pattern
+    assert "s10" not in keys              # not matched
+
+
+def test_default_hidden_keys_engine_side_only():
+    """In a boundary (zoned) graph view_hide is ENGINE-SIDE ONLY: it never default-hides
+    a target/internal symbol — not by a name it shares with a dependency, nor by fan_in."""
+    import scan
+    from lib.graph import Edge, Graph, Node
+    g = Graph()
+    g.add_node(Node("dep:FString", "external", label="FString", attrs={"zone": "dependency"}))
+    g.add_node(Node("s1", "class", label="FString", attrs={"zone": "target"}))   # SAME name, target side
+    g.add_node(Node("hub", "class", label="Hub", attrs={"zone": "target"}))      # high-fan_in TARGET hub
+    for s in ("a", "b", "c"):
+        g.add_node(Node(s, "class", label=s, attrs={"zone": "target"}))
+        g.add_edge(Edge(s, "hub", "uses_type"))                                  # hub fan_in = 3
+    keys = scan._default_hidden_keys(g, {"names": ["FString"], "min_fan_in": 2})
+    assert "dep:FString" in keys      # dependency-side name match -> hidden
+    assert "s1" not in keys           # same name on TARGET side -> protected
+    assert "hub" not in keys          # high-fan_in TARGET hub -> protected (min_fan_in is dep-only)
+
+
+def test_cli_boundary_ignore_bakes_hidden(boundary_store, capsys, tmp_path):
+    """boundary --ignore <bare file> bakes the matched ids into a SORTED const HIDDEN."""
+    import scan
+    ig = tmp_path / "ignore.json"
+    ig.write_text('{"names": ["Foo"]}', encoding="utf-8")    # target symbol Foo (id s1)
+    rc = scan.main(["boundary", "--store", str(boundary_store), "--target-root", "plugin",
+                    "--format", "html", "--ignore", str(ig)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "const HIDDEN=" in out and '"s1"' in out          # Foo -> s1 default-hidden
+
+
+def test_cli_boundary_no_config_byte_identical(boundary_store, capsys):
+    """No --ignore + no committed view_hide => identical to v0.6.0 (no HIDDEN line),
+    and two renders are byte-identical."""
+    import scan
+    rc = scan.main(["boundary", "--store", str(boundary_store), "--target-root", "plugin",
+                    "--format", "html"])
+    assert rc == 0
+    a = capsys.readouterr().out
+    rc = scan.main(["boundary", "--store", str(boundary_store), "--target-root", "plugin",
+                    "--format", "html"])
+    assert rc == 0
+    b = capsys.readouterr().out
+    assert a == b
+    # the gated HIDDEN line is absent from the consts block (byte-compat to v0.6.0)
+    consts = a[a.index("const DATA="):a.index('<script id="ms-boot">')]
+    assert "const HIDDEN=" not in consts
+
+
+def test_cli_boundary_committed_view_hide_autodiscovered(boundary_store, capsys):
+    """A committed manyread.json['view_hide'] is auto-discovered at render time (no flag)."""
+    import json as _json
+
+    import scan
+    store_dir = boundary_store.parent                      # <tmp>/manyread/
+    (store_dir / "manyread.json").write_text(
+        _json.dumps({"alias": "t", "languages": [], "view_hide": {"names": ["Foo"]}}),
+        encoding="utf-8")
+    rc = scan.main(["boundary", "--store", str(boundary_store), "--target-root", "plugin",
+                    "--format", "html"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "const HIDDEN=" in out and '"s1"' in out        # Foo auto-hidden via committed key
+
+
+def test_cli_boundary_ignore_overrides_committed(boundary_store, capsys, tmp_path):
+    """--ignore precedence over a committed view_hide key (different match)."""
+    import json as _json
+
+    import scan
+    store_dir = boundary_store.parent
+    (store_dir / "manyread.json").write_text(
+        _json.dumps({"alias": "t", "view_hide": {"names": ["Foo"]}}), encoding="utf-8")
+    ig = tmp_path / "ig.json"
+    ig.write_text('{"view_hide": {"names": ["Core"]}}', encoding="utf-8")   # Core -> s3
+    rc = scan.main(["boundary", "--store", str(boundary_store), "--target-root", "plugin",
+                    "--format", "html", "--ignore", str(ig)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    consts = out[out.index("const HIDDEN="):out.index('<script id="ms-boot">')]
+    assert '"s3"' in consts          # Core hidden (from --ignore)
+    assert '"s1"' not in consts      # Foo NOT hidden (committed key overridden)
+
+
 def test_roots_by_len_total_order(module_store):
     """rollup.roots_by_len ties on length break lexicographically (deterministic)."""
     from lib import rollup

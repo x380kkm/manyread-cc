@@ -72,6 +72,38 @@ up+downstream chain (computed client-side over the LOADED slice). Honest limit: 
 in-tab chain only sees the currently loaded slice — for a deeper/fresh chain, re-run
 manyscan with that node as the seed.
 
+### Hide noise + persistent ignore config
+Ubiquitous high-fan-in symbols (`int32` / `FString` / `TArray` / primitives) are
+pointed-to by huge numbers of nodes and drown the boundary graph. The html has a
+collapsible **HIDE panel** (grab the tab on the right edge) to hide them:
+- a searchable/sortable node list (sorted by **fan_in DESC** by default to surface the
+  offenders), kind/zone/band filters (facets value-gated — flat/plain graphs show only
+  kind+fan_in), `select matching` + `select fan_in>=X` bulk helpers, and a per-row checkbox.
+- **TWO-STAGE**: a checkbox is an INSTANT translucent **preview** (dims the node + its
+  edges, no relayout). The separate **[Apply]** button commits + re-lays-out the VISIBLE
+  subgraph (forceAtlas2 + bands re-run in-browser, boxes redrawn). A **delta hint**
+  ("Apply: hide N, restore M") shows what the pending change will do BEFORE you commit.
+  `fit` reframes the camera; bidirectional **locate** (click a node → its list row flashes;
+  click a row → the camera animates to + flashes that node). Hiding a node hides its
+  incident edges (no dangling edges).
+- **PERSISTENT config** ("记录默认配置，下次也隐藏"): a COMMITTED `view_hide` key in
+  `<store>/manyread.json` — `{version:1, names:["int32","FString"], patterns:["TArray*"]
+  (fnmatch), min_fan_in:20}` (all keys optional). Matched symbols start APPLIED-hidden on
+  load but stay LISTED + re-enableable; the match scope is the label OR its trailing `::`
+  segment (catches bare-name externals + qualified internals together). Auto-discovered
+  each run; override ad-hoc with `boundary --ignore <file>` (precedence: `--ignore` >
+  `manyread.json[view_hide]` > none). No config => identical to prior behavior.
+- **EXPORT**: the panel's `Export` button emits the ready-to-paste `{view_hide:{...}}` JSON
+  via clipboard + a Blob download + a textarea (offline, network-free). Browsers cannot
+  write the repo file — the USER or the AGENT merges it into `manyread.json['view_hide']`
+  (the agent edits the JSON directly; config.py has no shared-key writer). Export is a
+  SNAPSHOT of the current slice's hidden NAMES — to keep catching NEW noise, keep
+  `patterns`/`min_fan_in` by hand in the committed config.
+- **IN-SLICE limit**: the panel, fan_in, and config only see the CURRENTLY LOADED slice;
+  hiding is view-level + RECOVERABLE (it never deletes from the index — that is the enrich
+  `drop`, a different layer). Emitted html bytes stay deterministic (only a SORTED `HIDDEN`
+  list is baked; all relayout happens in-browser).
+
 **Visual:** `--format html > deps.html` emits ONE self-contained file (GPU/WebGL sigma.js +
 forceAtlas2 layout, smooth pan/zoom/drag, search, color-by-kind/zone, red+thick = bridge,
 dashed/dotted = ambiguous/unresolved edge; **tap any node to see its file path**) — open in

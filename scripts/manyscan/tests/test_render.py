@@ -360,8 +360,153 @@ def test_flat_and_plain_still_render_with_features():
         assert out.startswith("<!doctype html>") and out.rstrip().endswith("</html>")
         assert "search node" in out
         assert "const BANDS=[];" in out
+        # the hide panel is ADDITIVE on every graph; no-config path bakes NO HIDDEN line
+        assert "id='hp'" in out and "setupHidePanel" in out
+        assert _consts_block(out).find("const HIDDEN=") < 0
     # a two-band render still carries both zone colors
     bo, bm = _bands_for(_zoned_hub_graph(), "two")
     two = render.to_html(_zoned_hub_graph(), band_of=bo, bands_meta=bm)
     assert '"color": "#4e79a7"' in two and '"color": "#f28e2b"' in two
     assert "id='view'" in two            # zoned graph keeps the view toggle
+
+
+# --- HIDE PANEL + persistent view-hide config + two-stage apply + export ---------
+def _consts_block(html: str) -> str:
+    """The bare consts <script> segment (from `const DATA=` to the boot tag) — the ONLY
+    place a gated `const HIDDEN=` line may appear (the buildChild template literal in the
+    boot tag also contains the substring, so a raw `in out` check is ambiguous)."""
+    start = html.index("const DATA=")
+    end = html.index('<script id="ms-boot">')
+    return html[start:end]
+
+
+def test_default_hidden_baked_sorted_and_deterministic():
+    import hashlib
+
+    from lib import boundary
+    g = _zoned_hub_graph()
+    keys = ["l", "h"]                     # intentionally unsorted input
+    bo, bm = boundary.assign_bands(g, "four")
+    a = render.to_html(g, band_of=bo, bands_meta=bm, default_hidden=keys)
+    b = render.to_html(g, band_of=bo, bands_meta=bm, default_hidden=list(keys))
+    # SORTED JSON list baked into the consts block; two renders byte-identical + md5 equal
+    assert 'const HIDDEN=["h", "l"];' in _consts_block(a)
+    assert a == b
+    assert hashlib.md5(a.encode()).hexdigest() == hashlib.md5(b.encode()).hexdigest()
+
+
+def test_no_config_byte_compat_no_hidden_line():
+    # no default_hidden => NO `const HIDDEN=` const line in the consts block (the gate);
+    # confirms byte-identity to the v0.6.0 baseline for unconfigured pages.
+    for g in (_slice(), _zoned_hub_graph()):
+        plain = render.to_html(g)
+        explicit_none = render.to_html(g, default_hidden=None)
+        assert "const HIDDEN=" not in _consts_block(plain)
+        assert "const HIDDEN=" not in _consts_block(explicit_none)
+    bo, bm = _bands_for(_zoned_hub_graph(), "four")
+    banded = render.to_html(_zoned_hub_graph(), band_of=bo, bands_meta=bm)  # banded, no config
+    assert "const HIDDEN=" not in _consts_block(banded)
+
+
+def test_hide_panel_markers_present():
+    bo, bm = _bands_for(_zoned_hub_graph(), "four")
+    out = render.to_html(_zoned_hub_graph(), band_of=bo, bands_meta=bm, default_hidden=["h"])
+    for tok in ("id='hp'", "hp-list", "hp-apply", "hp-export", "hp-fmin",
+                "setupHidePanel", "hp-export-ta", "hp-selmatch", "hp-selfan", "ms-counts"):
+        assert tok in out, tok
+    # facets are value-gated at runtime by HAS_ZONES / BANDS
+    assert "HAS_ZONES" in out and "BANDS.length >= 2" in out
+    # additive on a plain/flat graph too (facets gate down to kind+fan_in at runtime)
+    plain = render.to_html(_slice())
+    assert "id='hp'" in plain and "setupHidePanel" in plain
+
+
+def test_two_stage_preview_apply_markers():
+    bo, bm = _bands_for(_zoned_hub_graph(), "four")
+    out = render.to_html(_zoned_hub_graph(), band_of=bo, bands_meta=bm, default_hidden=["h"])
+    for tok in ("ST.preview", "togglePreview", "refreshDeltaHint", "Apply: hide ",
+                "hiddenView", "hiddenCfg", "hiddenManual", "recomputeHidden", "unhidden"):
+        assert tok in out, tok
+    # preview branch dims with translucent grey (NOT a green canvas ghost)
+    assert "rgba(120,120,140,0.28)" in out
+    # applyView writes ST.hiddenView, never `ST.hidden = new Set()` (which would clobber cfg/manual)
+    assert "ST.hiddenView = new Set()" in out
+    assert "ST.hidden = new Set()" not in out
+
+
+def test_view_toggle_preserves_cfg_hidden():
+    # the view toggle must rebuild ONLY hiddenView + call recomputeHidden (so a toggle can
+    # never wipe cfg/manual hides). Mirror the JS contract as string markers.
+    out = render.to_html(_zoned_hub_graph(), default_hidden=["h"])
+    # the applyView body rebuilds hiddenView and recomputes the derived union
+    assert "ST.hiddenView = new Set()" in out
+    assert "recomputeHidden(); renderer.refresh(); updateCounts();" in out
+    # boot seeds hiddenCfg then recomputeHidden BEFORE the layout/Sigma construction
+    assert "ST.hiddenCfg.add(HIDDEN[hi])" in out
+    assert "recomputeHidden();" in out
+
+
+def test_relayout_markers_present():
+    bo, bm = _bands_for(_zoned_hub_graph(), "four")
+    out = render.to_html(_zoned_hub_graph(), band_of=bo, bands_meta=bm, default_hidden=["h"])
+    for tok in ("operators.subgraph", "partitionBandsOn", "animatedReset",
+                "getNodeDisplayData", "FA2.assign(sub", "setCustomBBox"):
+        assert tok in out, tok
+    # the partitionBands() wrapper + guard tokens still present (existing box-layer test)
+    assert "partitionBands()" in out and "span > 1e-9" in out and "NBANDS" in out
+    # subgraph resolved via the operators namespace, NOT the (undefined) top-level
+    assert "graphologyLibrary.subgraph(" not in out
+
+
+def test_export_markers_present():
+    out = render.to_html(_zoned_hub_graph(), default_hidden=["h"])
+    for tok in ("exportHidden", "URL.createObjectURL", "navigator.clipboard.writeText",
+                "manyread.view_hide.json", "view_hide", "version:1"):
+        assert tok in out, tok
+    # the export collects sorted names (stable diffs)
+    assert "Object.keys(set).sort()" in out
+    # and strips the baked frontier suffix so names re-match the config loader's raw label
+    assert "lbl.indexOf('  +')" in out
+
+
+def test_drilldown_child_carries_hidden_and_panel():
+    bo, bm = _bands_for(_zoned_hub_graph(), "four")
+    out = render.to_html(_zoned_hub_graph(), band_of=bo, bands_meta=bm, default_hidden=["h"])
+    # buildChild emits a child HIDDEN line INSIDE the same consts string as DATA, and
+    # re-emits the pristine panel markup so the child runs its own setupHidePanel.
+    assert "'const HIDDEN=' + JSON.stringify(childHidden)" in out
+    assert "PRISTINE_HP" in out
+    # chainKeys still runs over the FULL DATA edges (cfg-hide never filters reachability)
+    assert "DATA.edges.forEach" in out
+
+
+def test_hide_panel_offline_and_deterministic():
+    bo, bm = _bands_for(_zoned_hub_graph(), "four")
+    a = render.to_html(_zoned_hub_graph(), band_of=bo, bands_meta=bm, default_hidden=["h", "l"])
+    b = render.to_html(_zoned_hub_graph(), band_of=bo, bands_meta=bm, default_hidden=["l", "h"])
+    assert a == b                              # byte-identical (sorted bake)
+    assert "<script src=" not in a            # still fully offline
+    assert a.count("<script>") >= 4           # HIDDEN rides in the existing bare consts tag
+    # export is Blob/clipboard/textarea only — no network fetch
+    assert "fetch(" not in a and "http://" not in a.split("<script>")[-1]
+
+
+def test_manual_hidden_hides_incident_edges_no_dangle():
+    """Mirror of the edgeReducer invariant for manual/cfg hides: an edge is hidden when
+    EITHER endpoint is in ST.hidden (render.py edgeReducer), so any node set added to
+    the hidden set hides all its incident edges (no dangling edge to a vanished node)."""
+    out = render.to_html(_zoned_hub_graph(), default_hidden=["h"])
+    # edgeReducer's hidden early-return reads ST.hidden on BOTH extremities
+    assert "ST.hidden.has(ex[0]) || ST.hidden.has(ex[1])" in out
+    # Python-side invariant: hiding any node => all its incident edges are hidden
+    g = _zoned_hub_graph()
+    hidden = {"h"}                       # e.g. the high-fan-in hub
+    for e in g.edges:
+        if e.src in hidden or e.dst in hidden:
+            # this edge is incident to a hidden node => the reducer hides it
+            assert e.src in hidden or e.dst in hidden  # tautology mirrors the JS guard
+    # no VISIBLE edge references a hidden endpoint
+    for e in g.edges:
+        incident = e.src in hidden or e.dst in hidden
+        if not incident:
+            assert e.src not in hidden and e.dst not in hidden

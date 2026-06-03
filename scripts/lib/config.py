@@ -144,6 +144,87 @@ def load_user(store: Path) -> dict:
     return _read_json(store / "user" / "config.json")
 
 
+# --- view-hide config (committed, shared, VIEW-LEVEL + RECOVERABLE) ----------
+# A symbol view-hide config records ubiquitous high-fan-in noise (int32 / FString /
+# TArray / primitives) to HIDE BY DEFAULT in the boundary html. It is NOT the
+# destructive enrich `drop` (which deletes from the index) — matched nodes stay in
+# the index, stay in DATA, stay LISTED in the hide panel, and are merely applied-
+# hidden on load (re-enableable). Home: a committed `view_hide` key inside the
+# shared <store>/manyread.json (travels with the repo; auto-discovered each run).
+_VIEW_HIDE_KEYS = {"version", "names", "patterns", "min_fan_in"}
+
+
+def validate_view_hide(vh: dict) -> list[str]:
+    """Return a list of human-readable validation errors for a view_hide doc (empty == OK)."""
+    if not isinstance(vh, dict):
+        return ["view_hide must be an object"]
+    errs: list[str] = []
+    if vh.get("version", 1) != 1:
+        errs.append("view_hide.version must be 1")
+    for k in ("names", "patterns"):
+        v = vh.get(k)
+        if v is not None and not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
+            errs.append(f"view_hide.{k} must be a list of strings")
+    mfi = vh.get("min_fan_in")
+    if mfi is not None and (not isinstance(mfi, int) or isinstance(mfi, bool) or mfi < 0):
+        errs.append("view_hide.min_fan_in must be an int >= 0")
+    return errs
+
+
+def load_view_hide(store: Path, override_path: Path | None = None) -> dict | None:
+    """Resolve the committed symbol view-hide config. ``None`` => behave as v0.6.0.
+
+    Precedence: ``override_path`` (--ignore file) > ``manyread.json['view_hide']`` > None.
+    Liberal on read: a --ignore file may be a ``{view_hide:{...}}`` wrapper OR a bare
+    ``{names,patterns,min_fan_in}``. Malformed structure => warn to stderr + return None.
+
+    An EXPLICIT --ignore that is missing/unreadable is a HARD, VISIBLE condition (warn
+    loudly): the user asked for a file, so silently behaving like v0.6.0 would hide the
+    mistake. An ABSENT manyread.json[view_hide] is silent (correct v0.6.0 behavior).
+    """
+    import sys
+
+    if override_path is not None:
+        p = Path(override_path)
+        if not p.is_file():
+            print(f"manyread: --ignore file not found: {p}", file=sys.stderr)
+            return None
+        try:
+            doc = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            print(f"manyread: --ignore file is not valid JSON ({p}): {exc}", file=sys.stderr)
+            return None
+        if not isinstance(doc, dict):
+            print(f"manyread: --ignore file must be a JSON object: {p}", file=sys.stderr)
+            return None
+        vh = doc.get("view_hide", doc)          # accept wrapped OR bare
+    else:
+        mr_json = store / "manyread.json"
+        if mr_json.is_file():
+            # Distinguish "present but unreadable/empty" (a botched hand-merge) from a
+            # clean config with no view_hide key, since the export round-trip invites
+            # hand-editing manyread.json: a syntax error silently resets ALL shared config.
+            shared = _read_json(mr_json)
+            if not shared:
+                print(f"manyread: {mr_json} present but unreadable/empty — "
+                      "shared config (incl. view_hide) ignored", file=sys.stderr)
+                return None
+            vh = shared.get("view_hide")
+        else:
+            vh = None
+    if not vh or not isinstance(vh, dict):
+        return None
+    errs = validate_view_hide(vh)
+    if errs:
+        print("manyread: ignoring malformed view_hide config: " + "; ".join(errs), file=sys.stderr)
+        return None
+    unknown = sorted(set(vh) - _VIEW_HIDE_KEYS)
+    if unknown:
+        print("manyread: view_hide has unknown key(s) " + ", ".join(unknown)
+              + " (known: version/names/patterns/min_fan_in) — proceeding", file=sys.stderr)
+    return vh
+
+
 def init_store(location: Path, alias: str | None = None,
                languages: list[str] | None = None, exts: list[str] | None = None,
                ignore_globs: list[str] | None = None, root: Path | None = None) -> Path:

@@ -59,6 +59,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -221,14 +222,31 @@ _CPP_PREPROC = {
 }
 
 
+# tokens that, in a TYPE position, are almost certainly a C/C++ MACRO mis-read as a
+# type by tree-sitter (no preprocessor runs): ALL-CAPS-WITH-UNDERSCORE catches the UE
+# export/DSL macros (UE_API, ENGINE_API, *_API, SHADER_PARAMETER,
+# BEGIN_SHADER_PARAMETER_STRUCT, …); the small EXTRA set catches the underscore-free
+# function-specifier macros. Deliberately does NOT match all-caps-no-underscore, so
+# real types like GUID / HRESULT / UINT survive.
+_MACRO_TYPE_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
+_MACRO_TYPE_EXTRA = frozenset({"FORCEINLINE", "FORCENOINLINE", "FORCEINLINE_DEBUGGABLE", "CONSTEXPR"})
+
+
+def _is_macro_type(name: str) -> bool:
+    return name in _MACRO_TYPE_EXTRA or bool(_MACRO_TYPE_RE.match(name))
+
+
 def _collect_type_idents(node: Node | None, src: bytes, out: list[str]) -> None:
     """Gather `type_identifier` leaf texts under node (skips primitive_type, so
-    int/float/void/bool never become deps — only named/engine types like UObject)."""
+    int/float/void/bool never become deps — only named/engine types like UObject).
+    Also skips macro-like tokens (`_is_macro_type`) so UE export/DSL macros parsed in a
+    type position (UE_API, ENGINE_API, SHADER_PARAMETER, FORCEINLINE, …) never become
+    bogus `uses_type` dependencies."""
     if node is None:
         return
     if node.type == "type_identifier":
         t = _text(node, src).strip()
-        if t:
+        if t and not _is_macro_type(t):
             out.append(t)
     for ch in node.children:
         _collect_type_idents(ch, src, out)

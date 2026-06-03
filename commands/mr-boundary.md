@@ -30,7 +30,7 @@ MR="${CLAUDE_PLUGIN_ROOT:-$(ls -d ~/.claude/plugins/cache/*/manyread/*/ 2>/dev/n
 uv run --python 3.12 "$MR/scripts/manyscan/scan.py" boundary --root <repo> \
     --target-root <target-rel-path> [--dep-root <dep-rel> ...] \
     [--view both|internal|dependency] [--layers flat|two|four] [--dep-depth N] \
-    [--format html|json|text|dot] [--max-nodes N]
+    [--ignore <view-hide.json>] [--format html|json|text|dot] [--max-nodes N]
 ```
 The old name `plugin-boundary` (and the flags `--plugin-root` / `--engine-root`) still
 work as deprecated aliases mapping to `--target-root` / `--dep-root`.
@@ -68,6 +68,37 @@ The html draws N ORDERED, FRAMED bands left→right (forceAtlas2 still lays out 
   "this slice only — re-run manyscan for a deeper chain": the in-browser chain only sees
   the currently loaded slice, so for a deeper/fresh chain re-run manyscan with that node
   as the seed.
+
+### Hide ubiquitous noise + record a default (`--ignore`, html only)
+High-fan-in symbols (`int32`/`FString`/`TArray`/primitives) drown the graph. The html has
+a collapsible **HIDE panel** (right edge): a searchable list sorted by fan_in DESC, with
+kind/zone/band filters, `select matching` + `select fan_in>=X` helpers, and per-row checkboxes.
+- **Two-stage**: a checkbox is an INSTANT translucent **preview** (dims node + edges, no
+  relayout); **[Apply]** commits + re-lays-out the VISIBLE subgraph (forceAtlas2 + bands
+  re-run in-browser). A **delta hint** ("Apply: hide N, restore M") previews the change.
+  `fit` reframes; click a node ↔ its list row (bidirectional locate). Hiding a node hides
+  its **incident edges** (no dangling edges).
+- **Persistent config** ("记录默认配置，下次也隐藏"): a committed `view_hide` key in
+  `<store>/manyread.json` — `{version:1, names:[...], patterns:[fnmatch], min_fan_in:N}`
+  (all keys optional). Matched symbols start applied-hidden on load but stay listed +
+  re-enableable. **Auto-discovered each run.** `--ignore <file>` overrides ad-hoc (accepts
+  a `{view_hide:{...}}` wrapper OR a bare `{names,patterns,min_fan_in}`). **Precedence:**
+  `--ignore <file>` > `manyread.json[view_hide]` > none. **Match scope:** the node's label
+  OR its trailing `::` segment (case-sensitive) — over-hide caveat: a legitimately-named
+  user type sharing a bare name can be caught; prefer `names` over a broad `min_fan_in`
+  when precision matters.
+- **Export**: the panel's `Export` button emits the ready-to-paste `{view_hide:{...}}` JSON
+  via clipboard + a Blob download + a textarea. Browsers can't write the repo file — the
+  user OR the AGENT merges it into `manyread.json['view_hide']` (the agent edits the JSON
+  directly). Export is a SNAPSHOT of the slice's hidden NAMES; keep `patterns`/`min_fan_in`
+  by hand to keep catching NEW noise in larger slices. A malformed/typo'd `--ignore` file
+  warns loudly to stderr; a syntax error in `manyread.json` silently resets ALL shared
+  config (alias/exts/view_hide) for that run, so validate hand-merges.
+- **Determinism / offline**: emitted html bytes stay byte-identical (only a SORTED `HIDDEN`
+  list is baked; absent config => identical to v0.6.0). All relayout is in-browser, so
+  repeated **Applies visibly rearrange** the layout (deterministic per visible-set via a
+  fresh re-seed, never affecting the emitted file). Export uses Blob/clipboard/textarea
+  only — no network.
 
 ## Rules
 - Read-only on the store; deterministic (same index + roots ⇒ identical output).

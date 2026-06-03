@@ -18,10 +18,12 @@ prints refactoring metrics; `export` defaults to graphviz dot. Common opts:
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import sqlite3
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -84,6 +86,45 @@ def cmd_analyze(args) -> int:
     return 0
 
 
+def _default_hidden_keys(g, vh: dict) -> list[str]:
+    """DETERMINISTIC sorted list of node ids hidden by a resolved view_hide config.
+
+    UNION semantics — a node is default-hidden if ANY holds:
+      * its label (qualified) in ``names`` OR its trailing ``::`` segment in ``names``
+      * fnmatch(label, p) OR fnmatch(segment, p) for any p in ``patterns``
+      * ``min_fan_in`` is not None AND the node's fan_in >= min_fan_in
+
+    ENGINE-SIDE ONLY: in a boundary graph (any node carries a target/dependency
+    zone), only ``dependency``-zone nodes are eligible — the config can NEVER
+    default-hide a target/internal symbol (you never want to drop the code you are
+    analyzing). A non-boundary graph (no zones) is matched as before.
+
+    Matching BOTH label and trailing segment catches bare-name externals
+    (``dep:<name>`` / ``amb:<name>``, label == bare) AND qualified internals
+    (``Outer::Inner::FString``) together. CASE-SENSITIVE (C++ identifiers are).
+    Reuses ``render._importance`` for fan_in (already sorted/deterministic).
+    """
+    names = set(vh.get("names") or [])
+    pats = list(vh.get("patterns") or [])
+    mfi = vh.get("min_fan_in")
+    imp = render._importance(g)              # {nid: {fan_in, ...}}, reused (no new metric)
+    zoned = any(g.nodes[n].attrs.get("zone") in ("target", "dependency") for n in g.nodes)
+    hit: set[str] = set()
+    for nid in g.nodes:                      # g.nodes is a dict id->Node
+        node = g.nodes[nid]
+        if zoned and node.attrs.get("zone") != "dependency":
+            continue                         # engine-side only: never hide target/internal symbols
+        label = node.label or nid
+        seg = label.rsplit("::", 1)[-1]
+        if label in names or seg in names:
+            hit.add(nid)
+        elif any(fnmatch.fnmatch(label, p) or fnmatch.fnmatch(seg, p) for p in pats):
+            hit.add(nid)
+        elif mfi is not None and imp.get(nid, {}).get("fan_in", 0) >= mfi:
+            hit.add(nid)
+    return sorted(hit)                       # SORTED => byte-stable bake
+
+
 def cmd_boundary(args) -> int:
     info = _store_info(args)
     with stores.Store(info.db_path) as st:
@@ -113,7 +154,12 @@ def cmd_boundary(args) -> int:
         # --layers / --dep-depth affect ONLY the html path (bands are inert otherwise).
         if args.format == "html":
             band_of, bands_meta = boundary.assign_bands(g, args.layers)
-            _emit(render.to_html(g, view=args.view, band_of=band_of, bands_meta=bands_meta))
+            # Resolve the committed/overridden view-hide config (None => v0.6.0 bytes).
+            mr_cfg = stores.manyread_lib()[0]
+            vh = mr_cfg.load_view_hide(info.store, Path(args.ignore) if args.ignore else None)
+            default_hidden = _default_hidden_keys(g, vh) if vh else None
+            _emit(render.to_html(g, view=args.view, band_of=band_of,
+                                 bands_meta=bands_meta, default_hidden=default_hidden))
         else:
             if args.view == "internal":
                 view = boundary.internal_view(g)
@@ -182,6 +228,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="dependency expansion layers behind the surface (1=surface only; "
                          "2 populates dep-core). Distinct from --depth (the BFS budget).")
     pb.add_argument("--format", choices=list(render.FORMATS), default="html")
+    pb.add_argument("--ignore", default=None,
+                    help="(html only) view-hide config JSON (names/patterns/min_fan_in, or a "
+                         "{view_hide:{...}} wrapper). Default: auto-discover "
+                         "manyread.json['view_hide']. Absent + no config => identical to v0.6.0.")
     pb.set_defaults(func=cmd_boundary)
 
     args = ap.parse_args(argv)
