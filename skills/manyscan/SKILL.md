@@ -52,6 +52,26 @@ indexed); `--target-root ""` = whole index is the target; `--dep-root` is repeat
 multiple dependency sources. Use it to find split seams + the dependency API surface to
 abstract. (The old `plugin-boundary` / `--plugin-root` / `--engine-root` names still work.)
 
+### Layered views (`--layers flat|two|four`) + drill-down
+The boundary html draws N ORDERED, FRAMED bands left→right (forceAtlas2 still does the
+organic layout WITHIN each band); `--layers`/`--dep-depth` affect ONLY `--format html`.
+- `--layers four` (default): `[target-core | target-iface || dep-iface | dep-core]` —
+  target-core = insulated target symbols; target-iface = target symbols that touch a
+  dependency (the call sites to wrap); dep-iface = the dependency API surface directly
+  referenced (what to abstract); dep-core = dependency symbols behind the surface (empty
+  unless `--dep-depth 2`, but the band is always drawn/labelled — not an error).
+- `--layers two`: `[target || dependency]`; `--layers flat`: no boxes (plain zone color = today).
+- `--dep-depth 2`: one extra bounded pass populates dep-core (behind the API surface).
+  Default 1. NOTE `--dep-depth` (dependency expansion layers) is distinct from `--depth`
+  (the BFS budget — leave it).
+PRE-PROCESS by composition: a "chain of a file" is just `scan <seed> --max-nodes N` (a
+bounded slice); for the framed boundary use `boundary --target-root <dir> --layers four`.
+Presets are EXAMPLES — pick the seed/roots/layers per question (no rigid menu).
+DRILL-DOWN: double-click any node in the html to open a NEW TAB with that node's
+up+downstream chain (computed client-side over the LOADED slice). Honest limit: the
+in-tab chain only sees the currently loaded slice — for a deeper/fresh chain, re-run
+manyscan with that node as the seed.
+
 **Visual:** `--format html > deps.html` emits ONE self-contained file (GPU/WebGL sigma.js +
 forceAtlas2 layout, smooth pan/zoom/drag, search, color-by-kind/zone, red+thick = bridge,
 dashed/dotted = ambiguous/unresolved edge; **tap any node to see its file path**) — open in

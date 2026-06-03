@@ -357,3 +357,199 @@ def test_roots_by_len_total_order(module_store):
         roots = rollup.roots_by_len(st)
         # modA and modB are equal length -> must be in (-len, str) order
         assert roots == sorted(roots, key=lambda r: (-len(r), r))
+
+
+# --- N-band layering: assign_bands correctness + dep-depth-2 population ----------
+def _mk_store(tmp_path, files, syms, edges):
+    """Build a tiny real-schema store from (files, syms, edges) literals."""
+    _, mr_db = stores.manyread_lib()
+    store = tmp_path / "manyread"
+    store.mkdir(parents=True)
+    db_path = store / "source.db"
+    conn = mr_db.connect(db_path)
+    mr_db.init_schema(conn)
+    for fid, path, ext, content in files:
+        conn.execute("INSERT INTO files(id,path,ext,size,mtime,content) VALUES(?,?,?,?,0,?)",
+                     (fid, path, ext, len(content), content))
+        conn.execute("INSERT INTO files_fts(rowid,path,content) VALUES(?,?,?)", (fid, path, content))
+    for sid, fid, name, kind, sl, el, parent in syms:
+        conn.execute("INSERT INTO symbols(id,file_id,name,kind,lang,start_line,end_line,"
+                     "start_byte,end_byte,parent_id) VALUES(?,?,?,?, 'cpp',?,?,0,1,?)",
+                     (sid, fid, name, kind, sl, el, parent))
+    for eid, fid, src, dst, dname, rel in edges:
+        conn.execute("INSERT INTO edges(id,file_id,src_symbol_id,dst_symbol_id,dst_name,relation) "
+                     "VALUES(?,?,?,?,?,?)", (eid, fid, src, dst, dname, rel))
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+def test_assign_bands_flat_two_four(boundary_store):
+    with stores.Store(boundary_store) as st:
+        _, g = _build(st)
+        # flat -> all band 0, no boxes
+        bf, mf = boundary.assign_bands(g, "flat")
+        assert set(bf.values()) == {0} and mf == []
+        # two -> target ids band 0, dependency ids band 1, 2-entry meta
+        bt, mt = boundary.assign_bands(g, "two")
+        assert bt["s1"] == 0                       # target Foo
+        for nid in ("s2", "s3", "dep:Missing", "dep:Dup"):
+            assert bt[nid] == 1                    # dependencies
+        assert mt == [{"band": 0, "label": "target"}, {"band": 1, "label": "dependency"}]
+        # four -> s1 is target-iface (1) since it has crossing edges; deps are dep-iface (2)
+        bq, mq = boundary.assign_bands(g, "four")
+        assert bq["s1"] == boundary.TARGET_IFACE   # in boundary_nodes(g)
+        for nid in ("s2", "s3", "dep:Missing", "dep:Dup"):
+            assert bq[nid] == boundary.DEP_IFACE   # surface at depth-1
+        assert [m["label"] for m in mq] == ["target-core", "target-iface", "dep-iface", "dep-core"]
+
+
+def test_assign_bands_no_zone_falls_back_to_flat(synth_store):
+    """A plain (no-zone) slice falls back to flat without raising."""
+    from lib import scope
+    with stores.Store(synth_store) as st:
+        g = scope.scan(st, "pkg/a.py", Budget(max_nodes=50, max_depth=2, direction="out"))
+        for layers in ("flat", "two", "four"):
+            bo, bm = boundary.assign_bands(g, layers)
+            assert set(bo.values()) == {0}
+            assert bm == []                        # no boxes for a no-zone graph
+
+
+def test_assign_bands_deterministic(boundary_store):
+    """assign_bands('four') band_of is byte-stable across calls (sorted consumer loop)."""
+    with stores.Store(boundary_store) as st:
+        _, g = _build(st)
+        a = boundary.assign_bands(g, "four")
+        b = boundary.assign_bands(g, "four")
+        c = boundary.assign_bands(g, "four")
+        assert a == b == c
+        assert list(a[0].keys()) == sorted(a[0].keys())  # insertion order is sorted
+
+
+def test_target_core_vs_iface_split(tmp_path):
+    """A target with a crossing edge -> target-iface (1); a target with only
+    target->target edges -> target-core (0)."""
+    files = [(1, "plugin/X.uplugin", ".uplugin", "{}"),
+             (2, "plugin/A.cpp", ".cpp", "x"),
+             (3, "plugin/B.cpp", ".cpp", "x"),
+             (4, "engine/Dep.h", ".h", "x")]
+    # A (s1) uses B (s2, target) AND Dep (s3, dependency) -> A is iface.
+    # B (s2) only used by A; B has no outgoing edge -> B is target-core.
+    syms = [(1, 2, "A", "class", 1, 1, None),
+            (2, 3, "B", "class", 1, 1, None),
+            (3, 4, "Dep", "class", 1, 1, None)]
+    edges = [(1, 2, 1, 2, None, "uses_type"),     # A -> B (target->target)
+             (2, 2, 1, 3, None, "uses_type")]      # A -> Dep (target->dependency, crossing)
+    db = _mk_store(tmp_path, files, syms, edges)
+    with stores.Store(db) as st:
+        z = boundary.make_zoning(st, "plugin", ["engine"])
+        g = boundary.build(st, z, Budget(max_nodes=400, max_depth=2, direction="out"))
+        bo, _ = boundary.assign_bands(g, "four")
+        assert bo["s1"] == boundary.TARGET_IFACE   # A has a crossing edge
+        assert bo["s2"] == boundary.TARGET_CORE    # B is insulated
+        assert bo["s3"] == boundary.DEP_IFACE      # Dep is the surface
+
+
+def test_dep_depth_2_populates_dep_core(tmp_path):
+    """A surface dep symbol that ITSELF references another dep symbol: at depth-1 the
+    second dep is a sink (absent); at depth-2 it appears, carries dep_core, lands band 3."""
+    files = [(1, "plugin/X.uplugin", ".uplugin", "{}"),
+             (2, "plugin/Foo.cpp", ".cpp", "x"),
+             (3, "engine/Surface.h", ".h", "x"),
+             (4, "engine/Behind.h", ".h", "x")]
+    syms = [(1, 2, "Foo", "class", 1, 1, None),     # target
+            (2, 3, "Surface", "class", 1, 1, None),  # dependency surface (s-id)
+            (3, 4, "Behind", "class", 1, 1, None)]   # dependency behind the surface
+    edges = [(1, 2, 1, 2, None, "uses_type"),        # Foo -> Surface  (depth-1)
+             (2, 3, 2, 3, None, "uses_type")]         # Surface -> Behind (depth-2)
+    db = _mk_store(tmp_path, files, syms, edges)
+    with stores.Store(db) as st:
+        z = boundary.make_zoning(st, "plugin", ["engine"])
+        b = Budget(max_nodes=400, max_depth=2, direction="out")
+        # depth-1: Behind (s3) is a sink -> not present
+        g1 = boundary.build(st, z, b, dep_depth=1)
+        assert "s3" not in g1.nodes
+        bo1, _ = boundary.assign_bands(g1, "four")
+        assert 3 not in bo1.values()                 # dep-core band empty at depth-1
+        # depth-2: Behind present, marked dep_core, lands dep-core band; Surface stays dep-iface
+        g2 = boundary.build(st, z, b, dep_depth=2)
+        assert "s3" in g2.nodes
+        assert g2.nodes["s3"].attrs.get("dep_core") == 1
+        assert g2.nodes["s3"].attrs.get("dep_depth") == 2
+        bo2, _ = boundary.assign_bands(g2, "four")
+        assert bo2["s2"] == boundary.DEP_IFACE       # Surface stays the API surface
+        assert bo2["s3"] == boundary.DEP_CORE        # Behind is behind it
+
+
+def test_dep_core_mislabel_guard(tmp_path):
+    """A dep symbol referenced by BOTH a target (depth-1) AND another dep must stay
+    dep-iface (band 2), NOT dep-core — it was first added at depth-1, so the depth-2
+    pass never re-adds nor marks it."""
+    files = [(1, "plugin/X.uplugin", ".uplugin", "{}"),
+             (2, "plugin/Foo.cpp", ".cpp", "x"),
+             (3, "engine/Shared.h", ".h", "x"),
+             (4, "engine/Surface.h", ".h", "x")]
+    syms = [(1, 2, "Foo", "class", 1, 1, None),       # target
+            (2, 4, "Surface", "class", 1, 1, None),    # dependency surface
+            (3, 3, "Shared", "class", 1, 1, None)]      # referenced by BOTH Foo and Surface
+    edges = [(1, 2, 1, 3, None, "uses_type"),          # Foo -> Shared    (depth-1)
+             (2, 2, 1, 2, None, "uses_type"),          # Foo -> Surface   (depth-1)
+             (3, 4, 2, 3, None, "uses_type")]           # Surface -> Shared (depth-2)
+    db = _mk_store(tmp_path, files, syms, edges)
+    with stores.Store(db) as st:
+        z = boundary.make_zoning(st, "plugin", ["engine"])
+        g = boundary.build(st, z, Budget(max_nodes=400, max_depth=2, direction="out"),
+                           dep_depth=2)
+        # Shared (s3) was added at depth-1 (Foo references it) -> NOT re-added/marked at depth-2
+        assert g.nodes["s3"].attrs.get("dep_core") is None
+        bo, _ = boundary.assign_bands(g, "four")
+        assert bo["s3"] == boundary.DEP_IFACE
+
+
+def test_dep_depth_2_truncation_composes(tmp_path):
+    """A low max-nodes that overflows DURING the depth-2 pass must set g.truncated +
+    g.elided (depth-2 overflow is reported honestly, not silently dropped)."""
+    files = [(1, "plugin/X.uplugin", ".uplugin", "{}"),
+             (2, "plugin/Foo.cpp", ".cpp", "x"),
+             (3, "engine/Surface.h", ".h", "x"),
+             (4, "engine/Behind.h", ".h", "x")]
+    syms = [(1, 2, "Foo", "class", 1, 1, None),
+            (2, 3, "Surface", "class", 1, 1, None),
+            (3, 4, "Behind", "class", 1, 1, None)]
+    edges = [(1, 2, 1, 2, None, "uses_type"),        # Foo -> Surface
+             (2, 3, 2, 3, None, "uses_type")]         # Surface -> Behind (depth-2)
+    db = _mk_store(tmp_path, files, syms, edges)
+    with stores.Store(db) as st:
+        z = boundary.make_zoning(st, "plugin", ["engine"])
+        # cap=2 admits Foo + Surface; the depth-2 Behind node overflows.
+        g = boundary.build(st, z, Budget(max_nodes=2, max_depth=2, direction="out"),
+                           dep_depth=2)
+        assert g.truncated is True and g.elided > 0
+        assert "s3" not in g.nodes
+
+
+def test_cli_layers_dep_depth_wiring(boundary_store, capsys):
+    """boundary --layers four --dep-depth 2 --format html returns 0 and the html
+    carries baked band attrs + the BANDS const; --layers flat emits const BANDS=[];
+    and --format json is byte-identical with vs without --layers (bands inert)."""
+    import scan
+    rc = scan.main(["boundary", "--store", str(boundary_store), "--target-root", "plugin",
+                    "--layers", "four", "--dep-depth", "2", "--format", "html"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert '"band":' in out and "const BANDS=[{" in out
+
+    rc = scan.main(["boundary", "--store", str(boundary_store), "--target-root", "plugin",
+                    "--layers", "flat", "--format", "html"])
+    assert rc == 0
+    assert "const BANDS=[];" in capsys.readouterr().out
+
+    rc = scan.main(["boundary", "--store", str(boundary_store), "--target-root", "plugin",
+                    "--layers", "four", "--format", "json"])
+    assert rc == 0
+    with_layers = capsys.readouterr().out
+    rc = scan.main(["boundary", "--store", str(boundary_store), "--target-root", "plugin",
+                    "--format", "json"])
+    assert rc == 0
+    without_layers = capsys.readouterr().out
+    assert with_layers == without_layers     # bands inert for non-html formats

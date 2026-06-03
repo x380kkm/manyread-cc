@@ -35,6 +35,13 @@ from lib.graph import Budget, Edge, Evidence, Graph, Node
 TARGET = "target"
 DEPENDENCY = "dependency"
 
+# Band indices for the 4-layer refactoring view (left->right reading order):
+#   target-core   = target symbol with NO crossing edge into a dependency
+#   target-iface  = target symbol WITH >=1 crossing edge (the call sites to wrap)
+#   dep-iface     = dependency symbol referenced DIRECTLY by a target (the API surface)
+#   dep-core      = dependency symbol behind the surface (only via --dep-depth 2)
+TARGET_CORE, TARGET_IFACE, DEP_IFACE, DEP_CORE = 0, 1, 2, 3
+
 # UE export macros (e.g. MATBP2FP_API) parse as a leading type_identifier on a
 # declaration; they are NOT real types — skip them as boundary noise.
 _MACRO_RE = re.compile(r"^[A-Z][A-Z0-9_]*_API$")
@@ -264,7 +271,8 @@ def _target_seed_rows(store, z: Zoning) -> list[sqlite3.Row]:
     return [r for r in rows if zone_of_path(r["path"], z) == TARGET]
 
 
-def build(store, z: Zoning, budget: Budget, alias: str | None = None) -> Graph:
+def build(store, z: Zoning, budget: Budget, alias: str | None = None,
+          dep_depth: int = 1) -> Graph:
     """Whole target + its depth-1 dependency interface, by DIRECT construction.
 
     Every target-zone symbol is included (the target is finite and fully wanted —
@@ -274,6 +282,17 @@ def build(store, z: Zoning, budget: Budget, alias: str | None = None) -> Graph:
     depth-1 SINKS (their own edges are never followed, since only target symbols
     are iterated). ``budget.max_nodes`` is a safety cap with honest truncation.
     Per-edge confidence on ``g.edge_confidence``; UE ``*_API`` macros are skipped.
+
+    ``dep_depth`` controls how many bounded out-edge layers are expanded past the
+    target. ``dep_depth <= 1`` (the default) is the historical behavior: ONE layer
+    (the dependency *surface*) is expanded and every dependency node is a SINK —
+    byte-for-byte identical build() output to before. ``dep_depth >= 2`` runs ONE
+    extra bounded layer behind the surface; dependency SYMBOL nodes FIRST added in
+    that pass are marked ``dep_core`` (this id-tracking is exact: a dep symbol
+    referenced by BOTH a target and another dep was already added at depth-1, so the
+    depth-2 pass never re-adds it and it stays a surface/``dep-iface`` node). The
+    shared ``truncated``/``elided`` counters compose across both passes, so a
+    depth-2 overflow is reported honestly, not silently dropped.
     """
     g = Graph()
     cap = budget.max_nodes
@@ -291,23 +310,45 @@ def build(store, z: Zoning, budget: Budget, alias: str | None = None) -> Graph:
         g.add_node(node)
         target_ids.append(node.id)
 
-    for nid in target_ids:
-        sid = int(nid[1:])
-        src_path = g.nodes[nid].attrs.get("path")
-        for er in out_edges(store, sid):
-            dn = er["dst_name"]
-            if dn and _MACRO_RE.match(dn):
-                continue  # drop UE export-macro pseudo-types
-            res = resolve_target(store, er, z, alias)
-            if res.node.id not in g.nodes:
-                if len(g.nodes) >= cap:
-                    truncated = True
-                    elided += 1
-                    continue
-                g.add_node(res.node)
-            edge = Edge(nid, res.node.id, er["relation"], Evidence(src_path, None), 1)
-            g.add_edge(edge)
-            confidence[edge.key()] = res.confidence
+    def _expand(src_ids: list[str]) -> list[str]:
+        """One bounded out-edge layer from a SORTED list of source ids.
+
+        Resolves each source's boundary edges (same _MACRO_RE skip + resolve_target +
+        confidence as the historical loop), de-dups new nodes via ``id not in g.nodes``,
+        shares the nonlocal ``truncated``/``elided`` cap accounting, and RETURNS the
+        sorted set of NEWLY-ADDED dependency SYMBOL ids only (``s``-prefixed, zone ==
+        DEPENDENCY) — the deterministic seed for the next layer.
+        """
+        nonlocal truncated, elided
+        new_dep_syms: set[str] = set()
+        for nid in src_ids:
+            sid = int(nid[1:])
+            src_path = g.nodes[nid].attrs.get("path")
+            for er in out_edges(store, sid):
+                dn = er["dst_name"]
+                if dn and _MACRO_RE.match(dn):
+                    continue  # drop UE export-macro pseudo-types
+                res = resolve_target(store, er, z, alias)
+                if res.node.id not in g.nodes:
+                    if len(g.nodes) >= cap:
+                        truncated = True
+                        elided += 1
+                        continue
+                    g.add_node(res.node)
+                    if (res.node.attrs.get("zone") == DEPENDENCY
+                            and res.node.id.startswith("s")):
+                        new_dep_syms.add(res.node.id)
+                edge = Edge(nid, res.node.id, er["relation"], Evidence(src_path, None), 1)
+                g.add_edge(edge)
+                confidence[edge.key()] = res.confidence
+        return sorted(new_dep_syms)
+
+    surface_dep = _expand(target_ids)            # depth-1 (the historical behavior)
+    if dep_depth >= 2:                            # one extra bounded layer behind the surface
+        core_ids = _expand(surface_dep)
+        for nid in core_ids:                      # id-tracking marking (first-added-in-depth-2)
+            g.nodes[nid].attrs["dep_core"] = 1
+            g.nodes[nid].attrs["dep_depth"] = 2
 
     g.edge_confidence = {e.key(): confidence.get(e.key(), "direct") for e in g.edges}
     if truncated:
@@ -342,6 +383,54 @@ def boundary_nodes(g: Graph) -> list[str]:
         if src.attrs.get("zone") == TARGET and dst.attrs.get("zone") == DEPENDENCY:
             out.add(e.src)
     return sorted(out)
+
+
+def assign_bands(g: Graph, layers: str) -> tuple[dict[str, int], list[dict]]:
+    """Assign each node to an ORDERED band (left->right) for the layered html view.
+
+    PURE + sorted; NEVER mutates ``g`` (the same ``g`` is reused by
+    ``internal_view`` / ``dependency_surface`` for the non-html formats). Returns
+    ``(band_of, bands_meta)`` where ``band_of`` maps every node id to an integer band
+    and ``bands_meta`` is the ordered list of ``{"band": i, "label": str}`` boxes.
+
+    * ``flat`` (or a graph with no zones) -> every node in band 0, no boxes (``[]``)
+      => the renderer emits ``const BANDS=[]`` and the box/partition layers are
+      no-ops (exactly the historical flat behavior).
+    * ``two`` -> band 0 = every ``target`` node, band 1 = every ``dependency`` node.
+    * ``four`` -> ``[target-core | target-iface || dep-iface | dep-core]``:
+        - target-core  (0): a target node with NO crossing edge into a dependency,
+        - target-iface (1): a target node WITH >=1 crossing edge (``boundary_nodes``),
+        - dep-iface    (2): a dependency node referenced DIRECTLY by a target, or any
+          dependency node not marked ``dep_core``,
+        - dep-core     (3): a dependency node marked ``dep_core`` (only via
+          ``build(dep_depth=2)``) AND not part of the surface.
+      The 4th (dep-core) band is KEPT in ``bands_meta`` even when empty (at
+      ``--dep-depth 1``) so its framed/labelled box is always drawn — a documented,
+      non-error state.
+    """
+    has_zone = any(n.attrs.get("zone") in (TARGET, DEPENDENCY) for n in g.nodes.values())
+    if layers == "flat" or not has_zone:
+        return ({nid: 0 for nid in sorted(g.nodes)}, [])
+    if layers == "two":
+        band_of = {nid: (TARGET_CORE if g.nodes[nid].attrs.get("zone") == TARGET else 1)
+                   for nid in sorted(g.nodes)}
+        return band_of, [{"band": 0, "label": "target"},
+                         {"band": 1, "label": "dependency"}]
+    # four
+    iface_targets = set(boundary_nodes(g))           # target nodes with a crossing edge
+    dep_surface = {e.dst for e in g.edges             # dep nodes referenced DIRECTLY by a target
+                   if (g.nodes.get(e.src) is not None and g.nodes.get(e.dst) is not None
+                       and g.nodes[e.src].attrs.get("zone") == TARGET
+                       and g.nodes[e.dst].attrs.get("zone") == DEPENDENCY)}
+    band_of = {}
+    for nid in sorted(g.nodes):
+        n = g.nodes[nid]
+        if n.attrs.get("zone") == TARGET:
+            band_of[nid] = TARGET_IFACE if nid in iface_targets else TARGET_CORE
+        else:
+            band_of[nid] = DEP_IFACE if (nid in dep_surface or not n.attrs.get("dep_core")) else DEP_CORE
+    return band_of, [{"band": 0, "label": "target-core"}, {"band": 1, "label": "target-iface"},
+                     {"band": 2, "label": "dep-iface"}, {"band": 3, "label": "dep-core"}]
 
 
 def dependency_surface(g: Graph, rollup_modules: bool = False, store=None) -> Graph:

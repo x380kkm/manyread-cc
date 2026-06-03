@@ -102,7 +102,7 @@ def cmd_boundary(args) -> int:
             return 2
         z = boundary.make_zoning(st, args.target_root, args.dep_root)
         budget = Budget(max_nodes=args.max_nodes, max_depth=max(2, args.depth), direction="out")
-        g = boundary.build(st, z, budget, alias=info.alias)
+        g = boundary.build(st, z, budget, alias=info.alias, dep_depth=args.dep_depth)
         if not g.nodes:
             print(f"warning: no target-zone symbols under target-root "
                   f"{z.target_root!r}", file=sys.stderr)
@@ -110,8 +110,10 @@ def cmd_boundary(args) -> int:
         # graph (both zones + crossings) and let render.to_html's view selector switch
         # internal|dependency|both client-side. The internal_view / dependency_surface
         # projections stay for the non-HTML formats (json/text/dot), which are static.
+        # --layers / --dep-depth affect ONLY the html path (bands are inert otherwise).
         if args.format == "html":
-            _emit(render.to_html(g, view=args.view))
+            band_of, bands_meta = boundary.assign_bands(g, args.layers)
+            _emit(render.to_html(g, view=args.view, band_of=band_of, bands_meta=bands_meta))
         else:
             if args.view == "internal":
                 view = boundary.internal_view(g)
@@ -173,6 +175,12 @@ def main(argv: list[str] | None = None) -> int:
     pb.add_argument("--view", choices=["internal", "dependency", "both"], default="both")
     pb.add_argument("--rollup-dep", "--rollup-engine", dest="rollup_dep", action="store_true",
                     help="(dependency view) group dependency targets by module root")
+    pb.add_argument("--layers", choices=["flat", "two", "four"], default="four",
+                    help="(html only) ordered framed bands: flat=none, two=[target||dependency], "
+                         "four=[target-core|target-iface||dep-iface|dep-core]")
+    pb.add_argument("--dep-depth", dest="dep_depth", type=int, default=1,
+                    help="dependency expansion layers behind the surface (1=surface only; "
+                         "2 populates dep-core). Distinct from --depth (the BFS budget).")
     pb.add_argument("--format", choices=list(render.FORMATS), default="html")
     pb.set_defaults(func=cmd_boundary)
 

@@ -161,6 +161,37 @@ _HTML_BOOTSTRAP = """
     FA2.assign(graph, { iterations: ITER, settings: settings });
   } catch(_){} }
 
+  // ---- N-band macro placement: constrain each node's x into its band's disjoint
+  // window so the bands read left->right WITHOUT overlap (forceAtlas2 still did the
+  // organic layout WITHIN each band; y is untouched). Run ONCE after FA2. No
+  // random/time => deterministic given FA2 (FA2 itself is in-browser, so emitted
+  // bytes are unaffected). NBANDS<=1 (flat / plain / empty BANDS) => no-op == today.
+  var NBANDS = (typeof BANDS !== 'undefined' && BANDS) ? BANDS.length : 1;
+  function partitionBands(){
+    if(NBANDS <= 1) return;
+    var W = 1000;                       // band-width constant (only scales the in-browser x-window)
+    var GAP = 0.22 * W, P = W + GAP;    // pitch between band left-edges
+    var lo = [], hi = [];
+    for(var b=0; b<NBANDS; b++){ lo[b] = Infinity; hi[b] = -Infinity; }
+    graph.forEachNode(function(k,a){
+      var b = (a.band|0); if(b<0 || b>=NBANDS) return;
+      var x = a.x; if(typeof x !== 'number' || !isFinite(x)) return;
+      if(x < lo[b]) lo[b] = x; if(x > hi[b]) hi[b] = x;
+    });
+    graph.forEachNode(function(k,a){
+      var b = (a.band|0); if(b<0 || b>=NBANDS) return;
+      var X0 = b * P;
+      var span = hi[b] - lo[b];
+      var nx;
+      // Guard the DIVISOR (covers single-member AND zero-span multi-member bands,
+      // incl. the offline-no-fa2 path where every node sits on its seed column):
+      if(!(span > 1e-9)){ nx = X0 + W/2; }
+      else { nx = X0 + (a.x - lo[b]) / span * W; }
+      graph.setNodeAttribute(k, 'x', nx);   // same write pattern as the drag handler
+    });
+  }
+  partitionBands();
+
   // ---- interaction state + reducers ----
   const ST = { q:'', view:(HAS_ZONES?INITVIEW:'both'), hits:null, hidden:new Set(), hiddenE:new Set() };
   function nodeReducer(key, attr){
@@ -254,6 +285,157 @@ _HTML_BOOTSTRAP = """
     if(dragged) graph.removeNodeAttribute(dragged,'highlighted');
     dragging=false; dragged=null;
   });
+
+  // ---- N-band background BOX layer: ordered framed rounded-rects drawn BEHIND the
+  // nodes/edges on a dedicated canvas, recomputed on afterRender from the LIVE per-band
+  // node bounding boxes (via graphToViewport) so they track pan/zoom/drag. Guarded on
+  // NBANDS>1 => flat/plain pages install nothing (byte-identical RUNTIME to today).
+  if(NBANDS > 1){
+    var container = renderer.getContainer();
+    var bcanvas = document.createElement('canvas');
+    bcanvas.style.position = 'absolute';
+    bcanvas.style.left = '0'; bcanvas.style.top = '0';
+    bcanvas.style.pointerEvents = 'none';
+    bcanvas.style.zIndex = '0';
+    container.insertBefore(bcanvas, container.firstChild);  // first child => paints behind sigma layers
+    var bctx = bcanvas.getContext('2d');
+    // a SEPARATE faint band palette (never collides with node zone color)
+    var BAND_FILL = ['rgba(78,121,167,0.06)','rgba(89,161,79,0.06)',
+                     'rgba(242,142,43,0.06)','rgba(225,87,89,0.06)'];
+    var BAND_LINE = ['rgba(78,121,167,0.55)','rgba(89,161,79,0.55)',
+                     'rgba(242,142,43,0.55)','rgba(225,87,89,0.55)'];
+    function sizeBox(){
+      var dpr = window.devicePixelRatio || 1;
+      var w = container.offsetWidth, h = container.offsetHeight;
+      bcanvas.width = Math.max(1, Math.round(w*dpr));
+      bcanvas.height = Math.max(1, Math.round(h*dpr));
+      bcanvas.style.width = w + 'px'; bcanvas.style.height = h + 'px';
+      bctx.setTransform(dpr,0,0,dpr,0,0);
+    }
+    function roundRect(c,x,y,w,h,r){
+      r = Math.min(r, w/2, h/2); if(r<0) r=0;
+      c.beginPath();
+      c.moveTo(x+r,y); c.arcTo(x+w,y,x+w,y+h,r); c.arcTo(x+w,y+h,x,y+h,r);
+      c.arcTo(x,y+h,x,y,r); c.arcTo(x,y,x+w,y,r); c.closePath();
+    }
+    function drawBands(){
+      // clear the FULL canvas every frame (CSS px, since setTransform scales by dpr)
+      bctx.clearRect(0, 0, container.offsetWidth, container.offsetHeight);
+      var bb = [];
+      for(var b=0; b<NBANDS; b++) bb[b] = null;
+      // accumulate per-band viewport bbox over VISIBLE nodes (skip ST.hidden — the Set
+      // the view-toggle reducer actually reads — so boxes follow the view toggle).
+      graph.forEachNode(function(k,a){
+        if(ST.hidden.has(k)) return;
+        var b = (a.band|0); if(b<0 || b>=NBANDS) return;
+        var p = renderer.graphToViewport({x:a.x, y:a.y});
+        if(!p || !isFinite(p.x) || !isFinite(p.y)) return;
+        var box = bb[b];
+        if(!box){ bb[b] = {x0:p.x, y0:p.y, x1:p.x, y1:p.y}; }
+        else { if(p.x<box.x0)box.x0=p.x; if(p.y<box.y0)box.y0=p.y;
+               if(p.x>box.x1)box.x1=p.x; if(p.y>box.y1)box.y1=p.y; }
+      });
+      var pad = 26;
+      for(var b=0; b<NBANDS; b++){
+        var box = bb[b];
+        if(!box) continue;              // empty (or fully-hidden) band => skip its box
+        var x = box.x0 - pad, y = box.y0 - pad - 14;
+        var w = (box.x1 - box.x0) + pad*2, h = (box.y1 - box.y0) + pad*2 + 14;
+        roundRect(bctx, x, y, w, h, 10);
+        bctx.fillStyle = BAND_FILL[b % BAND_FILL.length]; bctx.fill();
+        bctx.lineWidth = 1.5; bctx.strokeStyle = BAND_LINE[b % BAND_LINE.length]; bctx.stroke();
+        var lbl = (BANDS[b] && BANDS[b].label) ? BANDS[b].label : ('band '+b);
+        bctx.font = '600 12px system-ui,Segoe UI,sans-serif';
+        bctx.fillStyle = BAND_LINE[b % BAND_LINE.length].replace('0.55','0.95');
+        bctx.fillText(lbl, x + 8, y + 14);
+      }
+    }
+    sizeBox();
+    renderer.on('afterRender', drawBands);
+    renderer.on('resize', sizeBox);
+  }
+
+  // ---- DRILL-DOWN: double-click a node -> open a NEW TAB with that node's up+downstream
+  // reachable chain (client-side BFS over the LOADED slice). The child reuses the SAME
+  // inlined libs + the SAME bootstrap text, so it gets the full UI (search, view toggle,
+  // hub/bridge, bands, AND recursive drill-down) bounded to the narrowed slice. Offline:
+  // the Blob URL is runtime-only; the emitted file fetches nothing over the network.
+  // HONEST LIMITATION (banner + docs): the in-browser chain only sees the currently
+  // loaded slice — a deeper/fresh chain = re-run manyscan with that node as the seed.
+  function chainKeys(root){
+    var fwd = {}, back = {};
+    DATA.edges.forEach(function(e){
+      (fwd[e.source] = fwd[e.source] || []).push(e.target);
+      (back[e.target] = back[e.target] || []).push(e.source);
+    });
+    var keep = {}; keep[root] = true;
+    function bfs(adj){
+      var q = [root], seen = {}; seen[root] = true;
+      while(q.length){
+        var cur = q.shift(); var ns = adj[cur] || [];
+        for(var i=0;i<ns.length;i++){ var nx = ns[i];
+          if(!seen[nx]){ seen[nx] = true; keep[nx] = true; q.push(nx); } }
+      }
+    }
+    bfs(fwd); bfs(back);
+    return keep;
+  }
+  function subData(root){
+    var keep = chainKeys(root);
+    return {
+      nodes: DATA.nodes.filter(function(n){ return keep[n.key]; }),
+      edges: DATA.edges.filter(function(e){ return keep[e.source] && keep[e.target]; })
+    };
+  }
+  function libTexts(){
+    var out = [], ss = document.querySelectorAll('script');
+    for(var i=0;i<ss.length;i++){ var s = ss[i];
+      if(s.id === 'ms-boot') continue;
+      if(s.src) continue;
+      var t = s.textContent || '';
+      if(t.indexOf('const ') === 0) continue;   // skip the BARE consts tag
+      out.push(t);
+    }
+    return out;   // document order: [graphology, graphology-library, sigma]
+  }
+  function bootText(){ var b = document.getElementById('ms-boot'); return b ? b.textContent : ''; }
+  function buildChild(root){
+    var sub = subData(root);
+    var rootLabel = (graph.hasNode(root) ? (graph.getNodeAttribute(root,'label')||root) : root);
+    var libs = libTexts();
+    var libTags = '';
+    for(var i=0;i<libs.length;i++){ libTags += '<script>' + libs[i] + '<\\/script>'; }
+    var consts = 'const DATA=' + JSON.stringify(sub) + ';\\n'
+      + 'const HAS_ZONES=' + (typeof HAS_ZONES!=='undefined' ? JSON.stringify(HAS_ZONES) : 'false') + ';\\n'
+      + 'const ITER=' + (typeof ITER!=='undefined' ? ITER : 90) + ';\\n'
+      + 'const INITVIEW=' + JSON.stringify(typeof INITVIEW!=='undefined'?INITVIEW:'both') + ';\\n'
+      + 'const BANDS=' + JSON.stringify(typeof BANDS!=='undefined'?BANDS:[]) + ';\\n';
+    var styleEl = document.querySelector('style');
+    var barEl = document.getElementById('bar');
+    var banner = '<div style="position:fixed;top:44px;left:0;right:0;z-index:9;'
+      + 'background:#3a2f12;color:#ffcf5c;padding:4px 10px;font:12px system-ui,sans-serif">'
+      + '\\u26a0 chain of ' + esc(rootLabel)
+      + ' (this slice only \\u2014 re-run manyscan for a deeper chain)</div>';
+    var html = '<!doctype html><html><head><meta charset=utf-8><title>chain: '
+      + esc(rootLabel) + '</title>'
+      + (styleEl ? styleEl.outerHTML : '')
+      + '</head><body>'
+      + (barEl ? barEl.outerHTML : '')
+      + banner
+      + '<div id="cy"></div><div id="info"></div>'
+      + libTags
+      + '<script>' + consts + '<\\/script>'
+      + '<script id="ms-boot">' + bootText() + '<\\/script>'
+      + '</body></html>';
+    return html;
+  }
+  function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  renderer.on('doubleClickNode', function(e){
+    e.preventSigmaDefault();                       // MUST stay synchronous-first (suppresses sigma's zoom)
+    var html = buildChild(e.node);
+    var url = URL.createObjectURL(new Blob([html], {type:'text/html'}));
+    window.open(url, '_blank');                    // do NOT revoke (races the child load)
+  });
 })();
 """
 
@@ -306,21 +488,32 @@ _ZONES = ("target", "dependency")
 _ZONE_COLOR = {"target": "#4e79a7", "dependency": "#f28e2b"}
 
 
-def _seed_xy(i: int, n_total: int, zone: str | None) -> tuple[float, float]:
-    """Deterministic initial layout seed (circle by sorted index; zone x-bias so the
-    two zones start apart). forceAtlas2 refines from here in-browser; rounding keeps
-    the emitted bytes stable."""
+def _seed_xy(i: int, n_total: int, zone: str | None = None,
+             band: int | None = None, n_bands: int = 1) -> tuple[float, float]:
+    """Deterministic initial layout seed (circle by sorted index; band/zone x-bias so
+    the bands/zones start apart). forceAtlas2 refines from here in-browser; rounding
+    keeps the emitted bytes stable.
+
+    When a ``band`` is given (n_bands > 1) the seed x is biased by band column (520
+    pitch) so the bands start in left->right order — a COARSE fallback used only if
+    forceAtlas2 is skipped (offline / no GPU); the intended geometry is the in-browser
+    ``partitionBands`` remap (a different pitch, hence the two constants differ). With
+    no band, the legacy two-zone bias is used.
+    """
     ang = 2.0 * math.pi * i / max(1, n_total)
     x = math.cos(ang) * 120.0
     y = math.sin(ang) * 120.0
-    if zone == "target":
+    if band is not None and n_bands > 1:
+        x += (band - (n_bands - 1) / 2.0) * 520.0
+    elif zone == "target":
         x -= 220.0
     elif zone == "dependency":
         x += 220.0
     return round(x, 3), round(y, 3)
 
 
-def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "both") -> str:
+def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "both",
+            band_of: dict | None = None, bands_meta: list | None = None) -> str:
     """Render a Graph as ONE self-contained interactive HTML file (sigma.js / WebGL).
 
     sigma + graphology + forceAtlas2 are inlined from the vendored ESM bundles as
@@ -367,6 +560,9 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
         return round(base, 2)
 
     # --- nodes: {key, attrs} with baked position / size / color (graphology model) ---
+    # n_bands counts EVERY band in bands_meta (incl. a possibly-empty dep-core band),
+    # so seam geometry is stable across graphs with/without dep-core.
+    n_bands = len(bands_meta) if bands_meta else 1
     nodes: list[dict] = []
     for i, n in enumerate(n_sorted):
         extra = g.frontier.get(n.id, 0)
@@ -377,7 +573,8 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
         zone = n.attrs.get("zone")
         ckey = zone if zoned else (cluster if clustered else (n.kind or "node"))
         ni = imp.get(n.id, {"deg": 0, "fan_in": 0, "hub": 0})
-        x, y = _seed_xy(i, n_total, zone if zoned else None)
+        nb = band_of.get(n.id, 0) if band_of is not None else None
+        x, y = _seed_xy(i, n_total, zone if zoned else None, band=nb, n_bands=n_bands)
         attrs = {
             "label": label, "x": x, "y": y, "size": _size(ni["deg"], ni["hub"]),
             "color": kcolor.get(ckey, "#888"), "kind": n.kind or "node",
@@ -386,6 +583,9 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
         }
         if zoned and zone in _ZONES:
             attrs["zone"] = zone
+        # GATE on band_of is not None: plain/flat DATA bytes are untouched (byte-compat).
+        if band_of is not None:
+            attrs["band"] = band_of.get(n.id, 0)
         nodes.append({"key": n.id, "attrs": attrs})
 
     # --- edges: {key, source, target, attrs} ---
@@ -480,9 +680,14 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
         f"const HAS_ZONES={'true' if zoned else 'false'};\n"
         f"const ITER={iters};\n"
         f"const INITVIEW={json.dumps(view)};\n"
+        f"const BANDS={json.dumps(bands_meta or [], ensure_ascii=False)};\n"
     )
-    script = "<script>" + consts + _HTML_BOOTSTRAP + "</script>"
-    return head + lib + script + "</body></html>"
+    # STRUCTURAL: the consts go in a BARE <script> (so the offline guard still counts 4
+    # bare lib+consts tags AND the drill-down child can distinguish it by a `const `
+    # prefix); the bootstrap gets id="ms-boot" so the child can retrieve it verbatim.
+    consts_tag = "<script>" + consts + "</script>"
+    boot_tag = '<script id="ms-boot">' + _HTML_BOOTSTRAP + "</script>"
+    return head + lib + consts_tag + boot_tag + "</body></html>"
 
 
 # --- text --------------------------------------------------------------------

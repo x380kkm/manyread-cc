@@ -29,7 +29,8 @@ Resolve the plugin root inline (re-run the `MR=` line each Bash call):
 MR="${CLAUDE_PLUGIN_ROOT:-$(ls -d ~/.claude/plugins/cache/*/manyread/*/ 2>/dev/null | sort | tail -1)}"
 uv run --python 3.12 "$MR/scripts/manyscan/scan.py" boundary --root <repo> \
     --target-root <target-rel-path> [--dep-root <dep-rel> ...] \
-    [--view both|internal|dependency] [--format html|json|text|dot] [--max-nodes N]
+    [--view both|internal|dependency] [--layers flat|two|four] [--dep-depth N] \
+    [--format html|json|text|dot] [--max-nodes N]
 ```
 The old name `plugin-boundary` (and the flags `--plugin-root` / `--engine-root`) still
 work as deprecated aliases mapping to `--target-root` / `--dep-root`.
@@ -50,6 +51,23 @@ work as deprecated aliases mapping to `--target-root` / `--dep-root`.
 - **dependency** — the bipartite **dependency API surface** (which dependency
   symbols/modules the target leans on) → what to preserve or abstract when modularizing.
 - **both** — the whole picture with the boundary between them.
+
+### Layered bands (`--layers`, html only) + drill-down
+`--layers`/`--dep-depth` change ONLY `--format html`; `json`/`text`/`dot` are unchanged.
+The html draws N ORDERED, FRAMED bands left→right (forceAtlas2 still lays out WITHIN each band):
+- **four** (default) — `[target-core | target-iface || dep-iface | dep-core]`, read
+  left→right as "what is insulated → what touches deps (call sites to wrap) → the dep API
+  surface to abstract → what is behind it". dep-core is empty unless `--dep-depth 2` (the
+  band is still drawn/labelled — a documented non-error state).
+- **two** — `[target || dependency]` (the gross split); **flat** — no boxes (zone color only).
+- **`--dep-depth 2`** runs one extra bounded pass to populate dep-core. Default 1.
+  `--dep-depth` (dependency expansion layers) is a DIFFERENT axis from `--depth` (the BFS
+  budget — leave it at the default).
+- **Double-click any node** in the html to open a NEW TAB with that node's up+downstream
+  chain (computed client-side over the loaded slice). The tab shows the limitation banner
+  "this slice only — re-run manyscan for a deeper chain": the in-browser chain only sees
+  the currently loaded slice, so for a deeper/fresh chain re-run manyscan with that node
+  as the seed.
 
 ## Rules
 - Read-only on the store; deterministic (same index + roots ⇒ identical output).

@@ -84,7 +84,14 @@ def test_to_html_offline_no_network_load():
     # when the asset exists), so a generated page contains zero network references.
     out = render.to_html(_slice())
     assert "<script src=" not in out     # nothing fetched over the network
-    assert out.count("<script>") >= 4    # 3 UMD libs + the bootstrap, all inlined
+    # 3 bare lib <script> + 1 bare consts <script> (the boot tag is <script id="..."> so
+    # it does NOT match the literal '<script>'; drill-down build-strings only inflate it).
+    assert out.count("<script>") >= 4
+    # harden the offline guard on the invariants that actually matter (not the count):
+    assert 'id="ms-boot"' in out         # the bootstrap is retrievable by the drill-down child
+    assert "new SigmaCls(" in out        # the boot tag carries the real sigma bootstrap
+    assert "window.graphology" in out    # graphology core UMD inlined
+    assert "graphologyLibrary" in out    # graphology-library (forceAtlas2) inlined
 
 
 def test_to_html_deterministic():
@@ -266,3 +273,95 @@ def test_dependency_view_hide_logic_leaves_no_dangling_edge():
         if (e.src, e.dst) in hidden_edges:  # edge itself hidden -> can't dangle
             continue
         assert e.src not in hidden_nodes and e.dst not in hidden_nodes
+
+
+# --- LAYERED N-band views: band-attr gating, box layer, drill-down, determinism ---
+def _bands_for(g, layers):
+    """Compute (band_of, bands_meta) the way scan.py wires them, for render tests."""
+    from lib import boundary
+    return boundary.assign_bands(g, layers)
+
+
+def test_band_attr_gating_flat_vs_banded():
+    # band_of=None (plain/flat) => NO "band": node attr in DATA, but const BANDS=[];
+    plain = render.to_html(_zoned_hub_graph())
+    assert '"band":' not in plain
+    assert "const BANDS=[];" in plain
+    # band_of provided => "band" rides into DATA + const BANDS=[{ ... with labels
+    bo, bm = _bands_for(_zoned_hub_graph(), "four")
+    banded = render.to_html(_zoned_hub_graph(), band_of=bo, bands_meta=bm)
+    assert '"band":' in banded
+    assert 'const BANDS=[{' in banded
+    # explicit ordered meta literal (locks the emitted bytes against reordering)
+    assert ('const BANDS=[{"band": 0, "label": "target-core"}, '
+            '{"band": 1, "label": "target-iface"}, '
+            '{"band": 2, "label": "dep-iface"}, '
+            '{"band": 3, "label": "dep-core"}];') in banded
+
+
+def test_band_attr_does_not_change_plain_data_bytes():
+    # the DATA payload of a plain band_of=None render must be byte-identical to today:
+    # adding `const BANDS=[];` is a separate const line, not part of DATA.
+    out = render.to_html(_slice())
+    marker = "const DATA="
+    start = out.index(marker) + len(marker)
+    end = out.index(";\n", start)
+    payload = out[start:end]
+    assert '"band":' not in payload
+
+
+def test_layered_html_byte_deterministic():
+    # render the SAME zoned graph twice with bands -> byte-identical + md5 equal
+    import hashlib
+    for layers in ("two", "four"):
+        bo, bm = _bands_for(_zoned_hub_graph(), layers)
+        a = render.to_html(_zoned_hub_graph(), band_of=bo, bands_meta=bm)
+        bo2, bm2 = _bands_for(_zoned_hub_graph(), layers)
+        b = render.to_html(_zoned_hub_graph(), band_of=bo2, bands_meta=bm2)
+        assert a == b
+        assert hashlib.md5(a.encode()).hexdigest() == hashlib.md5(b.encode()).hexdigest()
+
+
+def test_drilldown_markers_present():
+    bo, bm = _bands_for(_zoned_hub_graph(), "four")
+    out = render.to_html(_zoned_hub_graph(), band_of=bo, bands_meta=bm)
+    for tok in ("doubleClickNode", "preventSigmaDefault", "URL.createObjectURL",
+                "Blob(", "window.open(", "ms-boot", "chainKeys", "buildChild"):
+        assert tok in out, tok
+    # the </script> inside the child-build strings MUST be escaped so the HTML parser
+    # never sees a real closing tag for the parent page's script.
+    assert "<\\/script>" in out
+    # the only literal '</script>' occurrences are the 6 real closing tags of the
+    # emitted script tags (3 libs + consts + boot + ... ), NOT inside a build-string.
+    # Practically: every build-string close is the escaped form.
+    assert "'<\\/script>'" in out or '"<\\/script>"' in out
+
+
+def test_nband_box_layer_markers():
+    bo, bm = _bands_for(_zoned_hub_graph(), "four")
+    out = render.to_html(_zoned_hub_graph(), band_of=bo, bands_meta=bm)
+    for tok in ("afterRender", "graphToViewport", "insertBefore", "partitionBands",
+                "drawBands", "NBANDS"):
+        assert tok in out, tok
+    assert "pointerEvents" in out or "pointer-events" in out
+    # the box layer follows the view toggle by consulting ST.hidden (NOT a node attr)
+    assert "ST.hidden.has(k)" in out
+    # the partition divisor is guarded against a zero/near-zero span (no NaN crash)
+    assert "span > 1e-9" in out
+    # flat (band_of=None) installs no box layer: BANDS=[] makes NBANDS==1 a no-op
+    flat = render.to_html(_zoned_hub_graph())
+    assert "const BANDS=[];" in flat
+
+
+def test_flat_and_plain_still_render_with_features():
+    # backward compat: plain (no band) + zoned (no band) still render fully
+    for g in (_slice(), _zoned_hub_graph()):
+        out = render.to_html(g)
+        assert out.startswith("<!doctype html>") and out.rstrip().endswith("</html>")
+        assert "search node" in out
+        assert "const BANDS=[];" in out
+    # a two-band render still carries both zone colors
+    bo, bm = _bands_for(_zoned_hub_graph(), "two")
+    two = render.to_html(_zoned_hub_graph(), band_of=bo, bands_meta=bm)
+    assert '"color": "#4e79a7"' in two and '"color": "#f28e2b"' in two
+    assert "id='view'" in two            # zoned graph keeps the view toggle
