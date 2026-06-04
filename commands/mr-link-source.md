@@ -24,13 +24,19 @@ For each DSL node symbol:
    `/Script/Engine.MaterialExpressionMultiply`). **Absent from the schema ->** the
    node is reported `no-classPath` (a designed state, not an error).
 3. **ReflectedName** = the part after the last `.` (`MaterialExpressionMultiply`).
-4. Look it up in the code store across the fixed prefix set `["", "U", "A", "F"]`
-   (the UE convention: the C++ symbol is the ReflectedName with a `U`/`A`/`F` prefix),
-   over `class`/`struct` symbols. Candidates are UNIONed across all variants,
-   de-duped, and sorted `(path, id)`.
-5. **Confidence** (mirrors `manyscan` boundary resolution): 0 candidates ->
+4. Look it up in the code store, **PREFIX-PRIORITY**: try the tiers `U`, `A`, `F`,
+   then bare `""`, and stop at the FIRST that yields `class`/`struct` candidates (a
+   reflected name maps to exactly one C++ prefix). The bare name is last-resort only —
+   trying it eagerly explodes on common names (against a real engine, bare `"Material"`
+   matched **254** unrelated symbols).
+5. **Definition-preference**: within that tier, drop FORWARD-DECLARATIONS — UE headers
+   forward-declare a class in hundreds of files (`class UMaterial;`, a body-less
+   ~15-byte symbol); only the real definition has a body (large span). If a definition
+   exists, keep only definitions; if ONLY fwd-decls are indexed, keep them all (honest).
+6. **Confidence** (mirrors `manyscan` boundary resolution): 0 candidates ->
    `unresolved`; exactly 1 -> `resolved-unique` (symbol + `file:line`); N>1 ->
-   `resolved-ambiguous` — **ALL** candidates listed, **never silently picked**.
+   `resolved-ambiguous` — a deterministic SAMPLE of candidates is listed (`ambiguity`
+   carries the true total count), **never silently picked**.
 
 ## Preconditions
 - A **DSL store** with matlang symbols: `/mr-init` + `/mr-enrich` over the DSL text
@@ -75,14 +81,20 @@ uv run --python 3.12 "$MR/scripts/link_source.py" \
     --code-store W:/3dgs/NS_UE_5_6_1/manyread \
     --schema     "$MR/scripts/schemas/matlang.sample.json"
 ```
-`multiply` / `constant` / `material` resolve against the real classes; node types
-not yet in the sample schema surface as `no-classPath`.
+Verified against the real `NS_UE_5_6_1` index: **15/17** matlang nodes across the two
+bundled materials resolve **unique** to their real `UMaterialExpression*` definitions
+(e.g. `multiply -> UMaterialExpressionMultiply @ .../Materials/MaterialExpressionMultiply.h:13`).
+The 2 remaining are the `material` roots (`/Script/Engine.Material -> UMaterial`), which
+that index only FORWARD-declares — no definition under that name, so honestly `ambiguous`.
+Node types not yet in the sample schema surface as `no-classPath`.
 
 ## Honest boundary (read before trusting the report)
-- **By-name + U/A/F prefix heuristic.** Resolution matches the ReflectedName and its
-  `U`/`A`/`F` prefix variants. A name that legitimately exists under more than one
-  prefix is reported `ambiguous` — **never auto-picked**. The prefix set is fixed
-  (`"", U, A, F`); an exotic/templated prefix is a known miss.
+- **Prefix-priority + definition-preference heuristics.** Resolution tries the prefix
+  tiers `U`/`A`/`F`/`""` in order (first non-empty tier wins; bare name last-resort),
+  then drops forward-declarations (declaration-sized spans) in favor of the definition.
+  Both are UE conventions, not guarantees: an exotic/templated prefix is a known miss,
+  and a body-less or anomalously-named definition (the real `UMaterial` in some indexes)
+  can stay `ambiguous` — **never auto-picked**.
 - **Needs a code store that indexes the classes.** If the engine isn't indexed, real
   nodes report `unresolved` — that is honest, not a bug.
 - **Only schema nodeTypes get a classPath.** The shipped sample schema is **PARTIAL**

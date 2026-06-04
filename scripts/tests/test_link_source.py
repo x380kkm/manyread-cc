@@ -302,3 +302,62 @@ def test_cli_exit_codes(stores_pair, capsys):
     rc2 = L.main(["--dsl-store", "W:/nope/nope", "--code-store", str(code_db),
                   "--schema", SCHEMA])
     assert rc2 == 2
+
+
+# --- definition-preference (v0.8.6) ------------------------------------------
+# A custom store builder that takes EXPLICIT spans, so we can plant a real
+# definition (large span) among forward-declarations (tiny span) — the stub
+# stores above use span 1 and never exercise this path.
+def _build_store(tmp: Path, files, syms, lang: str) -> Path:
+    """files: [(fid, path)]; syms: [(sid, fid, name, kind, start_byte, end_byte, attrs)]."""
+    _, mr_db = L.stores.manyread_lib()
+    store = tmp / "manyread"
+    store.mkdir(parents=True)
+    db_path = store / "source.db"
+    conn = mr_db.connect(db_path)
+    mr_db.init_schema(conn)
+    for fid, path in files:
+        conn.execute("INSERT INTO files(id,path,ext,size,mtime,content) VALUES(?,?,'.x',0,0,'')", (fid, path))
+        conn.execute("INSERT INTO files_fts(rowid,path,content) VALUES(?,?,'')", (fid, path))
+    for sid, fid, name, kind, sb, eb, attrs in syms:
+        conn.execute(
+            "INSERT INTO symbols(id,file_id,name,kind,lang,start_line,end_line,"
+            "start_byte,end_byte,parent_id,attrs) VALUES(?,?,?,?,?,1,1,?,?,NULL,?)",
+            (sid, fid, name, kind, lang, sb, eb, attrs),
+        )
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+def test_definition_preferred_over_forward_declarations(tmp_path, monkeypatch):
+    """1 definition (large span) + N forward-declarations (tiny span) -> the
+    definition wins, UNIQUE. This is the real-engine pattern: UMaterialExpressionX
+    is forward-declared in many headers; only the definition has a body."""
+    monkeypatch.setenv("MANYREAD_HOME", str(tmp_path / "hub"))
+    code = _build_store(tmp_path / "code",
+        [(1, "engine/Mul.h"), (2, "a/A.h"), (3, "b/B.h"), (4, "c/C.h")],
+        [(1, 1, "UMaterialExpressionMultiply", "class", 0, 1070, None),  # DEFINITION
+         (2, 2, "UMaterialExpressionMultiply", "class", 0, 33, None),    # fwd-decl
+         (3, 3, "UMaterialExpressionMultiply", "class", 0, 33, None),    # fwd-decl
+         (4, 4, "UMaterialExpressionMultiply", "class", 0, 33, None)],   # fwd-decl
+        "cpp")
+    dsl = _build_store(tmp_path / "dsl", [(1, "M.matlang")],
+        [(1, 1, "$m", "node", 0, 1, '{"node_type": "multiply"}')], "matlang")
+    e = _by_name(L.link(str(dsl), str(code), SCHEMA), "$m")
+    assert e["status"] == "resolved-unique"
+    assert e["resolved"]["loc"] == "engine/Mul.h:1"  # the definition, never a fwd-decl
+
+
+def test_only_forward_declarations_stay_ambiguous(tmp_path, monkeypatch):
+    """When ONLY forward-declarations are indexed (no definition under that name —
+    the real UMaterial anomaly), they are kept and surfaced as ambiguous, not hidden."""
+    monkeypatch.setenv("MANYREAD_HOME", str(tmp_path / "hub"))
+    code = _build_store(tmp_path / "code", [(1, "a/A.h"), (2, "b/B.h")],
+        [(1, 1, "UMaterial", "class", 0, 15, None),
+         (2, 2, "UMaterial", "class", 0, 15, None)], "cpp")
+    dsl = _build_store(tmp_path / "dsl", [(1, "M.matlang")],
+        [(1, 1, "M_Root", "material", 0, 1, "{}")], "matlang")
+    e = _by_name(L.link(str(dsl), str(code), SCHEMA), "M_Root")
+    assert e["status"] == "resolved-ambiguous"
+    assert e["resolved"]["ambiguity"] == 2

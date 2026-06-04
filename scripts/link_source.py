@@ -73,8 +73,14 @@ stores = _load_module("manyscan_stores", os.path.join(_MANYSCAN_DIR, "lib", "sto
 
 # UE classes are emitted kind='class'; F-prefixed reflected types are structs.
 CLASS_KINDS = {"class", "struct"}
-# Try the bare ReflectedName, then the U/A/F prefix variants (fixed order).
-PREFIXES = ("", "U", "A", "F")
+# An ambiguous resolution lists at most this many candidate locations (a
+# deterministic sample); the true total is reported separately as "ambiguity".
+_CAND_CAP = 12
+# UE reflected names map to a PREFIXED C++ class (U/A/F); try those tiers in
+# priority order and stop at the first non-empty one. The bare name is LAST-RESORT
+# only (a genuinely prefixless type) — trying it eagerly explodes on common names:
+# against a real engine index, bare "Material" matched 254 unrelated symbols.
+PREFIXES = ("U", "A", "F", "")
 
 
 # --- local, stdlib-only schema loader (a copy of dsl_validate.load_schema) -----
@@ -128,10 +134,13 @@ def _norm(path: str) -> str:
 def resolve_class(code: "stores.Store", reflected: str, code_lang: str = "cpp") -> dict:
     """Resolve a ReflectedName to code-store class/struct candidates.
 
-    UNION candidates across ALL prefix variants (de-dup by symbol id), sort
-    ``(path, id)``, then count — variant-ORDER-INDEPENDENT and deterministic; a
-    genuine cross-prefix collision surfaces as ``ambiguous`` rather than being
-    masked by stopping at the first variant.
+    PREFIX-PRIORITY: a reflected name maps to exactly ONE C++ prefix (UMaterial is
+    U, AActor is A, FLinearColor is F), so try the tiers U/A/F/"" in order and return
+    the FIRST that yields candidates. The bare name is last-resort only — unioning it
+    in eagerly explodes on common names (against a real engine index, bare "Material"
+    matched 254 unrelated symbols). Within the winning tier, FORWARD-DECLARATIONS
+    (declaration-sized spans) are dropped in favor of the DEFINITION, then candidates
+    are sorted ``(path, id)`` — deterministic.
 
     Candidates are restricted to ``code_lang`` (default 'cpp'). The C++ classes are
     the only meaningful resolution target; without this filter a class/struct-kind
@@ -143,22 +152,32 @@ def resolve_class(code: "stores.Store", reflected: str, code_lang: str = "cpp") 
 
     Returns {"confidence": "unique"|"ambiguous"|"unresolved", "cands": [Row, ...]}.
     """
-    seen: set[int] = set()
-    cands: list = []
-    for prefix in PREFIXES:
-        for row in code.symbols_named(prefix + reflected, kinds=CLASS_KINDS):
-            if code_lang is not None and row["lang"] != code_lang:
-                continue
-            if row["id"] in seen:
-                continue
-            seen.add(row["id"])
-            cands.append(row)
-    cands.sort(key=lambda r: (_norm(r["path"]), r["id"]))
-    if not cands:
-        return {"confidence": "unresolved", "cands": []}
-    if len(cands) == 1:
-        return {"confidence": "unique", "cands": cands}
-    return {"confidence": "ambiguous", "cands": cands}  # NEVER pick one
+    placeholders = ",".join("?" * len(CLASS_KINDS))
+    for prefix in PREFIXES:  # priority order; stop at the FIRST non-empty tier
+        name = prefix + reflected
+        rows = code.conn.execute(
+            "SELECT s.id, s.file_id, f.path, s.name, s.kind, s.lang, "
+            "       s.start_line, s.start_byte, s.end_byte "
+            "FROM symbols s JOIN files f ON f.id = s.file_id "
+            f"WHERE s.name = ? AND s.kind IN ({placeholders}) "
+            "ORDER BY f.path, s.id LIMIT 500",
+            (name, *sorted(CLASS_KINDS)),
+        ).fetchall()
+        cands = [r for r in rows if code_lang is None or r["lang"] == code_lang]
+        if not cands:
+            continue
+        # DEFINITION-PREFERENCE: drop forward-declarations. UE headers forward-declare
+        # a class in hundreds of files (`class UMaterial;` -> a ~len("class <Name>")
+        # byte symbol with no body); only the real definition has a body (UE reflected
+        # classes are always large — UCLASS + GENERATED_BODY + members). A symbol whose
+        # span barely exceeds its declaration is a fwd-decl. Keep only definitions; if
+        # ONLY fwd-decls are indexed (the definition was missed, e.g. a macro-confused
+        # name like UMaterial here), keep them all (honest — still surfaced, ambiguous).
+        defs = [r for r in cands if (r["end_byte"] - r["start_byte"]) > len(name) + 16]
+        chosen = sorted(defs or cands, key=lambda r: (_norm(r["path"]), r["id"]))
+        conf = "unique" if len(chosen) == 1 else "ambiguous"
+        return {"confidence": conf, "cands": chosen}  # ambiguous NEVER picks one
+    return {"confidence": "unresolved", "cands": []}
 
 
 def dsl_nodes(dsl: "stores.Store", lang: str):
@@ -225,8 +244,11 @@ def link(dsl_store: str, code_store: str, schema_path: str, lang: str = "matlang
                     entry["resolved"] = {
                         "confidence": "ambiguous",
                         "ambiguity": len(cands),
+                        # a deterministic SAMPLE (first _CAND_CAP of the sorted
+                        # list); "ambiguity" carries the TRUE total count.
                         "candidates": [
-                            f'{_norm(c["path"])}:{c["start_line"]}' for c in cands
+                            f'{_norm(c["path"])}:{c["start_line"]}'
+                            for c in cands[:_CAND_CAP]
                         ],
                     }
                 else:
