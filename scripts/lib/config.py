@@ -136,7 +136,11 @@ def _read_json(path: Path) -> dict:
     if not path.is_file():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        # utf-8-sig: tolerate a UTF-8 BOM (e.g. if the file was rewritten by a
+        # Windows tool like PowerShell, which adds one by default) — reads plain
+        # UTF-8 identically. Plain "utf-8" choked on a BOM and, since the except
+        # below swallows it, that silently emptied the config.
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError):
         return {}
@@ -198,7 +202,7 @@ def load_view_hide(store: Path, override_path: Path | None = None) -> dict | Non
             print(f"manyread: --ignore file not found: {p}", file=sys.stderr)
             return None
         try:
-            doc = json.loads(p.read_text(encoding="utf-8"))
+            doc = json.loads(p.read_text(encoding="utf-8-sig"))
         except (json.JSONDecodeError, OSError) as exc:
             print(f"manyread: --ignore file is not valid JSON ({p}): {exc}", file=sys.stderr)
             return None
@@ -362,7 +366,7 @@ def list_stores() -> dict:
     if not p.exists():
         return {}
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        data = json.loads(p.read_text(encoding="utf-8-sig"))
         return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError):
         return {}
