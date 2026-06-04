@@ -2,12 +2,11 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""manyscan.lib.boundary.resolve — edge RESOLUTION with soundness confidence.
+"""manyscan.lib.boundary.resolve —— 带可靠性置信度的边解析。
 
-Resolves each symbol edge (``extends`` / ``implements`` / ``uses_type``) to a
-concrete target WITH a soundness CONFIDENCE (never silently picking one of many
-by-name candidates), plus the read-only store edge-access partner (:func:`out_edges`)
-and its query alphabet (:data:`REL`).
+把每条符号边（``extends`` / ``implements`` / ``uses_type``）解析到一个具体目标，并附带
+可靠性置信度（绝不在多个同名候选中悄悄挑一个），另外提供只读的存储库边访问伙伴
+（:func:`out_edges`）及其查询关系字母表（:data:`REL`）。
 """
 from __future__ import annotations
 
@@ -20,31 +19,34 @@ from lib.graph import Node
 from .nodes import ambiguous_internal_node, external_node, symbol_node
 from .zoning import DEPENDENCY, TARGET, Zoning, zone_of_path
 
-# Symbol relations that form the boundary. Sorted; NOT ``contains`` (structural,
-# not a dependency); ``calls`` is descoped. ``references`` deliberately omitted.
+#### 构成边界的符号关系字母表 [@380kkm 2026-06-05] ####
+# 已排序；不含 contains（结构关系，非依赖）；calls 不在范围内；references 刻意省略
 REL: tuple[str, ...] = ("extends", "implements", "uses_type")
 
 
-# --- resolution with confidence ----------------------------------------------
+#### 解析单条边的结果：目标节点 id + 可靠性置信度 [@380kkm 2026-06-05] ####
 @dataclass(frozen=True)
 class Resolved:
-    """The outcome of resolving one edge: target node id + soundness confidence."""
-
-    target_id: str           # 's<id>' or 'dep:<name>'
-    confidence: str          # 'direct' | 'unique' | 'ambiguous' | 'unresolved'
-    ambiguity: int           # 0, 1, or N
+    # 's<id>' 或 'dep:<name>'
+    target_id: str
+    # 'direct' | 'unique' | 'ambiguous' | 'unresolved'
+    confidence: str
+    # 0、1 或 N
+    ambiguity: int
     node: Node
+#### /解析单条边的结果 ####
 
 
+#### 把一条 edges 记录解析到具体目标并记录置信度 [@380kkm 2026-06-05] ####
 def resolve_target(store, row, z: Zoning, alias: str | None = None) -> Resolved:
-    """Resolve an edges row to a concrete target, recording confidence.
+    """把一条 edges 记录解析到具体目标，并记录置信度。
 
-    * ``dst_symbol_id`` set → that symbol, ``direct``.
-    * else resolve ``dst_name`` globally by exact name:
-        - 0 candidates → ``dep:<name>``, ``unresolved`` (dependency / absent).
-        - exactly 1    → that symbol, ``unique``.
-        - N > 1        → ``dep:<name>`` with ``ambiguity=N``, ``ambiguous``
-                         (NEVER silently picks one — C++ by-name is unsound).
+    * 设置了 ``dst_symbol_id`` → 该符号，``direct``。
+    * 否则按精确名在全局解析 ``dst_name``：
+        - 0 个候选 → ``dep:<name>``，``unresolved``（依赖/缺失）。
+        - 恰好 1 个 → 该符号，``unique``。
+        - N > 1   → ``dep:<name>`` 且 ``ambiguity=N``，``ambiguous``
+                    （绝不悄悄挑一个 —— C++ 按名解析不可靠）。
     """
     dst_sid = row["dst_symbol_id"]
     if dst_sid is not None:
@@ -57,20 +59,21 @@ def resolve_target(store, row, z: Zoning, alias: str | None = None) -> Resolved:
     if len(cands) == 1:
         sid = int(cands[0]["id"])
         return Resolved(f"s{sid}", "unique", 1, symbol_node(store, sid, z, alias))
-    # N>1: ambiguous — never pick one. But if EVERY candidate is target-zone (e.g. a
-    # header definition + a forward declaration of the target's own type), it is
-    # definitely INTERNAL, just not pinned to one symbol → keep it in the target zone
-    # (off the dependency boundary). Only when a candidate is a dependency/mixed is
-    # it a dependency.
+
+    #### N>1：有歧义 —— 全为目标区则判为内部歧义，否则判为依赖 [@380kkm 2026-06-05] ####
+    # 绝不挑一个。但若每个候选都在目标区（例如目标自身类型的头文件定义 + 前向声明），
+    # 它必定属内部，只是无法锁定到单一符号 → 保留在目标区（不计入依赖边界）。
+    # 只有当某个候选属依赖/混合时，才判为依赖。
     n = len(cands)
     if {zone_of_path(c["path"], z) for c in cands} == {TARGET}:
         return Resolved(f"amb:{name}", "ambiguous", n, ambiguous_internal_node(name, n))
     return Resolved(f"dep:{name}", "ambiguous", n, external_node(name, n))
+    #### /N>1 歧义判定 ####
 
 
-# --- store edge access (no by-src accessor on Store; query conn read-only) ---
+#### 取一个符号的全部边界出边，按总序排列以保证确定性 [@380kkm 2026-06-05] ####
 def out_edges(store, symbol_id: int) -> list[sqlite3.Row]:
-    """All boundary out-edges of a symbol, total-ordered for determinism."""
+    """取一个符号的全部边界出边，已总序排列以保证确定性。"""
     placeholders = ",".join("?" * len(REL))
     return store.conn.execute(
         "SELECT id, src_symbol_id, dst_symbol_id, dst_name, relation FROM edges "

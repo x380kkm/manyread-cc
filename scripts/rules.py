@@ -2,25 +2,24 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""manyread L2 enrichment override-rules engine + presets (stdlib only).
+"""manyread L2 富化的 override 规则引擎 + 预设(仅依赖标准库)。
 
-Base tree-sitter extraction is generic and occasionally wrong on codebase-specific
-idioms (e.g. Unreal's `class SDFPARTICLES_API UFoo` makes tree-sitter-cpp record the
-export macro `SDFPARTICLES_API` as the class name). Rather than hardcode per-engine
-fixes into enrich_treesitter.py, corrections live in a project-scoped, agent-editable
-override layer applied as a transform pass:
+基础的 tree-sitter 抽取是通用的,偶尔会在与具体代码库相关的写法上出错(例如 Unreal 的
+``class SDFPARTICLES_API UFoo`` 会让 tree-sitter-cpp 把导出宏 ``SDFPARTICLES_API`` 当成类名)。
+与其把各引擎的修正硬编码进 enrich_treesitter.py,不如让修正活在一个项目作用域、可由 agent
+编辑的 override 层中,作为一道变换 pass 施加:
 
-    tree-sitter extract (raw)  ->  apply_rules(...)  ->  write symbols/edges
+    tree-sitter 抽取(原始)  ->  apply_rules(...)  ->  写入 symbols/edges
 
-No rules present -> identical to current behavior (backward compatible). The engine is
-PURE (no DB, no IO) so it can be unit-tested and driven from enrich.
+没有任何规则时 -> 与当前行为完全一致(向后兼容)。引擎是纯函数(无 DB、无 IO),因此可被单元
+测试,也可从 enrich 驱动。
 
-SHARED CONTRACT (must match enrich integration exactly)
+共享契约(SHARED CONTRACT,必须与 enrich 集成精确一致)
 -------------------------------------------------------
-rules.json schema:
+rules.json 的 schema:
   { "version": 1,
     "extends_presets": ["unreal"],
-    "preset_dirs": ["<abs or root-relative dir>"],
+    "preset_dirs": ["<绝对或相对于 root 的目录>"],
     "rules": [
       { "id": str,
         "when": { "lang"?: str, "kind"?: str, "name_regex"?: str, "path_glob"?: str },
@@ -30,24 +29,24 @@ rules.json schema:
         "to_kind"?: str } ]         # reclassify
   }
 
-Engine entry point (importable + pure):
+引擎入口(可导入 + 纯函数):
   apply_rules(rows, edges, content_by_file_id, rules) -> (rows, edges, provenance)
 
-  rows : list of dicts each like
+  rows : dict 列表,每个形如
     {"_local": int, "file_id": int, "name": str, "kind": str, "lang": str,
      "start_line": int, "end_line": int, "start_byte": int, "end_byte": int,
      "parent_local": int|None, "attrs": dict, "provenance": list[str]}
-  edges: list of dicts
+  edges: dict 列表
     {"file_id","src_local","dst_local"|None,"dst_name","relation"}
-  content_by_file_id: file_id -> full file text (so rename_to_next_identifier can
-    re-slice content[start_byte:] and, after skipping a token matching
-    skip_token_regex, take the next identifier as the corrected name).
+  content_by_file_id: file_id -> 整个文件文本(使 rename_to_next_identifier 能重新
+    切片 content[start_byte:],在跳过一个匹配 skip_token_regex 的 token 后,取下一个
+    标识符作为修正后的名字)。
 
-  Returns transformed rows/edges and a provenance map {rule_id: [local ids touched]}.
-  PURE (no DB, no IO); rows untouched when rules == [].
+  返回变换后的 rows/edges 以及一张 provenance 映射 {rule_id: [被改动的 local id]}。
+  纯函数(无 DB、无 IO);当 rules == [] 时 rows 原样返回。
 
 CLI:  rules.py init|list|validate [<alias>] [--root PATH] [--rules PATH]
-      (preview/apply that need the DB are driven from enrich; thin stubs here.)
+      (需要 DB 的 preview/apply 从 enrich 驱动;此处仅为薄 stub。)
 """
 from __future__ import annotations
 
@@ -61,11 +60,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 按约定:在调整 sys.path 之后再 import
 from lib import config  # noqa: E402  (import after sys.path tweak, per convention)
 
 
-# --- where built-in presets live --------------------------------------------
-# <repo>/presets/<name>.rules.json  (this file is <repo>/scripts/rules.py)
+# 内置预设所在目录:<repo>/presets/<name>.rules.json(本文件位于 <repo>/scripts/rules.py)
 BUILTIN_PRESET_DIR = Path(__file__).resolve().parent.parent / "presets"
 
 VALID_ACTIONS = (
@@ -75,29 +74,27 @@ VALID_ACTIONS = (
     "reclassify",
 )
 
-# A C identifier (also matches the export-macro tokens we skip over).
+# 一个 C 标识符(也用于匹配我们要跳过的导出宏 token)
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-# How far past start_byte we look when re-slicing source for a rename.
+# rename 时从 start_byte 起向后重新切片的窗口长度
 _SLICE_WINDOW = 256
 
 
-# =============================================================================
-# Engine (pure)
-# =============================================================================
+#### 对原始抽取结果施加 override 规则(纯函数) [@380kkm 2026-06-05] ####
 def apply_rules(rows, edges, content_by_file_id, rules):
-    """Apply override rules to raw extraction output. PURE: no DB, no IO.
+    """对原始抽取输出施加 override 规则。纯函数:无 DB、无 IO。
 
     Args:
-      rows:  list[dict] symbol rows (see module docstring / SHARED CONTRACT).
-      edges: list[dict] edge rows referencing rows by _local.
-      content_by_file_id: dict[int, str] full file text per file_id.
-      rules: list[dict] merged rule list (preset + project), in order.
+      rows:  list[dict] 符号行(见模块 docstring / 共享契约)。
+      edges: list[dict] 边,通过 _local 引用 rows。
+      content_by_file_id: dict[int, str] 每个 file_id 对应的整文件文本。
+      rules: list[dict] 合并后的规则列表(预设 + 项目),按顺序。
 
     Returns:
-      (rows, edges, provenance) where provenance is {rule_id: [local ids touched]}.
-      When rules == [] the inputs are returned untouched (deep-copied for safety).
+      (rows, edges, provenance),其中 provenance 为 {rule_id: [被改动的 local id]}。
+      当 rules == [] 时原样返回输入(为安全起见做了深拷贝)。
     """
-    # Always work on copies so the engine is side-effect-free for the caller.
+    # 总是在副本上工作,使引擎对调用方无副作用
     rows = [copy.deepcopy(r) for r in rows]
     edges = [copy.deepcopy(e) for e in edges]
     content_by_file_id = content_by_file_id or {}
@@ -136,14 +133,16 @@ def apply_rules(rows, edges, content_by_file_id, rules):
         ]
 
     return rows, edges, provenance
+#### /对原始抽取结果施加 override 规则 ####
 
 
+#### 把 when 子句编译成 行->bool 谓词 [@380kkm 2026-06-05] ####
 def _compile_when(when):
-    """Return a predicate row->bool from a `when` clause.
+    """从 ``when`` 子句返回一个谓词 row->bool。
 
-    Matches by lang (exact), kind (exact), name_regex (re.fullmatch on name),
-    and path_glob (fnmatch on row['path'] if present; optional/no-op otherwise).
-    An empty `when` matches every row.
+    按 lang(精确)、kind(精确)、name_regex(对 name 做 re.fullmatch)、path_glob
+    (若 row 存在 'path' 则对其做 fnmatch;否则为可选的 no-op)进行匹配。空的 ``when``
+    匹配每一行。
     """
     lang = when.get("lang")
     kind = when.get("kind")
@@ -151,6 +150,7 @@ def _compile_when(when):
     path_glob = when.get("path_glob")
     name_re = re.compile(name_regex) if name_regex else None
 
+    #### 单行匹配谓词 [@380kkm 2026-06-05] ####
     def pred(row) -> bool:
         if lang is not None and row.get("lang") != lang:
             return False
@@ -159,34 +159,40 @@ def _compile_when(when):
         if name_re is not None and not name_re.fullmatch(row.get("name") or ""):
             return False
         if path_glob is not None:
-            # path is optional in the row dict; if unavailable treat as no-op
-            # (do NOT exclude) so path_glob never silently drops everything.
+            # path 在 row dict 中是可选的;若取不到则视为 no-op
+            # (不排除),从而 path_glob 绝不会无声地丢弃一切
             path = row.get("path")
             if path is not None and not fnmatch.fnmatch(path, path_glob):
                 return False
         return True
+    #### /单行匹配谓词 ####
 
     return pred
+#### /把 when 子句编译成谓词 ####
 
 
+#### 按规则的 action 改动一行,返回是否被改动 [@380kkm 2026-06-05] ####
 def _apply_action(row, rule, action, content_by_file_id) -> bool:
-    """Mutate `row` per the rule's action. Return True if the row was touched."""
+    """按规则的 action 改动 ``row``;若该行被改动返回 True。"""
     if action == "rename_to_next_identifier":
         return _action_rename(row, rule, content_by_file_id)
     if action == "set_attr":
         return _action_set_attr(row, rule)
     if action == "drop":
-        return True  # caller records + removes the row.
+        # 由调用方记录并移除该行
+        return True
     if action == "reclassify":
         return _action_reclassify(row, rule)
-    # Unknown action: leave the row untouched (validate() catches these).
+    # 未知 action:保持该行不变(validate() 会捕获这类问题)
     return False
+#### /按规则的 action 改动一行 ####
 
 
+#### rename action：取下一个标识符作为修正名 [@380kkm 2026-06-05] ####
 def _action_rename(row, rule, content_by_file_id) -> bool:
-    """Slice content[start_byte : start_byte+256], optionally skip a token matching
-    skip_token_regex, then take the next C identifier as the corrected name. On a
-    match: rename and merge `set` attrs. Returns True iff renamed."""
+    """切片 content[start_byte : start_byte+256],可选地跳过一个匹配 skip_token_regex
+    的 token,然后取下一个 C 标识符作为修正后的名字。匹配成功时:重命名并合并 ``set``
+    属性。当且仅当发生重命名时返回 True。"""
     content = content_by_file_id.get(row.get("file_id"))
     if content is None:
         return False
@@ -196,47 +202,54 @@ def _action_rename(row, rule, content_by_file_id) -> bool:
     pos = 0
     skip_re_src = rule.get("skip_token_regex")
     if skip_re_src:
-        # Skip leading whitespace, then an optional token matching skip_token_regex.
+        # 跳过前导空白,再跳过一个可选的、匹配 skip_token_regex 的 token
         m_ws = re.match(r"\s*", window)
         scan = m_ws.end() if m_ws else 0
         m_skip = re.compile(skip_re_src).match(window, scan)
         if m_skip:
             pos = m_skip.end()
         else:
-            pos = scan  # nothing to skip; carry on from after whitespace.
+            # 没有可跳过的;从空白之后继续
+            pos = scan
 
     m_ident = _IDENT_RE.search(window, pos)
     if not m_ident:
         return False
     new_name = m_ident.group(0)
     if not new_name or new_name == row.get("name"):
-        # No usable next identifier (or it's identical): leave untouched.
+        # 没有可用的下一个标识符(或它与原名相同):保持不变
         if new_name == row.get("name"):
-            # still merge set attrs? No — contract: only on a real rename.
+            # 仍要合并 set 属性吗?不——契约规定:仅在真正重命名时才合并
             return False
         return False
 
     row["name"] = new_name
     _merge_set(row, rule.get("set"))
     return True
+#### /rename action ####
 
 
+#### set_attr action：把 set 合并进 row 的 attrs [@380kkm 2026-06-05] ####
 def _action_set_attr(row, rule) -> bool:
-    """Merge rule['set'] into row['attrs']. Returns True iff anything changed."""
+    """把 rule['set'] 合并进 row['attrs']。当且仅当有任何改动时返回 True。"""
     return _merge_set(row, rule.get("set"))
+#### /set_attr action ####
 
 
+#### reclassify action：改写 row 的 kind [@380kkm 2026-06-05] ####
 def _action_reclassify(row, rule) -> bool:
-    """Set row['kind'] = rule['to_kind']. Returns True iff kind changed."""
+    """设置 row['kind'] = rule['to_kind']。当且仅当 kind 发生改变时返回 True。"""
     to_kind = rule.get("to_kind")
     if not to_kind or row.get("kind") == to_kind:
         return False
     row["kind"] = to_kind
     return True
+#### /reclassify action ####
 
 
+#### 把 set 映射合并进 row 的 attrs [@380kkm 2026-06-05] ####
 def _merge_set(row, set_map) -> bool:
-    """Merge a `set` map into row['attrs']; return True iff a value changed."""
+    """把一张 ``set`` 映射合并进 row['attrs'];当且仅当有值改变时返回 True。"""
     if not set_map:
         return False
     attrs = row.setdefault("attrs", {})
@@ -246,10 +259,12 @@ def _merge_set(row, set_map) -> bool:
             attrs[k] = v
             changed = True
     return changed
+#### /把 set 映射合并进 attrs ####
 
 
+#### 记录某规则改动了某行的 provenance [@380kkm 2026-06-05] ####
 def _mark(row, provenance, rule_id) -> None:
-    """Record that rule_id touched this row, in both the row and the prov map."""
+    """记录 rule_id 改动了该行,同时写入该行和 provenance 映射两处。"""
     prov = row.setdefault("provenance", [])
     if rule_id not in prov:
         prov.append(rule_id)
@@ -257,29 +272,32 @@ def _mark(row, provenance, rule_id) -> None:
     local = row.get("_local")
     if local is not None and local not in bucket:
         bucket.append(local)
+#### /记录 provenance ####
 
 
-# =============================================================================
-# Preset loading + merge
-# =============================================================================
+#### 读取并 JSON 解析一个规则/预设文件 [@380kkm 2026-06-05] ####
 def _read_rules_file(path: Path) -> dict:
-    """Read + JSON-parse a rules/preset file. Raises ValueError on bad JSON."""
+    """读取并 JSON 解析一个规则/预设文件。JSON 非法时抛 ValueError。"""
     try:
         return json.loads(Path(path).read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid JSON in {path}: {exc}") from exc
+#### /读取并 JSON 解析规则文件 ####
 
 
+#### 定位 <name>.rules.json 预设文件 [@380kkm 2026-06-05] ####
 def _find_preset(name: str, search_dirs: list[Path]) -> Path | None:
-    """Locate <name>.rules.json in the built-in dir first, then extra dirs."""
+    """先在内置目录、再在额外目录中定位 <name>.rules.json。"""
     fname = f"{name}.rules.json"
     for d in [BUILTIN_PRESET_DIR, *search_dirs]:
         cand = Path(d) / fname
         if cand.exists():
             return cand
     return None
+#### /定位预设文件 ####
 
 
+#### 递归收集 extends_presets 链上的规则 [@380kkm 2026-06-05] ####
 def _collect_preset_rules(
     doc: dict,
     base_dir: Path,
@@ -287,11 +305,11 @@ def _collect_preset_rules(
     seen: set[str],
     acc: list[dict],
 ) -> None:
-    """Recursively collect rules from extends_presets into `acc` (preset order).
+    """递归地把 extends_presets 中的规则按预设顺序收集进 ``acc``。
 
-    preset_dirs declared inside `doc` are resolved relative to base_dir (the dir
-    of the file that declared them) when not absolute, and added to the search
-    path. Built-in dir is always searched first (see _find_preset)."""
+    ``doc`` 内声明的 preset_dirs 在非绝对路径时相对于 base_dir(声明它们的文件所在
+    目录)解析,并加入搜索路径。内置目录始终最先被搜索(见 _find_preset)。
+    """
     declared = doc.get("preset_dirs") or []
     resolved_dirs: list[Path] = []
     for d in declared:
@@ -303,7 +321,8 @@ def _collect_preset_rules(
 
     for name in doc.get("extends_presets") or []:
         if name in seen:
-            continue  # guard against cycles / repeats.
+            # 防止循环 / 重复
+            continue
         seen.add(name)
         preset_path = _find_preset(name, search_dirs)
         if preset_path is None:
@@ -312,7 +331,7 @@ def _collect_preset_rules(
                 + ("".join(f", {d}" for d in search_dirs)) + ")"
             )
         preset_doc = _read_rules_file(preset_path)
-        # A preset may itself extend other presets (depth-first, before its own).
+        # 一个预设本身也可以再 extends 其他预设(深度优先,先于它自身的规则)
         _collect_preset_rules(
             preset_doc, preset_path.parent, extra_preset_dirs, seen, acc
         )
@@ -320,18 +339,18 @@ def _collect_preset_rules(
             r = dict(rule)
             r.setdefault("_origin", f"preset:{name}")
             acc.append(r)
+#### /递归收集预设规则 ####
 
 
+#### 加载并合并项目 rules.json 与其扩展的预设 [@380kkm 2026-06-05] ####
 def load_rules(rules_path, extra_preset_dirs=None) -> list[dict]:
-    """Load + merge a project rules.json with the presets it extends.
+    """加载并合并项目 rules.json 与它所 extends 的预设。
 
-    Merge order: presets (in extends_presets order, searched built-in dir then any
-    preset_dirs) THEN project rules. Project rules WIN on the same id (a project
-    rule with id X replaces a preset rule with id X, in place).
+    合并顺序:预设(按 extends_presets 顺序,先搜内置目录再搜任何 preset_dirs)然后是
+    项目规则。同一 id 上项目规则胜出(id 为 X 的项目规则会就地替换 id 为 X 的预设规则)。
 
-    Each returned rule carries an `_origin` marker ("preset:<name>" or "project").
-    If rules_path does not exist, only the (empty) preset chain is returned, which
-    is [] — backward compatible.
+    返回的每条规则都带一个 ``_origin`` 标记("preset:<name>" 或 "project")。若
+    rules_path 不存在,则只返回(空的)预设链,即 []——向后兼容。
     """
     extra_preset_dirs = [Path(d) for d in (extra_preset_dirs or [])]
     rules_path = Path(rules_path)
@@ -343,18 +362,18 @@ def load_rules(rules_path, extra_preset_dirs=None) -> list[dict]:
         doc = {}
         base_dir = rules_path.parent
 
-    # 1. preset rules (depth-first by extends_presets order).
+    # 1. 预设规则(按 extends_presets 顺序深度优先)
     preset_rules: list[dict] = []
     _collect_preset_rules(doc, base_dir, extra_preset_dirs, set(), preset_rules)
 
-    # 2. project rules, marked.
+    # 2. 项目规则,打上标记
     project_rules = []
     for rule in doc.get("rules") or []:
         r = dict(rule)
         r.setdefault("_origin", "project")
         project_rules.append(r)
 
-    # 3. merge: project rules win on the same id (replace in place); new ids append.
+    # 3. 合并:同一 id 上项目规则胜出(就地替换);新 id 追加
     merged: list[dict] = list(preset_rules)
     index_by_id = {r.get("id"): i for i, r in enumerate(merged) if r.get("id")}
     for pr in project_rules:
@@ -366,14 +385,13 @@ def load_rules(rules_path, extra_preset_dirs=None) -> list[dict]:
                 index_by_id[rid] = len(merged)
             merged.append(pr)
     return merged
+#### /加载并合并规则 ####
 
 
-# =============================================================================
-# Validation
-# =============================================================================
+#### 校验一个已解析的 rules.json 文档 [@380kkm 2026-06-05] ####
 def validate_rules_doc(doc: dict) -> list[str]:
-    """Lint a parsed rules.json document. Returns a list of human-readable errors
-    (empty == valid)."""
+    """对已解析的 rules.json 文档做 lint。返回一组人类可读的错误信息
+    (空 == 合法)。"""
     errs: list[str] = []
     if not isinstance(doc, dict):
         return ["top-level value must be a JSON object"]
@@ -444,11 +462,10 @@ def validate_rules_doc(doc: dict) -> list[str]:
             if s is not None and not isinstance(s, dict):
                 errs.append(f"{where}: 'set' must be an object")
     return errs
+#### /校验 rules.json 文档 ####
 
 
-# =============================================================================
-# CLI
-# =============================================================================
+# init 子命令写出的起始 rules.json 文档
 _STARTER_DOC = {
     "version": 1,
     "extends_presets": ["unreal"],
@@ -457,14 +474,17 @@ _STARTER_DOC = {
 }
 
 
+#### 解析出 store 共享的 rules.json 路径 [@380kkm 2026-06-05] ####
 def _rules_path(args) -> Path:
-    """The store's shared rules file: <store>/rules.json (or explicit --rules)."""
+    """store 的共享规则文件:<store>/rules.json(或显式指定的 --rules)。"""
     if getattr(args, "rules", None):
         return Path(args.rules)
     cfg = config.resolve_project(root=args.root, store=args.store)
     return cfg.store / "rules.json"
+#### /解析 rules.json 路径 ####
 
 
+#### init 子命令：写出起始 rules.json [@380kkm 2026-06-05] ####
 def cmd_init(args) -> int:
     path = _rules_path(args)
     if path.exists() and not args.force:
@@ -475,8 +495,10 @@ def cmd_init(args) -> int:
     print(f"wrote starter rules to {path}")
     print("  extends_presets: [\"unreal\"]   rules: []")
     return 0
+#### /init 子命令 ####
 
 
+#### list 子命令：打印合并后的有效规则 [@380kkm 2026-06-05] ####
 def cmd_list(args) -> int:
     path = _rules_path(args)
     extra = [d.strip() for d in (args.preset_dir or "").split(",") if d.strip()]
@@ -496,8 +518,10 @@ def cmd_list(args) -> int:
         if doc and args.verbose:
             print(f"      {doc}")
     return 0
+#### /list 子命令 ####
 
 
+#### validate 子命令：lint rules.json 并解析预设 [@380kkm 2026-06-05] ####
 def cmd_validate(args) -> int:
     path = _rules_path(args)
     if not path.exists():
@@ -514,7 +538,7 @@ def cmd_validate(args) -> int:
         for e in errs:
             print(f"  - {e}", file=sys.stderr)
         return 1
-    # Also try resolving presets so missing presets surface here.
+    # 同时尝试解析预设,使缺失的预设在此处暴露
     extra = [d.strip() for d in (args.preset_dir or "").split(",") if d.strip()]
     try:
         load_rules(path, extra_preset_dirs=extra)
@@ -523,8 +547,10 @@ def cmd_validate(args) -> int:
         return 1
     print(f"OK: {path} ({len(doc.get('rules') or [])} project rule(s); presets resolve)")
     return 0
+#### /validate 子命令 ####
 
 
+#### preview/apply 的 stub：提示改用 enrich 驱动 [@380kkm 2026-06-05] ####
 def _stub(name: str) -> int:
     print(
         f"`rules.py {name}` is driven from enrich (it needs the project DB). Use:\n"
@@ -534,8 +560,10 @@ def _stub(name: str) -> int:
         file=sys.stderr,
     )
     return 0
+#### /preview/apply stub ####
 
 
+#### CLI 入口：解析参数并分派到子命令 [@380kkm 2026-06-05] ####
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="rules.py",
@@ -543,6 +571,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
+    #### 给子解析器追加各命令的公共参数 [@380kkm 2026-06-05] ####
     def add_common(p):
         p.add_argument("--root", default=None, help="source tree root (default: store's parent)")
         p.add_argument("--store", default=None, help="explicit manyread store dir (default: discover)")
@@ -550,6 +579,7 @@ def main(argv: list[str] | None = None) -> int:
                        help="explicit rules.json path (default <store>/rules.json)")
         p.add_argument("--preset-dir", default=None,
                        help="comma list of extra preset search dirs")
+    #### /追加公共参数 ####
 
     p_init = sub.add_parser("init", help="write a starter <root>/.manyread/rules.json")
     add_common(p_init)
@@ -582,6 +612,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     parser.error(f"unknown command {args.cmd!r}")
     return 2
+#### /CLI 入口 ####
 
 
 if __name__ == "__main__":

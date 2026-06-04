@@ -2,34 +2,29 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""manyscan.lib.boundary — SYMBOL-LEVEL target↔dependency boundary.
+"""manyscan.lib.boundary —— 符号级的目标↔依赖边界。
 
-File-level deps are useless for C++ refactoring; this module works at the symbol
-level. It classifies every symbol into a ZONE (``target`` = the code you are
-analyzing / ``dependency`` = what it depends on — and the dependency side may
-hold MANY distinct dependency sources), resolves each symbol edge (``extends`` /
-``implements`` / ``uses_type``) to a concrete target WITH a soundness CONFIDENCE
-(never silently picking one of many by-name candidates), and expands a depth-1
-*dependency-sink* slice: target symbols plus their one-layer dependency interface,
-regardless of how large the dependency index is.
+文件级依赖对 C++ 重构无用；本模块工作在符号级。它把每个符号归类到一个分区
+（``target`` = 你正在分析的代码 / ``dependency`` = 它所依赖的代码 —— 依赖侧可能
+包含许多不同的依赖来源），把每条符号边（``extends`` / ``implements`` / ``uses_type``）
+解析到一个具体目标并附带可靠性置信度（绝不在多个同名候选中悄悄挑一个），并展开一个
+深度为 1 的“依赖汇”切片：目标符号加上它们一层的依赖接口，无论依赖索引有多大。
 
-Two derived views:
-  * INTERNAL coupling — the target-zone subgraph (target→target edges only),
-    for split seams / SCC.
-  * DEPENDENCY surface — the bipartite boundary (target symbols that reach a
-    dependency) → their dependency targets, optionally rolled up by module.
+两个派生视图：
+  * 内部耦合 —— 目标区子图（仅 target→target 的边），用于切分缝/强连通分量（SCC）。
+  * 依赖表面 —— 二部边界（触达依赖的目标符号）→ 它们的依赖目标，可选按模块汇总。
 
-DETERMINISM is mandatory: every query is total-ordered, every set iterated
-sorted, counts are integers (no floats here), and ambiguous resolution always
-yields a ``dep:`` node — so the same index + same roots ⇒ byte-identical output.
+确定性是强制要求：每个查询都全序，每个集合都按序迭代，计数都是整数（此处无浮点），
+有歧义的解析总是产出一个 ``dep:`` 节点 —— 因此相同索引 + 相同根 ⇒ 字节级一致的输出。
 
-This is a FACADE package: the analysis-stage concerns live in sibling modules
-(``zoning`` / ``nodes`` / ``resolve`` / ``build`` / ``views``); the full public +
-private surface is re-exported here so ``from lib import boundary; boundary.<name>``
-and ``from lib.boundary import <name>`` are unchanged.
+这是一个门面（FACADE）包：分析各阶段的关注点分散在同级模块中
+（``zoning`` / ``nodes`` / ``resolve`` / ``build`` / ``views``）；此处重新导出全部公开 +
+私有接口，使 ``from lib import boundary; boundary.<name>`` 与
+``from lib.boundary import <name>`` 保持不变。
 """
 from __future__ import annotations
 
+#### 从各同级阶段模块重新导出全部公开 + 私有接口 [@380kkm 2026-06-05] ####
 from .zoning import (
     DEPENDENCY,
     TARGET,
@@ -107,3 +102,4 @@ __all__ = [
     "Crossing",
     "crossings",
 ]
+#### /重新导出门面接口 ####

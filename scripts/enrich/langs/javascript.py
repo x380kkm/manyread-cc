@@ -5,9 +5,17 @@ from tree_sitter import Node
 from enrich.model import Pending, _named_child_text, _text
 
 
-# --- javascript --------------------------------------------------------------
+#### 取 lexical_declaration 绑定的箭头/函数表达式的名字 [@380kkm 2026-06-05] ####
 def _js_lexical_fn_name(node: Node, src: bytes) -> str | None:
-    """If a lexical_declaration binds an arrow/function expression, return its name."""
+    """当 lexical_declaration 绑定了箭头函数或函数表达式时返回其名字。
+
+    参数:
+        node: lexical_declaration 节点。
+        src: 文件的 utf-8 字节内容。
+
+    返回:
+        绑定的函数名；若该声明未绑定函数表达式则返回 None。
+    """
     for decl in node.named_children:
         if decl.type != "variable_declarator":
             continue
@@ -17,6 +25,7 @@ def _js_lexical_fn_name(node: Node, src: bytes) -> str | None:
     return None
 
 
+#### 递归遍历 JavaScript 语法树，收集类/函数/方法符号与继承边 [@380kkm 2026-06-05] ####
 def _walk_javascript(node: Node, src: bytes, pend: Pending, parent_local: int | None) -> None:
     cur_parent = parent_local
     t = node.type
@@ -30,7 +39,7 @@ def _walk_javascript(node: Node, src: bytes, pend: Pending, parent_local: int | 
                 heritage = ch
                 break
         if heritage is not None:
-            # class_heritage -> `extends <expr>` (+ optional ts implements clause)
+            # class_heritage 形如 `extends <expr>`（可附带 ts 的 implements 子句）
             for ch in heritage.named_children:
                 bn = _text(ch, src).strip()
                 if not bn:
@@ -63,3 +72,4 @@ def _walk_javascript(node: Node, src: bytes, pend: Pending, parent_local: int | 
 
     for ch in node.children:
         _walk_javascript(ch, src, pend, cur_parent)
+#### /遍历 JavaScript 语法树 ####

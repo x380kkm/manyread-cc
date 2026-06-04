@@ -2,11 +2,10 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""manyscan.lib.boundary.nodes — graph NODE + qualified-name construction.
+"""manyscan.lib.boundary.nodes —— 图节点与限定名的构造。
 
-Builds the graph :class:`~lib.graph.Node` for an indexed symbol, an unresolved /
-dependency external node, and the target-internal-but-ambiguous node — plus the
-``Outer::Inner::name`` qualified-name walk.
+为已索引的符号构造图 :class:`~lib.graph.Node`，为未解析/依赖的外部符号构造外部节点，
+为目标内部但有歧义的符号构造歧义节点，并提供 ``Outer::Inner::name`` 的限定名遍历。
 """
 from __future__ import annotations
 
@@ -15,9 +14,9 @@ from lib.graph import Evidence, Node
 from .zoning import DEPENDENCY, TARGET, Zoning, _NORM, zone_of_path
 
 
-# --- node + name construction ------------------------------------------------
+#### 沿 parent_id 上溯拼出 Outer::Inner::name 限定名（带环路保护） [@380kkm 2026-06-05] ####
 def qualified_name(store, symbol_id: int) -> str:
-    """The ``Outer::Inner::name`` qualified name by walking ``parent_id`` (cycle-guarded)."""
+    """沿 ``parent_id`` 上溯拼出 ``Outer::Inner::name`` 限定名（带环路保护）。"""
     cache = getattr(store, "_ms_qname_cache", None)
     if cache is None:
         cache = {}
@@ -41,11 +40,12 @@ def qualified_name(store, symbol_id: int) -> str:
     return qn
 
 
+#### 为已索引符号构造图节点（id 为 s<id>） [@380kkm 2026-06-05] ####
 def symbol_node(store, symbol_id: int, z: Zoning, alias: str | None = None) -> Node:
-    """Build the graph :class:`Node` for an indexed symbol (``s<id>``)."""
+    """为已索引的符号构造图 :class:`Node`（``s<id>``）。"""
     row = store.symbol(symbol_id)
     if row is None:
-        # Defensive: an edge pointing at a vanished symbol. Treat as external.
+        # 防御：边指向已消失的符号，按外部节点处理
         return external_node(f"#{symbol_id}")
     path = row["path"]
     zone = zone_of_path(path, z)
@@ -59,17 +59,20 @@ def symbol_node(store, symbol_id: int, z: Zoning, alias: str | None = None) -> N
     )
 
 
+#### 为依赖/未解析符号构造外部节点（id 为 dep:<name>） [@380kkm 2026-06-05] ####
 def external_node(name: str, ambiguity: int = 0) -> Node:
-    """Build a dependency/unresolved external :class:`Node` (``dep:<name>``)."""
+    """为依赖/未解析的外部符号构造 :class:`Node`（``dep:<name>``）。"""
     attrs: dict = {"zone": DEPENDENCY, "cluster": DEPENDENCY, "unresolved": True}
     if ambiguity:
         attrs["ambiguity"] = ambiguity
     return Node(id=f"dep:{name}", kind="external", label=name, attrs=attrs)
 
 
+#### 为目标内部但有歧义的符号构造歧义节点（id 为 amb:<name>） [@380kkm 2026-06-05] ####
 def ambiguous_internal_node(name: str, ambiguity: int) -> Node:
-    """A target-zone type known to be internal but not pinned to one symbol
-    (e.g. header definition + forward declaration). Kept in the target zone, off the
-    dependency boundary, but marked ambiguous (never silently resolved to one symbol)."""
+    """目标区内已知属内部、但无法锁定到单一符号的类型（例如头文件定义 + 前向声明）。
+
+    保留在目标区、不计入依赖边界，但标记为有歧义（绝不悄悄解析为某一个符号）。
+    """
     return Node(id=f"amb:{name}", kind="ambiguous", label=name,
                 attrs={"zone": TARGET, "cluster": TARGET, "ambiguity": ambiguity})

@@ -2,20 +2,19 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""manyscan.lib.deps — truthful cross-file dependency extraction over a store.
+"""manyscan.lib.deps —— 基于存储库的真实跨文件依赖提取。
 
-manyread stores no import graph and resolves inheritance only *within* a file.
-This module adds the two things manyscan needs to build real cross-file edges:
+manyread 不存任何 import 图，且只在「单个文件内」解析继承。本模块补上 manyscan
+构建真实跨文件边所需的两件事：
 
-  * import/include extraction from ``files.content`` (``extract_imports`` is pure
-    and unit-testable; ``file_imports`` fetches+extracts for a store file), then
-    best-effort resolution of each import to a target file in the SAME store
-    (``resolve_import``) — yielding real file→file edges.
-  * global resolution of a manyread edge's ``dst_name`` (extends/implements/
-    references, which manyread only resolves in-file) to candidate symbols across
-    all files (``resolve_edge_targets``); ``len(result)`` is the ambiguity.
+  * 从 ``files.content`` 提取 import/include（``extract_imports`` 是纯函数、可单测；
+    ``file_imports`` 为某个存储库文件抓取并提取），再尽力把每条 import 解析到
+    同一存储库内的目标文件（``resolve_import``）—— 得到真实的「文件 -> 文件」边。
+  * 把 manyread 边的 ``dst_name``（extends/implements/references，manyread 只在
+    文件内解析）全局解析为跨所有文件的候选符号（``resolve_edge_targets``）；
+    ``len(result)`` 即歧义度。
 
-Everything is read-only and evidence-bearing (line numbers / file paths).
+全部为只读、且携带证据（行号 / 文件路径）。
 """
 from __future__ import annotations
 
@@ -27,23 +26,27 @@ from pathlib import PurePosixPath
 
 from lib import stores
 
-# extension -> import-rule family
+#### 扩展名 -> import 规则族 [@380kkm 2026-06-05] ####
 _PY = {".py", ".pyi"}
 _CPP = {".h", ".hpp", ".hh", ".inl", ".ipp", ".c", ".cc", ".cpp", ".cxx", ".hxx", ".cu", ".cuh"}
 _CS = {".cs"}
 _JS = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
 
 
+#### 单条 import/include 出现记录及其证据 [@380kkm 2026-06-05] ####
 @dataclass(frozen=True)
 class ImportRef:
-    """One import/include occurrence with its evidence."""
+    # 去空白后的源码行
+    raw: str
+    # 提取出的模块 / 头文件 / specifier 词元
+    target: str
+    # 1 起的行号
+    line: int
+    # python | cpp_include | csharp_using | js_import
+    kind: str
 
-    raw: str       # trimmed source line
-    target: str    # extracted module / header / specifier token
-    line: int      # 1-based line number
-    kind: str      # python | cpp_include | csharp_using | js_import
 
-
+#### 各语言族的 import 匹配正则 [@380kkm 2026-06-05] ####
 _RE_PY_FROM = re.compile(r"^\s*from\s+([.\w]+)\s+import\b")
 _RE_PY_IMPORT = re.compile(r"^\s*import\s+(.+)$")
 _RE_CPP_INC = re.compile(r'^\s*#\s*include\s*[<"]([^">]+)[">]')
@@ -53,8 +56,8 @@ _RE_JS_SPEC = re.compile(
 )
 
 
+#### 由文件扩展名返回 import 规则族，不支持则返回 None [@380kkm 2026-06-05] ####
 def family(ext: str | None) -> str | None:
-    """Return the import-rule family for a file extension, or None if unsupported."""
     ext = (ext or "").lower()
     if ext in _PY:
         return "python"
@@ -67,8 +70,8 @@ def family(ext: str | None) -> str | None:
     return None
 
 
+#### 纯函数：按扩展名从源码 content 提取 import/include 引用 [@380kkm 2026-06-05] ####
 def extract_imports(content: str, ext: str | None) -> list[ImportRef]:
-    """Pure: extract import/include refs from source ``content`` by extension."""
     fam = family(ext)
     if fam is None or not content:
         return []
@@ -91,7 +94,8 @@ def extract_imports(content: str, ext: str | None) -> list[ImportRef]:
                 out.append(ImportRef(line.strip(), m.group(1), i, "cpp_include"))
         elif fam == "csharp":
             m = _RE_CS_USING.match(line)
-            if m and "(" not in line:  # skip `using (var x = ...)` resource statements
+            # 跳过 `using (var x = ...)` 资源语句
+            if m and "(" not in line:
                 out.append(ImportRef(line.strip(), m.group(1), i, "csharp_using"))
         elif fam == "js":
             for m in _RE_JS_SPEC.finditer(line):
@@ -99,20 +103,22 @@ def extract_imports(content: str, ext: str | None) -> list[ImportRef]:
     return out
 
 
+#### 为某个存储库文件提取 import（抓取其 content + ext）[@380kkm 2026-06-05] ####
 def file_imports(store: "stores.Store", file_id: int) -> list[ImportRef]:
-    """Extract imports for a stored file (fetches its content + ext)."""
     row = store.file(file_id)
     if row is None or row["content"] is None:
         return []
     return extract_imports(row["content"], row["ext"])
 
 
+#### 返回（斜杠归一化后）路径匹配某候选的 file_id，否则 None [@380kkm 2026-06-05] ####
 def _match_path(store: "stores.Store", candidates: list[str], *,
                 suffix: bool = False, basename: bool = False) -> int | None:
-    """Return a file_id whose (slash-normalized) path matches a candidate, or None."""
-    norm = "replace(path, char(92), '/')"  # normalize Windows backslashes to '/'
+    # 把 Windows 反斜杠归一化为 '/'
+    norm = "replace(path, char(92), '/')"
     cands = [c.replace("\\", "/").lstrip("./") for c in candidates if c]
-    for c in cands:  # exact
+    # 精确匹配
+    for c in cands:
         row = store.conn.execute(f"SELECT id FROM files WHERE {norm} = ?", (c,)).fetchone()
         if row:
             return row["id"]
@@ -136,14 +142,16 @@ def _match_path(store: "stores.Store", candidates: list[str], *,
     return None
 
 
+#### 内存中的文件路径索引，用于快速 import 解析 [@380kkm 2026-06-05] ####
 class PathIndex:
-    """In-memory file-path index for fast import resolution.
+    """内存中的文件路径索引，用于快速 import 解析。
 
-    Built once from a store (one ``SELECT id,path``), it answers exact / suffix /
-    basename lookups in O(1)/O(small) instead of a per-call SQL ``LIKE`` scan —
-    essential for bounded expansion over engine-scale stores (100k+ files).
+    从存储库一次性构建（一条 ``SELECT id,path``），即可以 O(1)/O(小) 回答
+    精确 / 后缀 / 基名查询，无需每次调用都做 SQL ``LIKE`` 扫描 —— 对引擎级
+    存储库（10 万+ 文件）的有界扩展至关重要。
     """
 
+    #### 从存储库一次性加载所有文件路径，建立三种查询索引 [@380kkm 2026-06-05] ####
     def __init__(self, store: "stores.Store"):
         self.by_path: dict[str, int] = {}
         self.path_of: dict[int, str] = {}
@@ -154,24 +162,26 @@ class PathIndex:
             self.path_of[row["id"]] = p
             self.by_basename[p.rsplit("/", 1)[-1]].append((row["id"], p))
 
+    #### 返回按 Store 缓存的 PathIndex（仅构建一次，O(files) 加载摊销到整次扫描）[@380kkm 2026-06-05] ####
     @classmethod
     def for_store(cls, store: "stores.Store") -> "PathIndex":
-        """Return a per-Store cached PathIndex (built once; the O(files) path load
-        is amortized across the whole scan instead of rebuilt per call)."""
         cached = getattr(store, "_ms_path_index", None)
         if cached is None:
             cached = cls(store)
             store._ms_path_index = cached
         return cached
 
+    #### 归一化候选路径：反斜杠转 '/' 并去掉前导 './' [@380kkm 2026-06-05] ####
     @staticmethod
     def _norm(c: str) -> str:
         return c.replace("\\", "/").lstrip("./")
 
+    #### 按精确 / 后缀 / 基名顺序匹配候选，返回 file_id 或 None [@380kkm 2026-06-05] ####
     def match(self, candidates: list[str], *, suffix: bool = False,
               basename: bool = False) -> int | None:
         cands = [self._norm(c) for c in candidates if c]
-        for c in cands:  # exact
+        # 精确匹配
+        for c in cands:
             hit = self.by_path.get(c)
             if hit is not None:
                 return hit
@@ -187,11 +197,13 @@ class PathIndex:
                 if ms:
                     return min(ms, key=lambda t: len(t[1]))[0]
         return None
+#### /内存中的文件路径索引 ####
 
 
+#### 为一条 import 返回 (候选路径, 是否后缀匹配, 是否基名匹配)，无法映射时返回 None [@380kkm 2026-06-05] ####
 def _candidates_for(ref: ImportRef, from_path: str | None) -> tuple[list[str], bool, bool] | None:
-    """Return ``(candidate_paths, use_suffix, use_basename)`` for an import, or None
-    when it cannot map to an in-tree file (bare js module, C# namespace)."""
+    """为一条 import 返回 ``(candidate_paths, use_suffix, use_basename)``；
+    当其无法映射到树内文件（裸 js 模块、C# 命名空间）时返回 None。"""
     if ref.kind == "python":
         mod = ref.target
         if mod.startswith("."):
@@ -209,20 +221,23 @@ def _candidates_for(ref: ImportRef, from_path: str | None) -> tuple[list[str], b
     if ref.kind == "js_import":
         spec = ref.target
         if not spec.startswith("."):
-            return None  # bare module = external
+            # 裸模块 = 外部依赖
+            return None
         base = PurePosixPath((from_path or "").replace("\\", "/")).parent
         stem = str(base / spec)
         exts = ["", ".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.js"]
         return ([stem + e for e in exts], True, False)
-    return None  # csharp_using namespaces do not map 1:1 to files
+    # csharp_using 命名空间不与文件 1:1 对应
+    return None
 
 
+#### 尽力而为：把一条 ImportRef 映射为同一存储库内的目标 file_id [@380kkm 2026-06-05] ####
 def resolve_import(store: "stores.Store", ref: ImportRef, from_path: str | None = None,
                    index: "PathIndex | None" = None) -> int | None:
-    """Best-effort: map an :class:`ImportRef` to a target file_id in the same store.
+    """尽力而为：把一条 :class:`ImportRef` 映射为同一存储库内的目标 file_id。
 
-    Pass a :class:`PathIndex` for fast repeated resolution; without it, falls back
-    to SQL matching. Returns None for externals / unresolved.
+    传入 :class:`PathIndex` 可加速重复解析；不传则回退到 SQL 匹配。
+    对外部依赖 / 无法解析者返回 None。
     """
     spec = _candidates_for(ref, from_path)
     if spec is None:
@@ -233,19 +248,19 @@ def resolve_import(store: "stores.Store", ref: ImportRef, from_path: str | None 
     return _match_path(store, cands, suffix=suffix, basename=basename)
 
 
+#### 把一条边的 dst_name 全局解析为跨所有文件的候选符号 [@380kkm 2026-06-05] ####
 def resolve_edge_targets(store: "stores.Store", dst_name: str,
                          kinds: set[str] | None = None) -> list[sqlite3.Row]:
-    """Globally resolve an edge ``dst_name`` to candidate symbols across all files.
+    """把一条边的 ``dst_name`` 全局解析为跨所有文件的候选符号。
 
-    manyread resolves extends/implements only within one file; this lifts it to the
-    whole store by exact name. ``len(result)`` is the ambiguity (0 = external/absent).
+    manyread 只在单个文件内解析 extends/implements；本函数按精确名把它提升到
+    整个存储库。``len(result)`` 即歧义度（0 = 外部 / 不存在）。
 
-    DEFINITION-PREFERENCE: when >1 candidate and at least one is a body-bearing
-    DEFINITION, the declaration-sized FORWARD-DECLARATIONS are dropped. A C++ header
-    forward-declares a class in many files (``class UMaterial;`` -> a symbol whose span
-    is ~len("class <name>")), which would otherwise mark a sound single definition as
-    ``ambiguous``. A forward declaration is never the definition; if ONLY declarations
-    exist (no definition under that name) all are kept (honest). Mirrors link_source.
+    定义优先：当候选 >1 且其中至少一个是带函数体的「定义」时，丢弃声明大小的
+    「前向声明」。C++ 头文件会在许多文件里前向声明同一个类（``class UMaterial;``
+    —— 其 span 约为 len("class <name>")），否则会把一个本应单一的定义误判为
+    ``ambiguous``。前向声明永不是定义；若该名下「只有」声明（没有定义），则全部
+    保留（诚实）。逻辑与 link_source 镜像。
     """
     cands = store.symbols_named(dst_name, kinds=kinds)
     if len(cands) <= 1:

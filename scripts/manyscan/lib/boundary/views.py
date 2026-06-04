@@ -2,15 +2,14 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""manyscan.lib.boundary.views — derived VIEWS over the boundary graph.
+"""manyscan.lib.boundary.views —— boundary graph 之上的派生 VIEW。
 
-Two derived views plus their layered/collapsed presentations:
-  * INTERNAL coupling — the target-zone subgraph (target→target edges only),
-    for split seams / SCC.
-  * DEPENDENCY surface — the bipartite boundary (target symbols that reach a
-    dependency) → their dependency targets, optionally rolled up by module.
-Plus band assignment (the 4-layer refactoring view), module assignment (the
-collapsible quotient view), and the target→dependency crossings list.
+两个派生 view 及其分层 / 折叠呈现：
+  * INTERNAL coupling —— target 区子图（仅 target→target 边），用于切分缝 / SCC。
+  * DEPENDENCY surface —— 二部 boundary（够到某个 dependency 的 target 符号）→
+    它们的 dependency target，可选按 module rollup。
+此外还有 band 分配（4 层重构 view）、module 分配（可折叠的商图 view），以及
+target→dependency 的 crossing 列表。
 """
 from __future__ import annotations
 
@@ -22,31 +21,33 @@ from lib.graph import Edge, Graph, Node
 
 from .zoning import DEPENDENCY, TARGET, Zoning
 
-# Band indices for the 4-layer refactoring view (left->right reading order):
-#   target-core   = target symbol with NO crossing edge into a dependency
-#   target-iface  = target symbol WITH >=1 crossing edge (the call sites to wrap)
-#   dep-iface     = dependency symbol referenced DIRECTLY by a target (the API surface)
-#   dep-core      = dependency symbol behind the surface (only via --dep-depth 2)
+#### 4 层重构 view 的 band 下标（从左到右的阅读序） [@380kkm 2026-06-05] ####
+# target-core   = 没有跨越边进入 dependency 的 target 符号
+# target-iface  = 有 >=1 条跨越边的 target 符号（待包裹的 call site）
+# dep-iface     = 被某 target 直接引用的 dependency 符号（API 表面）
+# dep-core      = 表面之后的 dependency 符号（仅经 --dep-depth 2 才出现）
 TARGET_CORE, TARGET_IFACE, DEP_IFACE, DEP_CORE = 0, 1, 2, 3
 
 
-# --- views -------------------------------------------------------------------
+#### 把 src 的相关 edge-confidence 拷贝到 dst [@380kkm 2026-06-05] ####
 def _carry_confidence(src: Graph, dst: Graph) -> None:
-    """Copy the relevant edge-confidence entries from ``src`` onto ``dst``."""
+    """把 ``src`` 上相关的 edge-confidence 条目拷贝到 ``dst``。"""
     base = getattr(src, "edge_confidence", {})
     dst.edge_confidence = {e.key(): base.get(e.key(), "direct") for e in dst.edges}
 
 
+#### 取 target 区子图（仅 target→target 边） [@380kkm 2026-06-05] ####
 def internal_view(g: Graph) -> Graph:
-    """The target-zone subgraph (target→target edges only) for split seams / SCC."""
+    """target 区子图（仅 target→target 边），用于切分缝 / SCC。"""
     ids = sorted(nid for nid, n in g.nodes.items() if n.attrs.get("zone") == TARGET)
     sub = g.subgraph(ids)
     _carry_confidence(g, sub)
     return sub
 
 
+#### 取至少有一条出边进入 dependency 区的 target 节点 [@380kkm 2026-06-05] ####
 def boundary_nodes(g: Graph) -> list[str]:
-    """Sorted ids of target-zone nodes that have at least one out-edge into the dependency zone."""
+    """至少有一条出边进入 dependency 区的 target 区节点 id（已排序）。"""
     out: set[str] = set()
     for e in g.edges:
         src = g.nodes.get(e.src)
@@ -58,28 +59,28 @@ def boundary_nodes(g: Graph) -> list[str]:
     return sorted(out)
 
 
+#### 为分层 html view 把每个节点分到一个有序 band [@380kkm 2026-06-05] ####
 def assign_bands(g: Graph, layers: str) -> tuple[dict[str, int], list[dict]]:
-    """Assign each node to an ORDERED band (left->right) for the layered html view.
+    """为分层 html view 把每个节点分到一个有序 band（从左到右）。
 
-    PURE + sorted; NEVER mutates ``g`` (the same ``g`` is reused by
-    ``internal_view`` / ``dependency_surface`` for the non-html formats). Returns
-    ``(band_of, bands_meta)`` where ``band_of`` maps every node id to an integer band
-    and ``bands_meta`` is the ordered list of ``{"band": i, "label": str}`` boxes.
+    PURE + 有序；从不改动 ``g``（同一个 ``g`` 会被 ``internal_view`` /
+    ``dependency_surface`` 在非 html 格式下复用）。返回 ``(band_of, bands_meta)``，其中
+    ``band_of`` 把每个节点 id 映射到一个整数 band，``bands_meta`` 是有序的
+    ``{"band": i, "label": str}`` 盒子列表。
 
-    * ``flat`` (or a graph with no zones) -> every node in band 0, no boxes (``[]``)
-      => the renderer emits ``const BANDS=[]`` and the box/partition layers are
-      no-ops (exactly the historical flat behavior).
-    * ``two`` -> band 0 = every ``target`` node, band 1 = every ``dependency`` node.
-    * ``four`` -> ``[target-core | target-iface || dep-iface | dep-core]``:
-        - target-core  (0): a target node with NO crossing edge into a dependency,
-        - target-iface (1): a target node WITH >=1 crossing edge (``boundary_nodes``),
-        - dep-iface    (2): a dependency node referenced DIRECTLY by a target, or any
-          dependency node not marked ``dep_core``,
-        - dep-core     (3): a dependency node marked ``dep_core`` (only via
-          ``build(dep_depth=2)``) AND not part of the surface.
-      The 4th (dep-core) band is KEPT in ``bands_meta`` even when empty (at
-      ``--dep-depth 1``) so its framed/labelled box is always drawn — a documented,
-      non-error state.
+    * ``flat``（或无 zone 的 graph）-> 每个节点都在 band 0，无盒子（``[]``）
+      => 渲染器发出 ``const BANDS=[]``，盒子 / 分区层成为空操作（即历史 flat 行为）。
+    * ``two`` -> band 0 = 每个 ``target`` 节点，band 1 = 每个 ``dependency`` 节点。
+    * ``four`` -> ``[target-core | target-iface || dep-iface | dep-core]``：
+        - target-core  (0)：没有跨越边进入 dependency 的 target 节点，
+        - target-iface (1)：有 >=1 条跨越边的 target 节点（``boundary_nodes``），
+        - dep-iface    (2)：被某 target 直接引用的 dependency 节点，或任何未标
+          ``dep_core`` 的 dependency 节点，
+        - dep-core     (3)：标了 ``dep_core``（仅经 ``build(dep_depth=2)``）且不属于
+          表面的 dependency 节点。
+      即使第 4 个（dep-core）band 为空（在 ``--dep-depth 1`` 下），它也会保留在
+      ``bands_meta`` 里，使其带框 / 带标签的盒子始终被画出 —— 这是一个有据可查的非错误
+      状态。
     """
     has_zone = any(n.attrs.get("zone") in (TARGET, DEPENDENCY) for n in g.nodes.values())
     if layers == "flat" or not has_zone:
@@ -89,9 +90,11 @@ def assign_bands(g: Graph, layers: str) -> tuple[dict[str, int], list[dict]]:
                    for nid in sorted(g.nodes)}
         return band_of, [{"band": 0, "label": "target"},
                          {"band": 1, "label": "dependency"}]
-    # four
-    iface_targets = set(boundary_nodes(g))           # target nodes with a crossing edge
-    dep_surface = {e.dst for e in g.edges             # dep nodes referenced DIRECTLY by a target
+    #### four：四层分配 [@380kkm 2026-06-05] ####
+    # 带跨越边的 target 节点
+    iface_targets = set(boundary_nodes(g))
+    # 被某 target 直接引用的 dep 节点
+    dep_surface = {e.dst for e in g.edges
                    if (g.nodes.get(e.src) is not None and g.nodes.get(e.dst) is not None
                        and g.nodes[e.src].attrs.get("zone") == TARGET
                        and g.nodes[e.dst].attrs.get("zone") == DEPENDENCY)}
@@ -104,42 +107,43 @@ def assign_bands(g: Graph, layers: str) -> tuple[dict[str, int], list[dict]]:
             band_of[nid] = DEP_IFACE if (nid in dep_surface or not n.attrs.get("dep_core")) else DEP_CORE
     return band_of, [{"band": 0, "label": "target-core"}, {"band": 1, "label": "target-iface"},
                      {"band": 2, "label": "dep-iface"}, {"band": 3, "label": "dep-core"}]
+    #### /four ####
 
 
-# zone-side tints for the module super-nodes (mirror render._ZONE_COLOR; kept local so
-# boundary.py has no render import). target=blue, dependency=orange.
+#### module 超级节点的 zone 侧着色（镜像 render._ZONE_COLOR） [@380kkm 2026-06-05] ####
+# 本地保留以免 boundary.py 引入 render；target=蓝，dependency=橙
 _MODULE_ZONE_COLOR = {"target": "#4e79a7", "dependency": "#f28e2b"}
 
 
+#### 为可折叠商图 view 做确定性的 module 分配 [@380kkm 2026-06-05] ####
 def assign_modules(g: Graph, z: "Zoning", level: str = "file", store=None,
                    band_of: dict | None = None) -> tuple[dict[str, str], list[dict]]:
-    """Deterministic MODULE assignment for the collapsible quotient view.
+    """为可折叠商图 view 做确定性的 MODULE 分配。
 
-    Returns ``(module_of, modules_meta)`` where ``module_of`` maps every node id to a
-    side-prefixed module id and ``modules_meta`` is the sorted-by-id list of module
-    super-node descriptors.
+    返回 ``(module_of, modules_meta)``，其中 ``module_of`` 把每个节点 id 映射到一个带侧
+    前缀的 module id，``modules_meta`` 是按 id 排序的 module 超级节点描述符列表。
 
-    * TARGET side (zone == ``target``): module = the file STEM of ``attrs['path']``
-      (``level='file'``, so a ``.cpp`` + ``.h`` pair coalesces) or its parent DIR
-      (``level='dir'``). A path-less target (``amb:<name>``) -> ``(external)``.
-    * DEPENDENCY side: a symbol dep with a path -> ``rollup._module_of`` via
-      ``rollup.roots_by_len`` (the SAME resolver ``dependency_surface`` uses, so the ids
-      match ``--rollup-dep``); a by-name dep (``dep:`` / ``amb:`` with no path) ->
-      ``(external)``.
+    * TARGET 侧（zone == ``target``）：module = ``attrs['path']`` 的文件 STEM
+      （``level='file'``，使 ``.cpp`` + ``.h`` 成对合并）或其父 DIR（``level='dir'``）。
+      无路径的 target（``amb:<name>``）-> ``(external)``。
+    * DEPENDENCY 侧：带路径的符号 dep -> 经 ``rollup.roots_by_len`` 走
+      ``rollup._module_of``（与 ``dependency_surface`` 用的是同一个 resolver，故 id 与
+      ``--rollup-dep`` 匹配）；按名 dep（``dep:`` / ``amb:`` 无路径）-> ``(external)``。
 
-    ``module_id = f'{side}:{raw}'`` — the ``side`` prefix prevents a target file-stem
-    from colliding with a dependency module of the same name, and keeps the synthetic
-    ``mod:`` super-node id distinct from the ``s<id>``/``dep:``/``amb:`` member keys.
+    ``module_id = f'{side}:{raw}'`` —— ``side`` 前缀防止 target 文件 stem 与同名
+    dependency module 相撞，并使合成的 ``mod:`` 超级节点 id 与
+    ``s<id>``/``dep:``/``amb:`` 成员键区分开。
 
-    PURE + sorted (``sorted(g.nodes)``) so two runs are byte-identical. The super-node
-    band is the MIN member band (a file split across target-core/target-iface collapses
-    to the lower band) — a documented semantic compromise.
+    PURE + 有序（``sorted(g.nodes)``），故两次运行逐字节一致。超级节点的 band 取成员
+    band 的 MIN（跨 target-core/target-iface 拆分的同一文件折叠到较低 band）—— 一个有据
+    可查的语义折衷。
     """
     roots = rollup.roots_by_len(store)
     module_of: dict[str, str] = {}
     members: dict[str, int] = {}
     band_min: dict[str, int] = {}
-    for nid in sorted(g.nodes):                       # sorted => stable
+    # 有序 => 稳定
+    for nid in sorted(g.nodes):
         n = g.nodes[nid]
         side = "target" if n.attrs.get("zone") == TARGET else "dependency"
         path = n.attrs.get("path") or ""
@@ -163,14 +167,14 @@ def assign_modules(g: Graph, z: "Zoning", level: str = "file", store=None,
     return module_of, meta
 
 
+#### 取二部 boundary 表面：target boundary 符号 → 其 dependency target [@380kkm 2026-06-05] ####
 def dependency_surface(g: Graph, rollup_modules: bool = False, store=None) -> Graph:
-    """The bipartite boundary surface: target boundary symbols → their dependency targets.
+    """二部 boundary 表面：target boundary 符号 → 它们的 dependency target。
 
-    Keeps only crossing (target→dependency) edges + their endpoints. When
-    ``rollup_modules`` is set, dependency targets are grouped by their module root
-    (via :func:`rollup.module_roots` / ``_module_of``); target nodes are kept as-is
-    and crossing edges re-aggregated onto the dependency groups. The dependency side
-    may span MULTIPLE dependency sources.
+    只保留跨越（target→dependency）边及其端点。当设置 ``rollup_modules`` 时，dependency
+    target 按其 module root 分组（经 :func:`rollup.module_roots` / ``_module_of``）；
+    target 节点原样保留，跨越边重新聚合到 dependency 分组上。dependency 侧可跨越多个
+    dependency 源。
     """
     bset = set(boundary_nodes(g))
     keep_target = sorted(bset)
@@ -201,8 +205,8 @@ def dependency_surface(g: Graph, rollup_modules: bool = False, store=None) -> Gr
         out.edge_confidence = conf
         return out
 
-    # Rollup dependency targets by module root. Reuse rollup.roots_by_len so the
-    # ordering (and thus the chosen module) is the SAME total order rollup uses.
+    #### 按 module root rollup dependency target [@380kkm 2026-06-05] ####
+    # 复用 rollup.roots_by_len，使排序（及由此选出的 module）与 rollup 用的全序一致
     roots = rollup.roots_by_len(store)
     group_of: dict[str, str] = {}
     for nid in sorted(dep_targets):
@@ -227,20 +231,22 @@ def dependency_surface(g: Graph, rollup_modules: bool = False, store=None) -> Gr
             conf[edge.key()] = base_conf.get(e.key(), "direct")
     out.edge_confidence = conf
     return out
+    #### /rollup dependency target ####
 
 
+#### 最小的类节点 shim，使 rollup._module_of 能作用于裸路径 [@380kkm 2026-06-05] ####
 class _FakeNode:
-    """Minimal node-like shim so ``rollup._module_of`` (which reads ``.label``) works on a raw path."""
+    """最小的类节点 shim，使 ``rollup._module_of``（读 ``.label``）能作用于一个裸路径。"""
 
     def __init__(self, path: str):
         self.label = path or ""
         self.id = self.label
 
 
-# --- crossings (for text/json) -----------------------------------------------
+#### 一次 target→dependency boundary crossing（dependency 制造的缝） [@380kkm 2026-06-05] ####
 @dataclass(frozen=True)
 class Crossing:
-    """One target→dependency boundary crossing: the seam a dependency creates."""
+    """一次 target→dependency boundary crossing：一个 dependency 制造的缝。"""
 
     src: str
     dst: str
@@ -249,8 +255,9 @@ class Crossing:
     evidence: str
 
 
+#### 取所有 target→dependency crossing，按 (src, dst, relation) 排序 [@380kkm 2026-06-05] ####
 def crossings(g: Graph) -> list[Crossing]:
-    """All target→dependency crossings, sorted by ``(src, dst, relation)``."""
+    """所有 target→dependency crossing，按 ``(src, dst, relation)`` 排序。"""
     bset = set(boundary_nodes(g))
     conf = getattr(g, "edge_confidence", {})
     out: list[Crossing] = []

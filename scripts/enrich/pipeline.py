@@ -17,15 +17,15 @@ from enrich.dbwrite import _insert_file
 from enrich.rules_glue import _preview_diff, _resolve_merged_rules
 
 
+#### 清空并重建所有 ext 命中所选语言的文件的 symbols/edges [@380kkm 2026-06-05] ####
 def enrich(cfg: config.ProjectConfig, langs: list[str], do_refs: bool,
            rules_path: str | None = None, no_rules: bool = False,
            preview: bool = False) -> dict:
-    """Clear and refill symbols/edges for every file whose ext maps to a chosen lang.
+    """清空并重新填充每个扩展名映射到所选语言的文件的 symbols/edges。
 
-    After raw tree-sitter extraction, applies the project override rules (spec
-    section 16) as a pure transform pass BEFORE inserting. With preview=True the
-    transform is computed and a before/after diff is collected, but NOTHING is
-    written to the DB (existing symbols/edges are left untouched).
+    在原始 tree-sitter 提取之后、写入之前，把项目 override 规则（spec 第 16 节）
+    作为一趟纯变换施加上去。当 preview=True 时只计算变换并收集 before/after 差异，
+    但绝不写入数据库（既有的 symbols/edges 原样保留）。
     """
     db_path = Path(cfg.db_path)
     if not db_path.exists():
@@ -33,22 +33,24 @@ def enrich(cfg: config.ProjectConfig, langs: list[str], do_refs: bool,
 
     merged_rules, rules_file = _resolve_merged_rules(cfg, rules_path, no_rules)
 
-    # c-family pre-parse macro-strip config (manyread.json macro_strip; ABSENT => ON).
-    # Resolved once; passed per-file to _extract_file (only the cpp path consumes it).
+    #### 解析 c 系语言的 parse 前宏剥离配置（manyread.json macro_strip；缺省即开启） [@380kkm 2026-06-05] ####
+    # 只解析一次，逐文件传给 _extract_file（仅 cpp 路径会消费它）
     macro_strip = config.load_macro_strip(cfg.store)
 
     conn = db.connect(db_path)
     try:
-        db.init_schema(conn)  # ensure symbols/edges/meta exist + migrate (idempotent).
+        # 确保 symbols/edges/meta 存在并完成迁移（幂等）
+        db.init_schema(conn)
 
         if not preview:
-            # Idempotent full rebuild: clear prior enrichment. (Preview leaves the
-            # DB untouched so re-running with rules later is the only write path.)
+            #### 清除既有 enrich 结果以做幂等全量重建 [@380kkm 2026-06-05] ####
+            # preview 模式不动数据库，所以带规则重跑才是唯一写入路径
             conn.execute("DELETE FROM edges")
             conn.execute("DELETE FROM symbols")
             conn.commit()
+            #### /清除既有 enrich 结果 ####
 
-        # Build parsers lazily, once per language actually present.
+        # 按需构建 parser，每种实际出现的语言只建一次
         parsers: dict[str, Parser] = {}
         per_lang_sym: dict[str, int] = {}
         per_lang_edge: dict[str, int] = {}
@@ -57,8 +59,10 @@ def enrich(cfg: config.ProjectConfig, langs: list[str], do_refs: bool,
         diff_lines: list[str] = []
 
         query_specs = _load_query_specs(getattr(cfg, "root", None))
-        query_objs: dict[str, object] = {}            # lang -> compiled Query (or None)
+        # lang -> 已编译的 Query（或 None）
+        query_objs: dict[str, object] = {}
 
+        #### 逐文件提取符号与边，施加规则后写入或预览 [@380kkm 2026-06-05] ####
         rows = conn.execute("SELECT id, path, ext, content FROM files").fetchall()
         for file_id, path, ext, content in rows:
             lang = LANG_FOR_EXT.get((ext or "").lower())
@@ -71,11 +75,13 @@ def enrich(cfg: config.ProjectConfig, langs: list[str], do_refs: bool,
                     parsers[lang] = Parser(_load_language(lang))
                 except Exception as exc:  # noqa: BLE001 - grammar load failure is per-lang
                     print(f"warning: could not load {lang} grammar: {exc}", file=sys.stderr)
-                    parsers[lang] = None  # mark as failed so we skip its files
+                    # 标记为失败，后续跳过该语言的文件
+                    parsers[lang] = None
             parser = parsers.get(lang)
             if parser is None:
                 continue
-            if lang in query_specs and lang not in query_objs:   # compile the .scm once per lang
+            # 每种语言只编译一次 .scm 查询
+            if lang in query_specs and lang not in query_objs:
                 try:
                     query_objs[lang] = Query(_load_language(lang), query_specs[lang])
                 except Exception as exc:  # noqa: BLE001 - a bad query must not abort enrichment
@@ -84,14 +90,14 @@ def enrich(cfg: config.ProjectConfig, langs: list[str], do_refs: bool,
             try:
                 raw_rows, raw_edges = _extract_file(file_id, content, lang, parser, do_refs,
                                                     query_objs.get(lang), macro_strip)
-                # Override-rules transform (pure; identity when merged_rules == []).
+                # override 规则变换（纯函数；merged_rules == [] 时为恒等）
                 new_rows, new_edges, _prov = rules.apply_rules(
                     raw_rows, raw_edges, {file_id: content}, merged_rules,
                 )
                 if preview:
                     if merged_rules:
                         diff_lines.extend(_preview_diff(raw_rows, new_rows, path))
-                    # do NOT write in preview mode.
+                    # preview 模式不写入
                     per_lang_sym[lang] = per_lang_sym.get(lang, 0) + len(new_rows)
                     per_lang_edge[lang] = per_lang_edge.get(lang, 0) + len(new_edges)
                 else:
@@ -102,6 +108,7 @@ def enrich(cfg: config.ProjectConfig, langs: list[str], do_refs: bool,
             except Exception as exc:  # noqa: BLE001 - graceful per-file skip
                 n_errors += 1
                 print(f"warning: failed to enrich {path}: {exc}", file=sys.stderr)
+        #### /逐文件提取符号与边 ####
 
         if preview:
             total_sym = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
@@ -131,8 +138,10 @@ def enrich(cfg: config.ProjectConfig, langs: list[str], do_refs: bool,
         "preview": preview,
         "diff_lines": diff_lines,
     }
+#### /清空并重建所有文件的 symbols/edges ####
 
 
+#### 命令行入口：解析参数、选定语言、跑 enrich 并打印统计 [@380kkm 2026-06-05] ####
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="enrich_treesitter.py",
@@ -165,19 +174,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    # Determine languages: explicit --langs wins; else config languages; else all.
+    # 选定语言：显式 --langs 优先；否则配置中的语言；否则全部
     if args.langs:
         requested = [s.strip().lower() for s in args.langs.split(",") if s.strip()]
     elif cfg.languages:
         requested = [s.lower() for s in cfg.languages]
     else:
         requested = list(SUPPORTED_LANGS)
-    # Keep only languages we can actually parse in v1.
+    # 只保留 v1 实际可解析的语言
     langs = [l for l in requested if l in SUPPORTED_LANGS]
     if not langs:
         langs = list(SUPPORTED_LANGS)
-    # typescript and tsx are a pair (same walker, different grammar dialect);
-    # requesting one pulls in the other so .ts and .tsx are both covered.
+    # typescript 与 tsx 成对（同一 walker、不同 grammar 方言）；
+    # 请求其一就一并拉入另一个，使 .ts 与 .tsx 都被覆盖
     if "typescript" in langs and "tsx" not in langs:
         langs.append("tsx")
     if "tsx" in langs and "typescript" not in langs:
@@ -189,7 +198,8 @@ def main(argv: list[str] | None = None) -> int:
     except SystemError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    except ValueError as exc:  # bad rules.json / missing preset
+    # rules.json 损坏 / preset 缺失
+    except ValueError as exc:
         print(f"error: rules: {exc}", file=sys.stderr)
         return 2
 
@@ -226,3 +236,4 @@ def main(argv: list[str] | None = None) -> int:
     print(f"symbols    : {stats['total_sym']}")
     print(f"edges      : {stats['total_edge']}")
     return 0
+#### /命令行入口 ####

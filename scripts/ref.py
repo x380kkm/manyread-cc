@@ -2,26 +2,24 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""manyread L4 — ref / prune / worktree CLI (stdlib only).
+"""manyread L4 —— ref / prune / worktree 命令行（仅标准库）。
 
-Spec section 10. A *ref* is a dated, task-tagged reading workspace holding
-pruned + annotated copies of selected files. It lives under
-  <root>/.manyread/refs/<id>/      where  id = <YYYY-MM-DD>-<task-slug>
-and carries a manifest `ref.json`, free-form `notes.md`, and a `files/`
-directory of copies.
+规范第 10 节。一个 *ref* 是带日期、按任务打标签的阅读工作区，存放选定文件的
+经裁剪 + 标注的副本。它位于
+  <root>/.manyread/refs/<id>/      其中  id = <YYYY-MM-DD>-<task-slug>
+并携带清单 `ref.json`、自由格式的 `notes.md`，以及一个存放副本的 `files/` 目录。
 
-ref.json fields (NORMATIVE, spec section 10):
+ref.json 字段（规范第 10 节，规范性）：
   id, task, date, source_project, status (active|shelved|cleared),
-  worktree (null or RELATIVE path), files[{src, rev, copy}],
-  annotations ("notes.md"), sub_index (null or relative db path).
+  worktree（null 或相对路径）, files[{src, rev, copy}],
+  annotations ("notes.md"), sub_index（null 或相对 db 路径）。
 
-All source paths stored in ref.json are RELATIVE to the project root so the
-manifest is committable and dynamic-path friendly (the source root is resolved
-at runtime via lib.config; §5).
+ref.json 中存储的所有源路径都相对于项目根，使清单可提交且对动态路径友好
+（源根在运行时经 lib.config 解析；§5）。
 
-Runtime: uv run --python 3.12 ${CLAUDE_PLUGIN_ROOT}/scripts/ref.py <subcmd> ...
+运行时：uv run --python 3.12 ${CLAUDE_PLUGIN_ROOT}/scripts/ref.py <subcmd> ...
 
-CLI (spec section 10):
+命令行（规范第 10 节）：
   ref.py create --project A|--root PATH --task "..." [--from-query SQL | --files a,b] [--worktree]
   ref.py list [--project A] [--all] [--status active]
   ref.py select <ref_id>
@@ -44,18 +42,18 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib import config  # noqa: E402
 
-# Fixed build date for this plugin pass (spec uses 2026-05-28 throughout).
+# 本插件 pass 的固定构建日期（规范全程使用 2026-05-28）。
 REF_DATE = "2026-05-28"
 
 SCRIPT_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
 
 
-# --- slug / id helpers ------------------------------------------------------
+#### 把自由格式任务串转成文件系统安全的 slug [@380kkm 2026-06-05] ####
 def slugify(task: str) -> str:
-    """Turn a free-form task string into a filesystem-safe slug.
+    """把自由格式任务串转成文件系统安全的 slug。
 
-    Lowercased, non-alphanumerics collapsed to single hyphens, trimmed. Empty
-    input falls back to "ref" so an id is always well-formed.
+    转小写，非字母数字折叠为单个连字符，并裁剪两端。空输入回退为 "ref"，
+    使 id 始终格式良好。
     """
     s = task.strip().lower()
     s = re.sub(r"[^a-z0-9]+", "-", s)
@@ -63,19 +61,21 @@ def slugify(task: str) -> str:
     return s or "ref"
 
 
+#### 组装 ref id = <date>-<task-slug> [@380kkm 2026-06-05] ####
 def make_ref_id(task: str, date: str = REF_DATE) -> str:
-    """Compose the ref id = <date>-<task-slug>."""
+    """组装 ref id = <date>-<task-slug>。"""
     return f"{date}-{slugify(task)}"
 
 
-# --- project / ref resolution ----------------------------------------------
+#### 从 --store / --root（或由 cwd 发现，§5）解析项目配置 [@380kkm 2026-06-05] ####
 def resolve_cfg(store: str | None, root: str | None) -> config.ProjectConfig:
-    """Resolve a project config from --store / --root (or discovery from cwd, §5)."""
+    """从 --store / --root（或由 cwd 发现，§5）解析项目配置。"""
     return config.resolve_project(root=root, store=store)
 
 
+#### 在解析出的 store 的 refs_dir 下定位 ref_id 的目录 [@380kkm 2026-06-05] ####
 def find_ref(ref_id: str, store: str | None, root: str | None) -> tuple[config.ProjectConfig, Path]:
-    """Locate the ref dir for ref_id under the resolved store's refs_dir."""
+    """在解析出的 store 的 refs_dir 下定位 ref_id 的目录。"""
     cfg = resolve_cfg(store, root)
     ref_dir = Path(cfg.refs_dir) / ref_id
     if ref_dir.exists():
@@ -83,6 +83,7 @@ def find_ref(ref_id: str, store: str | None, root: str | None) -> tuple[config.P
     raise SystemError(f"ref '{ref_id}' not found under {cfg.refs_dir}")
 
 
+#### 读取并解析 ref 目录下的 ref.json 清单 [@380kkm 2026-06-05] ####
 def load_manifest(ref_dir: Path) -> dict:
     mpath = ref_dir / "ref.json"
     if not mpath.exists():
@@ -90,17 +91,18 @@ def load_manifest(ref_dir: Path) -> dict:
     return json.loads(mpath.read_text(encoding="utf-8"))
 
 
+#### 把清单写回 ref 目录下的 ref.json [@380kkm 2026-06-05] ####
 def save_manifest(ref_dir: Path, manifest: dict) -> None:
     mpath = ref_dir / "ref.json"
     mpath.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
-# --- file selection ---------------------------------------------------------
+#### 直接对项目 db 跑 SQL，返回 'path' 列的取值 [@380kkm 2026-06-05] ####
 def select_from_query(db_path: Path, sql: str) -> list[str]:
-    """Run SQL directly against the project db; return values of the 'path' col.
+    """直接对项目 db 跑 SQL；返回 'path' 列的取值。
 
-    The query must yield a column named 'path' (case-insensitive). We connect
-    with sqlite3 directly (no query.py round-trip) per spec §10.
+    查询必须产出一个名为 'path' 的列（大小写不敏感）。我们直接用 sqlite3 连接
+    （不经 query.py 中转），依据规范 §10。
     """
     if not db_path.exists():
         raise SystemError(
@@ -131,14 +133,16 @@ def select_from_query(db_path: Path, sql: str) -> list[str]:
     return paths
 
 
+#### 把逗号分隔的 --files 参数解析为路径列表 [@380kkm 2026-06-05] ####
 def parse_files_arg(files: str | None) -> list[str]:
     if not files:
         return []
     return [f for f in (x.strip() for x in files.split(",")) if f]
 
 
+#### 尽力取文件的 git blob/commit sha；非 git 跟踪时返回 None [@380kkm 2026-06-05] ####
 def _git_rev(root: Path, rel_path: str) -> str | None:
-    """Best-effort git blob/commit sha for a file; None when not git-tracked."""
+    """尽力取文件的 git blob/commit sha；非 git 跟踪时返回 None。"""
     try:
         out = subprocess.run(
             ["git", "rev-parse", f"HEAD:{rel_path}"],
@@ -156,11 +160,12 @@ def _git_rev(root: Path, rel_path: str) -> str | None:
     return None
 
 
+#### 把选定路径归一化为相对项目根的 posix 串 [@380kkm 2026-06-05] ####
 def _to_relative(root: Path, raw: str) -> str | None:
-    """Normalize a selected path to a project-root-relative posix string.
+    """把选定路径归一化为相对项目根的 posix 串。
 
-    Accepts paths already relative to root, or absolute paths under root.
-    Returns None when the path escapes the root (can't be stored portably).
+    接受已相对于根的路径，或根下的绝对路径。当路径逃逸出根（无法可移植地存储）
+    时返回 None。
     """
     root = Path(root).resolve()
     p = Path(raw)
@@ -175,6 +180,7 @@ def _to_relative(root: Path, raw: str) -> str | None:
     return rel.as_posix()
 
 
+#### 判断 root 是否为 git 仓库 [@380kkm 2026-06-05] ####
 def is_git_repo(root: Path) -> bool:
     try:
         out = subprocess.run(
@@ -189,12 +195,12 @@ def is_git_repo(root: Path) -> bool:
         return False
 
 
-# --- subcommand: create -----------------------------------------------------
+#### 子命令 create：选源、拷贝、可选 worktree、写清单 [@380kkm 2026-06-05] ####
 def cmd_create(args: argparse.Namespace) -> int:
     cfg = resolve_cfg(args.store, args.root)
     root = Path(cfg.root).resolve()
 
-    # 1. Gather selected source paths (root-relative posix).
+    # 1. 收集选定的源路径（相对根的 posix）。
     raw_paths: list[str] = []
     if args.from_query:
         raw_paths = select_from_query(Path(cfg.db_path), args.from_query)
@@ -217,13 +223,13 @@ def cmd_create(args: argparse.Namespace) -> int:
     if not rel_paths:
         raise SystemError("no files selected for the ref")
 
-    # 2. Make refs/<id>/ + files/.
+    # 2. 建立 refs/<id>/ 与 files/。
     ref_id = make_ref_id(args.task)
     ref_dir = Path(cfg.refs_dir) / ref_id
     files_dir = ref_dir / "files"
     files_dir.mkdir(parents=True, exist_ok=True)
 
-    # 3. Copy each selected file into files/, dedup basename collisions.
+    # 3. 把每个选定文件拷进 files/，对 basename 冲突去重。
     file_entries: list[dict] = []
     used_copy_names: set[str] = set()
     for rel in rel_paths:
@@ -245,12 +251,12 @@ def cmd_create(args: argparse.Namespace) -> int:
             "copy": (Path("files") / copy_name).as_posix(),
         })
 
-    # 4. Optional git worktree (only if project root is a git repo).
+    # 4. 可选 git worktree（仅当项目根是 git 仓库）。
     worktree_rel = None
     if args.worktree:
         worktree_rel = _add_worktree(root, ref_dir, ref_id)
 
-    # 5. notes.md scaffold + ref.json manifest.
+    # 5. notes.md 脚手架 + ref.json 清单。
     notes = ref_dir / "notes.md"
     if not notes.exists():
         notes.write_text(
@@ -283,16 +289,18 @@ def cmd_create(args: argparse.Namespace) -> int:
     print(f"  manifest : {ref_dir / 'ref.json'}")
     print(f"  notes    : {notes}")
     return 0
+#### /子命令 create ####
 
 
+#### 在 files/ 下挑选副本文件名，消解 basename 冲突 [@380kkm 2026-06-05] ####
 def _unique_copy_name(rel: str, used: set[str]) -> str:
-    """Pick a copy filename under files/, disambiguating basename collisions."""
+    """在 files/ 下挑选一个副本文件名，消解 basename 冲突。"""
     base = Path(rel).name
     if base not in used:
         return base
     stem = Path(base).stem
     suffix = Path(base).suffix
-    # Prefix with a slugged parent dir to disambiguate.
+    # 以父目录的 slug 作前缀来消歧。
     parent = slugify(str(Path(rel).parent))
     candidate = f"{parent}-{base}" if parent and parent != "ref" else base
     n = 1
@@ -303,19 +311,19 @@ def _unique_copy_name(rel: str, used: set[str]) -> str:
     return name
 
 
+#### 建一个 git worktree 托管隔离分支目录，返回相对路径 [@380kkm 2026-06-05] ####
 def _add_worktree(root: Path, ref_dir: Path, ref_id: str) -> str | None:
-    """Create a git worktree to host an isolated branch dir; return REL path.
+    """建一个 git worktree 托管隔离分支目录；返回相对路径。
 
-    The worktree lives at refs/<id>/worktree on a new branch manyread/<id>.
-    Returns the path relative to the project root, or None on failure / when
-    the root is not a git repo.
+    worktree 位于 refs/<id>/worktree，在新分支 manyread/<id> 上。返回相对项目根的
+    路径；失败或根非 git 仓库时返回 None。
     """
     if not is_git_repo(root):
         print("warning: --worktree ignored: project root is not a git repo", file=sys.stderr)
         return None
     wt_abs = ref_dir / "worktree"
     branch = f"manyread/{ref_id}"
-    # Remove a stale dir so `git worktree add` does not error on a non-empty path.
+    # 删除陈旧目录，使 `git worktree add` 不会在非空路径上报错。
     if wt_abs.exists():
         shutil.rmtree(wt_abs, ignore_errors=True)
     out = subprocess.run(
@@ -326,7 +334,7 @@ def _add_worktree(root: Path, ref_dir: Path, ref_id: str) -> str | None:
         check=False,
     )
     if out.returncode != 0:
-        # Branch may already exist (re-create); retry without -b.
+        # 分支可能已存在（重新创建）；去掉 -b 重试。
         out2 = subprocess.run(
             ["git", "worktree", "add", str(wt_abs), branch],
             cwd=str(root),
@@ -346,9 +354,9 @@ def _add_worktree(root: Path, ref_dir: Path, ref_id: str) -> str | None:
         return wt_abs.as_posix()
 
 
-# --- subcommand: list -------------------------------------------------------
+#### 加载 refs_dir 下全部 ref 清单（跳过不可读的） [@380kkm 2026-06-05] ####
 def _scan_refs(refs_dir: Path) -> list[dict]:
-    """Load all ref manifests under a refs_dir (skipping unreadable ones)."""
+    """加载某 refs_dir 下的全部 ref 清单（跳过不可读的）。"""
     out: list[dict] = []
     if not refs_dir.exists():
         return out
@@ -367,6 +375,7 @@ def _scan_refs(refs_dir: Path) -> list[dict]:
     return out
 
 
+#### 子命令 list：按状态过滤并逐行打印 ref 概览 [@380kkm 2026-06-05] ####
 def cmd_list(args: argparse.Namespace) -> int:
     manifests: list[dict] = []
 
@@ -392,7 +401,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
-# --- subcommand: select -----------------------------------------------------
+#### 子命令 select：打印某 ref 的清单 + notes + 文件列表 [@380kkm 2026-06-05] ####
 def cmd_select(args: argparse.Namespace) -> int:
     cfg, ref_dir = find_ref(args.ref_id, args.store, args.root)
     manifest = load_manifest(ref_dir)
@@ -419,7 +428,7 @@ def cmd_select(args: argparse.Namespace) -> int:
     return 0
 
 
-# --- subcommand: strip-ifdef ------------------------------------------------
+#### 子命令 strip-ifdef：从副本中丢弃不匹配的预处理 span [@380kkm 2026-06-05] ####
 def cmd_strip_ifdef(args: argparse.Namespace) -> int:
     cfg, ref_dir = find_ref(args.ref_id, args.store, args.root)
     manifest = load_manifest(ref_dir)
@@ -463,11 +472,12 @@ def cmd_strip_ifdef(args: argparse.Namespace) -> int:
     return 0
 
 
+#### 取某源路径（相对根）的 ifdef_branch 符号 span [@380kkm 2026-06-05] ####
 def _ifdef_spans_for(conn: sqlite3.Connection, src_rel: str) -> list[dict]:
-    """Return ifdef_branch symbol spans for a source path (root-relative).
+    """返回某源路径（相对根）的 ifdef_branch 符号 span。
 
-    Spans come from L2 enrichment: symbols of kind 'ifdef_branch' with a name
-    that records the controlling macro/condition and precise line spans.
+    span 来自 L2 富化：kind 为 'ifdef_branch' 的符号，其 name 记录控制宏/条件，
+    并带精确的行跨度。
     """
     row = conn.execute("SELECT id FROM files WHERE path=?", (src_rel,)).fetchone()
     if not row:
@@ -486,27 +496,30 @@ def _ifdef_spans_for(conn: sqlite3.Connection, src_rel: str) -> list[dict]:
     return spans
 
 
+#### 判断某预处理 span 的控制条件是否提及被保留的宏 [@380kkm 2026-06-05] ####
 def _span_keeps(name: str, keep: set[str]) -> bool:
-    """Decide whether a preproc span's controlling condition mentions a kept macro.
+    """判断某预处理 span 的控制条件是否提及被保留的宏。
 
-    The 'name' is the recorded condition text (e.g. "WIN32", "defined(WIN64)",
-    "FOO && BAR"). We keep the span when ANY kept macro token appears in it.
+    'name' 是记录下的条件文本（如 "WIN32"、"defined(WIN64)"、"FOO && BAR"）。
+    只要任一被保留的宏 token 出现其中，就保留该 span。
     """
     tokens = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", name or ""))
     return bool(tokens & keep)
 
 
+#### 从副本删除不匹配的预处理 span（1 起含端点的行） [@380kkm 2026-06-05] ####
 def _strip_spans_from_copy(copy_abs: Path, spans: list[dict], keep: set[str]) -> int:
-    """Remove non-matching preproc spans (1-based inclusive lines) from a copy.
+    """从副本删除不匹配的预处理 span（1 起、含端点的行）。
 
-    Returns the number of spans removed. Lines covered by a dropped span are
-    deleted; overlapping/nested dropped spans are unioned so we never double-cut.
+    返回被删除的 span 数。被丢弃 span 覆盖的行被删去；重叠/嵌套的被丢弃 span
+    会取并集，以免重复裁剪。
     """
     text = copy_abs.read_text(encoding="utf-8", errors="replace")
     lines = text.splitlines(keepends=True)
     n = len(lines)
 
-    drop_line: list[bool] = [False] * (n + 2)  # 1-based, +slack
+    # 1 起下标，留余量
+    drop_line: list[bool] = [False] * (n + 2)
     dropped_count = 0
     for sp in spans:
         if _span_keeps(sp["name"], keep):
@@ -527,21 +540,20 @@ def _strip_spans_from_copy(copy_abs: Path, spans: list[dict], keep: set[str]) ->
     return dropped_count
 
 
-# --- subcommand: index ------------------------------------------------------
+#### 子命令 index：对副本构建一份阅读优化的子索引 [@380kkm 2026-06-05] ####
 def cmd_index(args: argparse.Namespace) -> int:
     cfg, ref_dir = find_ref(args.ref_id, args.store, args.root)
     manifest = load_manifest(ref_dir)
 
-    # The ref's reading-optimized sub-index covers the copies under files/.
+    # ref 的阅读优化子索引覆盖 files/ 下的副本。
     index_root = ref_dir / "files"
     if not index_root.exists():
         raise SystemError(f"ref files dir missing: {index_root}")
 
     ib = str(SCRIPT_DIR / "index_build.py")
     en = str(SCRIPT_DIR / "enrich_treesitter.py")
-    # Re-invoke the sibling scripts through `uv run` so each gets its own PEP 723
-    # dependency set installed (the project-wide runtime convention, §4). Falls
-    # back to the current interpreter if `uv` is somehow unavailable.
+    # 经 `uv run` 重新调用同级脚本，使各自装上自己的 PEP 723 依赖集
+    # （项目级运行时约定，§4）。若 `uv` 不可用则回退到当前解释器。
     runner = ["uv", "run", "--python", "3.12"] if shutil.which("uv") else [sys.executable]
 
     print(f"indexing ref {args.ref_id} sub-index at {index_root}")
@@ -549,7 +561,7 @@ def cmd_index(args: argparse.Namespace) -> int:
     if rc != 0:
         print(f"error: index_build failed (rc={rc})", file=sys.stderr)
         return rc
-    # Enrich is best-effort (needs tree-sitter deps); don't fail the ref index on it.
+    # 富化是尽力而为（需 tree-sitter 依赖）；不因它失败而让 ref 索引失败。
     rc2 = subprocess.run([*runner, en, "--root", str(index_root)], check=False).returncode
     if rc2 != 0:
         print(f"warning: enrich_treesitter failed (rc={rc2}); sub-index built without symbols",
@@ -563,7 +575,7 @@ def cmd_index(args: argparse.Namespace) -> int:
     return 0
 
 
-# --- subcommands: keep / shelve / clear -------------------------------------
+#### 设置 ref 状态并写回清单 [@380kkm 2026-06-05] ####
 def _set_status(args: argparse.Namespace, status: str) -> int:
     cfg, ref_dir = find_ref(args.ref_id, args.store, args.root)
     manifest = load_manifest(ref_dir)
@@ -573,25 +585,29 @@ def _set_status(args: argparse.Namespace, status: str) -> int:
     return 0
 
 
+#### 子命令 keep：把 ref 标为 active [@380kkm 2026-06-05] ####
 def cmd_keep(args: argparse.Namespace) -> int:
     return _set_status(args, "active")
 
 
+#### 子命令 shelve：把 ref 标为 shelved [@380kkm 2026-06-05] ####
 def cmd_shelve(args: argparse.Namespace) -> int:
     return _set_status(args, "shelved")
 
 
+#### 子命令 clear：把 ref 标为 cleared [@380kkm 2026-06-05] ####
 def cmd_clear(args: argparse.Namespace) -> int:
     return _set_status(args, "cleared")
 
 
-# --- argparse wiring --------------------------------------------------------
+#### 添加 ref-id 子命令共用的项目定位参数 [@380kkm 2026-06-05] ####
 def _add_locator(sp: argparse.ArgumentParser) -> None:
-    """Add the optional project-locator args shared by ref-id subcommands."""
+    """添加 ref-id 子命令共用的可选项目定位参数。"""
     sp.add_argument("--store", default=None, help="explicit manyread store dir (default: discover)")
     sp.add_argument("--root", default=None, help="source tree root (default: store's parent)")
 
 
+#### 构建 argparse 解析器并接好各子命令 [@380kkm 2026-06-05] ####
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ref.py", description="manyread L4 ref/prune CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -647,6 +663,7 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+#### 入口：解析参数并分派到子命令处理函数 [@380kkm 2026-06-05] ####
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)

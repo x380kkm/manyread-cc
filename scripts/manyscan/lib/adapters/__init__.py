@@ -2,17 +2,16 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""manyscan.lib.adapters — pluggable dependency-source adapters.
+"""manyscan.lib.adapters —— 可插拔的依赖来源适配器。
 
-A :class:`SourceAdapter` turns a manyread store into manyscan graph primitives:
-``seed_nodes`` (resolve a seed to starting nodes) and ``neighbors`` (yield the
-real dependency :class:`Step`\\s out of / into a node). ``scope`` is adapter-driven,
-so the bounded-expansion engine never needs to know HOW deps are derived.
+一个 :class:`SourceAdapter` 把 manyread 存储库转换成 manyscan 的图原语：
+``seed_nodes``（把种子 resolve 成起始节点）与 ``neighbors``（产出进出某节点的
+真实依赖 :class:`Step`）。``scope`` 由适配器驱动，故有界扩展引擎无需知道依赖是
+如何派生的。
 
-v1 ships :class:`CodeAdapter` (imports/includes + edge resolution over indexed
-code). When manyread later exposes UE blueprints/materials or Unity metadata as
-new rows, an ``AssetAdapter`` / ``MetaAdapter`` implements the same Protocol and
-slots straight in — this is the forward-compatibility seam.
+v1 提供 :class:`CodeAdapter`（在已索引代码上做 imports/includes + 边解析）。当
+manyread 日后把 UE 蓝图/材质或 Unity 元数据暴露为新的 row 时，``AssetAdapter`` /
+``MetaAdapter`` 实现同一 Protocol 即可直接插入 —— 这就是向前兼容的接缝。
 """
 from __future__ import annotations
 
@@ -25,9 +24,10 @@ from lib import deps, stores
 from lib.graph import Edge, Evidence, Node, Step
 
 
+#### 在 manyread 存储库上产出 manyscan 图原语的来源协议 [@380kkm 2026-06-05] ####
 @runtime_checkable
 class SourceAdapter(Protocol):
-    """A source of manyscan graph primitives over a manyread store."""
+    """在 manyread 存储库之上产出 manyscan 图原语的来源协议。"""
 
     name: str
 
@@ -39,24 +39,29 @@ class SourceAdapter(Protocol):
                   index: "deps.PathIndex | None" = None, alias: str | None = None
                   ) -> Iterator[Step]:
         ...
+#### /来源协议 ####
 
 
+#### 由 file_id/path 构造 file 节点 [@380kkm 2026-06-05] ####
 def _file_node(file_id: int, path: str, alias: str | None = None) -> Node:
     return Node(id=f"file:{file_id}", kind="file", label=path, store=alias,
                 evidence=Evidence(path=path))
 
 
+#### 由路径派生反向查找用的若干 import 键 [@380kkm 2026-06-05] ####
 def _import_keys(path: str) -> list[str]:
     p = PurePosixPath(path.replace("\\", "/"))
     stem = p.with_suffix("").as_posix()
     return list(dict.fromkeys([stem.replace("/", "."), p.name, stem]))
 
 
+#### v1 适配器：由代码 imports/includes 派生 file→file 依赖边 [@380kkm 2026-06-05] ####
 class CodeAdapter:
-    """v1 adapter: file→file dependency edges from code imports/includes."""
+    """v1 适配器：由代码 imports/includes 派生 file→file 依赖边。"""
 
     name = "code"
 
+    #### 把种子 resolve 成起始 file 节点（精确路径 -> 符号名 -> 模糊名 -> 全文检索） [@380kkm 2026-06-05] ####
     def seed_nodes(self, store: "stores.Store", seed: str, alias: str | None = None,
                    max_seeds: int = 25) -> list[Node]:
         seed = seed.strip()
@@ -76,13 +81,15 @@ class CodeAdapter:
             out.setdefault(f"file:{r['file_id']}", _file_node(r["file_id"], r["path"], alias))
         if out:
             return list(out.values())
-        if not any(c in seed for c in "%_"):  # skip fuzzy if seed has LIKE wildcards
+        # 种子已含 LIKE 通配符时跳过模糊匹配
+        if not any(c in seed for c in "%_"):
             for r in store.symbols_by_name(f"%{seed}%", limit=max_seeds):
                 out.setdefault(f"file:{r['file_id']}", _file_node(r["file_id"], r["path"], alias))
             if out:
                 return list(out.values())
         try:
-            fts_term = '"' + seed.replace('"', '""') + '"'  # escape quotes for FTS phrase
+            # 为 FTS 短语转义引号
+            fts_term = '"' + seed.replace('"', '""') + '"'
             rows = store.conn.execute(
                 "SELECT f.id, f.path FROM files_fts JOIN files f ON f.rowid = files_fts.rowid "
                 "WHERE files_fts MATCH ? ORDER BY rank LIMIT ?",
@@ -93,7 +100,9 @@ class CodeAdapter:
         for r in rows:
             out.setdefault(f"file:{r['id']}", _file_node(r["id"], r["path"], alias))
         return list(out.values())
+    #### /把种子 resolve 成起始 file 节点 ####
 
+    #### 产出某 file 节点进出的依赖步（out=imports，in=被谁 import） [@380kkm 2026-06-05] ####
     def neighbors(self, store: "stores.Store", node_id: str, *, direction: str = "out",
                   index: "deps.PathIndex | None" = None, alias: str | None = None,
                   reverse_limit: int = 40) -> Iterator[Step]:
@@ -116,12 +125,15 @@ class CodeAdapter:
                 )
         if direction in ("in", "both"):
             yield from self._reverse(store, file_id, row["path"], index, alias, reverse_limit)
+    #### /产出某 file 节点进出的依赖步 ####
 
+    #### 反向查找：产出 import 了本文件的诸文件作为入边 [@380kkm 2026-06-05] ####
     def _reverse(self, store: "stores.Store", file_id: int, path: str,
                  index: "deps.PathIndex", alias: str | None, limit: int) -> Iterator[Step]:
         seen: set[int] = set()
         for key in _import_keys(path):
-            if len(seen) >= limit:  # total importers per file is capped, not per-key
+            # 每文件的 importer 总数有上限，而非每个 key
+            if len(seen) >= limit:
                 break
             try:
                 rows = store.conn.execute(
@@ -145,22 +157,22 @@ class CodeAdapter:
                             node=_file_node(r["id"], r["path"], alias),
                         )
                         break
+    #### /反向查找 ####
+#### /v1 适配器 CodeAdapter ####
 
 
+#### 符号级适配器：extends/implements/uses_type 边 + 深度 1 依赖汇点 [@380kkm 2026-06-05] ####
 class SymbolAdapter:
-    """SYMBOL-LEVEL adapter: ``extends``/``implements``/``uses_type`` edges with a
-    depth-1 dependency SINK.
+    """符号级适配器：产出 ``extends``/``implements``/``uses_type`` 边，并以深度 1 的依赖汇点收口。
 
-    Each node is a single symbol (``s<id>``) or an external dependency target
-    (``dep:<name>``). ``neighbors`` yields a symbol's boundary out-edges, resolved
-    to concrete targets WITH a soundness confidence (carried on the yielded
-    ``Step.edge`` as a private ``_confidence`` attribute so ``boundary.build`` can
-    stash it on the Graph). A dependency-zone or ``dep:`` node is a SINK — its
-    neighbours are never expanded — which is what keeps the slice to the target plus
-    its one-layer dependency interface.
+    每个节点是单个符号（``s<id>``）或一个外部依赖目标（``dep:<name>``）。
+    ``neighbors`` 产出某符号的边界出边，resolve 到具体目标并附带健全度置信度
+    （置信度作为私有 ``_confidence`` 属性挂在产出的 ``Step.edge`` 上，使
+    ``boundary.build`` 能把它记到 Graph 上）。依赖区或 ``dep:`` 节点是汇点 ——
+    其邻居永不展开 —— 这正是把切片限定在目标加上其一层依赖边界的关键。
 
-    ``boundary`` is imported lazily inside methods to avoid an import cycle
-    (``adapters`` ← ``boundary`` ← ``adapters``).
+    ``boundary`` 在方法内部按需 import，以避免 import 环
+    （``adapters`` ← ``boundary`` ← ``adapters``）。
     """
 
     name = "symbol"
@@ -168,6 +180,7 @@ class SymbolAdapter:
     def __init__(self, zoning: "object"):
         self.z = zoning
 
+    #### 把种子 resolve 成处于 TARGET 区的符号节点 [@380kkm 2026-06-05] ####
     def seed_nodes(self, store: "stores.Store", seed: str, alias: str | None = None,
                    max_seeds: int = 25) -> list[Node]:
         from lib import boundary
@@ -178,27 +191,34 @@ class SymbolAdapter:
             if node.attrs.get("zone") == boundary.TARGET:
                 out.setdefault(node.id, node)
         return [out[k] for k in sorted(out, key=lambda nid: int(nid[1:]) if nid[1:].isdigit() else 0)]
+    #### /把种子 resolve 成 TARGET 区符号节点 ####
 
+    #### 产出某符号的边界出边，附带 resolve 置信度 [@380kkm 2026-06-05] ####
     def neighbors(self, store: "stores.Store", node_id: str, *, direction: str = "out",
                   index: "deps.PathIndex | None" = None, alias: str | None = None
                   ) -> Iterator[Step]:
         from lib import boundary
+        # dep:/依赖节点是汇点（深度 1）
         if not node_id.startswith("s") or not node_id[1:].isdigit():
-            return  # dep:/dependency nodes are SINKS (depth-1)
+            return
         sid = int(node_id[1:])
         row = store.symbol(sid)
         if row is None:
             return
+        # 依赖符号是汇点
         if boundary.zone_of_path(row["path"], self.z) == boundary.DEPENDENCY:
-            return  # dependency symbol is a SINK
+            return
         for er in boundary.out_edges(store, sid):
             r = boundary.resolve_target(store, er, self.z, alias)
             edge = Edge(src=node_id, dst=r.target_id, relation=er["relation"],
                         evidence=Evidence(boundary._NORM(row["path"]) if row["path"] else None,
                                           row["start_line"]))
-            # Carry confidence on the edge so build() can record it on the Graph.
+            # 把置信度挂在边上，使 build() 能记到 Graph
             edge._confidence = r.confidence  # type: ignore[attr-defined]
             yield Step(edge=edge, node=r.node)
+    #### /产出某符号的边界出边 ####
+#### /符号级适配器 SymbolAdapter ####
 
 
+# 默认适配器：代码 imports/includes
 DEFAULT_ADAPTER: SourceAdapter = CodeAdapter()

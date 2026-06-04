@@ -2,24 +2,23 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""manyread L3 — query-trace store CLI (stdlib only).
+"""manyread L3 —— 查询轨迹存储库的命令行工具（仅依赖标准库）。
 
-Spec section 9. A cross-session query-trace store split into:
-  static  = durable, reusable query *pattern*; never auto-shelved.
-  dynamic = a finding tied to current code state; carries valid_date +
-            file_state (json [{path,mtime,size}]); becomes "stale" when any
-            recorded file's current mtime/size differs, or it exceeds an age
-            threshold (--stale-days, default 30).
+对应规范第 9 节。一个跨会话的查询轨迹存储库，分为两类:
+  static  —— 持久、可复用的查询模式；永不自动搁置。
+  dynamic —— 绑定当前代码状态的发现；携带 valid_date 与
+            file_state（json [{path,mtime,size}]）；当任一记录文件的
+            当前 mtime/size 发生变化、或超过年龄阈值（--stale-days，默认 30）时变为“陈旧”。
 
-Stale dynamic traces are NEVER auto-deleted. preflight surfaces them flagged
-"(stale?)" so the agent can ask the user; the user then runs keep / shelve / clear.
+陈旧的 dynamic 轨迹永不自动删除。preflight 会以 "(stale?)" 标记把它们呈现出来，
+供遍历器向用户询问；之后由用户执行 keep / shelve / clear。
 
-Storage (v2): the trace db lives INSIDE the project-local store, under
-`<store>/short/traces/trace.db` — short-term + gitignored (dynamic, version-tied,
-manually cleared after commit). No `~/.manyread` home dir; the store is discovered
-by walking up from cwd (or via --store / --root / MANYREAD_STORE).
+存储（v2）: 轨迹数据库位于项目本地存储库内部，路径为
+`<store>/short/traces/trace.db` —— 短期且被 gitignore（动态、绑定版本、提交后手动清理）。
+没有 `~/.manyread` 主目录；存储库通过从 cwd 向上回溯发现
+（或经由 --store / --root / MANYREAD_STORE 指定）。
 
-Runtime: resolve the plugin root, then `uv run --python 3.12 "$MR/scripts/trace.py" <subcmd> ...`
+运行方式: 先解析插件根目录，再执行 `uv run --python 3.12 "$MR/scripts/trace.py" <subcmd> ...`
 """
 from __future__ import annotations
 
@@ -35,7 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib import config, db  # noqa: E402
 
 
-# --- Trace store schema (spec section 9; NORMATIVE) -------------------------
+#### 轨迹存储库的 schema 定义（规范第 9 节，规范性） [@380kkm 2026-06-05] ####
 TRACE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS query_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,42 +67,48 @@ CREATE INDEX IF NOT EXISTS idx_ql_project ON query_log(project);
 CREATE INDEX IF NOT EXISTS idx_ql_kind ON query_log(kind);
 """
 
+#### 动态轨迹判定陈旧的默认年龄阈值（天） [@380kkm 2026-06-05] ####
 DEFAULT_STALE_DAYS = 30
 
 
-# --- store / connection -----------------------------------------------------
+#### 从命令行参数解析项目配置（即定位存储库） [@380kkm 2026-06-05] ####
 def _cfg(args: argparse.Namespace) -> config.ProjectConfig:
-    """Resolve the project config (and thus the store) from CLI args."""
+    """从命令行参数解析项目配置（并由此确定存储库）。"""
     return config.resolve_project(root=getattr(args, "root", None),
                                   store=getattr(args, "store", None))
 
 
+#### 返回本存储库的轨迹数据库路径 [@380kkm 2026-06-05] ####
 def trace_path(cfg: config.ProjectConfig) -> Path:
-    """This store's trace db: <store>/short/traces/trace.db (ephemeral, gitignored)."""
+    """本存储库的轨迹数据库: <store>/short/traces/trace.db（临时、被 gitignore）。"""
     cfg.short_traces_dir.mkdir(parents=True, exist_ok=True)
     return cfg.short_traces_dir / "trace.db"
 
 
+#### 打开存储库的轨迹数据库并确保 schema 就绪 [@380kkm 2026-06-05] ####
 def connect(cfg: config.ProjectConfig):
-    """Open (creating parent dirs) the store's trace db and ensure schema."""
+    """打开存储库的轨迹数据库（按需创建父目录）并确保 schema 已建立。"""
     conn = db.connect(trace_path(cfg))
     conn.executescript(TRACE_SCHEMA_SQL)
     conn.commit()
     return conn
 
 
+#### 返回今天的 ISO 日期字符串 [@380kkm 2026-06-05] ####
 def today_str() -> str:
     return date.today().isoformat()
 
 
+#### 把逗号分隔的文件参数解析为路径列表 [@380kkm 2026-06-05] ####
 def parse_files_arg(files: str | None) -> list[str]:
     if not files:
         return []
     return [f for f in (x.strip() for x in files.split(",")) if f]
 
 
+#### 为给定路径采集 [{path, mtime, size}] 文件状态 [@380kkm 2026-06-05] ####
 def capture_file_state(paths: list[str], cfg: config.ProjectConfig) -> list[dict]:
-    """Capture [{path, mtime, size}] for given (root-relative or absolute) paths."""
+    """为给定（相对根目录或绝对）路径采集 [{path, mtime, size}] 文件状态。"""
     state: list[dict] = []
     for raw in paths:
         p = raw.strip()
@@ -116,10 +121,12 @@ def capture_file_state(paths: list[str], cfg: config.ProjectConfig) -> list[dict
         else:
             state.append({"path": p, "mtime": None, "size": None})
     return state
+#### /采集文件状态 ####
 
 
+#### 把记录的路径解析为可 stat 的当前路径（绝对或相对根目录） [@380kkm 2026-06-05] ####
 def _resolve_for_state(path_str: str, cfg: config.ProjectConfig) -> Path:
-    """Resolve a recorded path for a current-state stat (absolute, or root-relative)."""
+    """把记录的路径解析为可对当前状态 stat 的路径（绝对，或相对根目录）。"""
     p = Path(path_str)
     if p.exists():
         return p
@@ -127,9 +134,21 @@ def _resolve_for_state(path_str: str, cfg: config.ProjectConfig) -> Path:
     return cand if cand.exists() else p
 
 
+#### 判定动态轨迹行是否陈旧并给出原因 [@380kkm 2026-06-05] ####
 def is_stale(row_kind: str, valid_date: str | None, file_state: str | None,
              cfg: config.ProjectConfig, stale_days: int) -> tuple[bool, str]:
-    """Return (stale, reason) for a dynamic row. static rows are never stale."""
+    """返回某动态轨迹行的 (是否陈旧, 原因)。static 行永不陈旧。
+
+    参数:
+        row_kind: 轨迹类别（static 或 dynamic）。
+        valid_date: 该行的有效日期（ISO 字符串），用于年龄判定。
+        file_state: 记录的文件状态 json 字符串。
+        cfg: 项目配置，用于解析记录路径。
+        stale_days: 年龄阈值（天）。
+
+    返回:
+        (stale, reason) 二元组；非陈旧时 reason 为空串。
+    """
     if row_kind != "dynamic":
         return (False, "")
     if valid_date:
@@ -160,8 +179,10 @@ def is_stale(row_kind: str, valid_date: str | None, file_state: str | None,
             if rec_s is None or int(st.st_size) != int(rec_s):
                 return (True, f"size changed: {path_str}")
     return (False, "")
+#### /判定是否陈旧 ####
 
 
+#### 取某条日志最新一条备注的状态 [@380kkm 2026-06-05] ####
 def _status_of(conn, log_id: int) -> str | None:
     row = conn.execute(
         "SELECT status FROM query_notes WHERE log_id=? ORDER BY id DESC LIMIT 1",
@@ -170,10 +191,12 @@ def _status_of(conn, log_id: int) -> str | None:
     return row[0] if row else None
 
 
+#### 把字符串折叠为单行（压缩空白） [@380kkm 2026-06-05] ####
 def _oneline(s: str | None) -> str:
     return " ".join(s.split()) if s else ""
 
 
+#### 判定文本是否（不分大小写）包含全部检索词 [@380kkm 2026-06-05] ####
 def _matches(text: str | None, terms: list[str]) -> bool:
     if not terms:
         return True
@@ -181,14 +204,16 @@ def _matches(text: str | None, terms: list[str]) -> bool:
     return all(t.lower() in hay for t in terms)
 
 
-# --- subcommands ------------------------------------------------------------
+#### init 子命令：创建存储库的轨迹数据库 [@380kkm 2026-06-05] ####
 def cmd_init(args: argparse.Namespace) -> int:
     cfg = _cfg(args)
     connect(cfg).close()
     print(f"initialized trace store: {trace_path(cfg)}")
     return 0
+#### /init 子命令 ####
 
 
+#### log 子命令：向轨迹存储库追加一条查询 [@380kkm 2026-06-05] ####
 def cmd_log(args: argparse.Namespace) -> int:
     cfg = _cfg(args)
     conn = connect(cfg)
@@ -209,8 +234,10 @@ def cmd_log(args: argparse.Namespace) -> int:
     conn.close()
     print(f"logged id={log_id} kind={kind} project={project}")
     return 0
+#### /log 子命令 ####
 
 
+#### preflight 子命令：先列 static/带标注，再列活跃 dynamic（带陈旧标记） [@380kkm 2026-06-05] ####
 def cmd_preflight(args: argparse.Namespace) -> int:
     cfg = _cfg(args)
     conn = connect(cfg)
@@ -272,8 +299,10 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         out.append(f"      sql: {_oneline(sql_text)}")
     print("\n".join(out))
     return 0
+#### /preflight 子命令 ####
 
 
+#### search 子命令：检索轨迹存储库 [@380kkm 2026-06-05] ####
 def cmd_search(args: argparse.Namespace) -> int:
     cfg = _cfg(args)
     conn = connect(cfg)
@@ -314,8 +343,10 @@ def cmd_search(args: argparse.Namespace) -> int:
     if printed == 0:
         print("(no matches)")
     return 0
+#### /search 子命令 ####
 
 
+#### tag 子命令：为日志行添加备注/标签（可提升为 static） [@380kkm 2026-06-05] ####
 def cmd_tag(args: argparse.Namespace) -> int:
     cfg = _cfg(args)
     conn = connect(cfg)
@@ -334,8 +365,10 @@ def cmd_tag(args: argparse.Namespace) -> int:
     promo = " (promoted to static)" if args.kind == "static" else ""
     print(f"tagged id={args.log_id} tag={args.tag}{promo}")
     return 0
+#### /tag 子命令 ####
 
 
+#### stale 子命令：列出文件状态已偏离的动态轨迹 [@380kkm 2026-06-05] ####
 def cmd_stale(args: argparse.Namespace) -> int:
     cfg = _cfg(args)
     conn = connect(cfg)
@@ -357,8 +390,10 @@ def cmd_stale(args: argparse.Namespace) -> int:
     if found == 0:
         print("(no stale dynamic traces)")
     return 0
+#### /stale 子命令 ####
 
 
+#### 设置某日志行最新备注的状态（无备注则插入一条） [@380kkm 2026-06-05] ####
 def _set_status(conn, log_id: int, status: str) -> bool:
     if not conn.execute("SELECT id FROM query_log WHERE id=?", (log_id,)).fetchone():
         return False
@@ -373,8 +408,10 @@ def _set_status(conn, log_id: int, status: str) -> bool:
             (log_id, None, None, status, int(time.time())),
         )
     return True
+#### /设置状态 ####
 
 
+#### keep 子命令：刷新动态轨迹的 valid_date/file_state 并标记活跃 [@380kkm 2026-06-05] ####
 def cmd_keep(args: argparse.Namespace) -> int:
     cfg = _cfg(args)
     conn = connect(cfg)
@@ -412,8 +449,10 @@ def cmd_keep(args: argparse.Namespace) -> int:
     conn.close()
     print(f"kept id={log_id} (valid_date refreshed to {new_valid}, file_state recaptured)")
     return 0
+#### /keep 子命令 ####
 
 
+#### shelve 子命令：把日志行状态置为 shelved（从 preflight 隐藏） [@380kkm 2026-06-05] ####
 def cmd_shelve(args: argparse.Namespace) -> int:
     cfg = _cfg(args)
     conn = connect(cfg)
@@ -425,8 +464,10 @@ def cmd_shelve(args: argparse.Namespace) -> int:
         return 1
     print(f"shelved id={args.log_id}")
     return 0
+#### /shelve 子命令 ####
 
 
+#### clear 子命令：把日志行状态置为 cleared [@380kkm 2026-06-05] ####
 def cmd_clear(args: argparse.Namespace) -> int:
     cfg = _cfg(args)
     conn = connect(cfg)
@@ -438,14 +479,17 @@ def cmd_clear(args: argparse.Namespace) -> int:
         return 1
     print(f"cleared id={args.log_id}")
     return 0
+#### /clear 子命令 ####
 
 
-# --- argparse wiring --------------------------------------------------------
+#### 为子命令解析器添加 --root/--store 存储库定位参数 [@380kkm 2026-06-05] ####
 def _add_store(sp: argparse.ArgumentParser) -> None:
     sp.add_argument("--root", default=None, help="source tree root (default: store's parent)")
     sp.add_argument("--store", default=None, help="explicit manyread store dir (default: discover)")
+#### /添加存储库定位参数 ####
 
 
+#### 构建命令行参数解析器并挂载各子命令 [@380kkm 2026-06-05] ####
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="trace.py", description="manyread L3 trace store")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -498,8 +542,10 @@ def build_parser() -> argparse.ArgumentParser:
         sp.set_defaults(func=fn)
 
     return p
+#### /构建参数解析器 ####
 
 
+#### CLI 入口：解析参数并分派到对应子命令 [@380kkm 2026-06-05] ####
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -507,6 +553,7 @@ def main(argv: list[str] | None = None) -> int:
     except SystemError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+#### /CLI 入口 ####
 
 
 if __name__ == "__main__":

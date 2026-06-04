@@ -1,1 +1,1 @@
-"""manyscan library package (stdlib-first; reuses manyread's lib via stores.py)."""
+"""manyscan 库包（stdlib 优先；通过 stores.py 复用 manyread 的 lib）。"""

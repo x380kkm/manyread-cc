@@ -2,24 +2,23 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""manyread query.py — execute SQL against a project db + auto-log to the trace store.
+"""manyread query.py —— 对 project db 执行 SQL，并自动记入 trace 库。
 
-Spec section 7. Runs arbitrary SQL against a project's <store>/source.db, prints
-the result rows as TSV, and (unless --no-log) appends a row to the store's trace db
-(<store>/short/traces/trace.db) using trace.py's log semantics:
+对应 spec 第 7 节。对一个 project 的 <store>/source.db 执行任意 SQL，把结果行以
+TSV 打印，并（除非 --no-log）按 trace.py 的 log 语义向该 store 的 trace 库
+（<store>/short/traces/trace.db）追加一行：
 
-  * kind = dynamic by default, or static with --static
-  * valid_date = today (for dynamic rows; handled by trace.py)
-  * file_state captured for any file paths referenced in the SQL that actually
-    exist in the project's `files` table (best-effort).
+  * kind 默认 dynamic，或用 --static 记为 static
+  * valid_date = 今天（dynamic 行；由 trace.py 处理）
+  * 对 SQL 中引用、且确实存在于 project ``files`` 表里的文件路径捕获 file_state
+    （尽力而为）。
 
-This REPLACES the old bash sqlite3 PATH-intercept wrapper — same effect (queries
-are logged), but cross-platform and with no PATH games. The skill instructs the
-agent to query through query.py so logging happens automatically.
+本脚本替代了旧的 bash sqlite3 PATH 拦截 wrapper —— 效果相同（query 被记录），但跨
+平台且不玩 PATH 把戏。skill 指示 agent 通过 query.py 查询，使记录自动发生。
 
-CLI:  query.py "<SQL>" [--root PATH | --store PATH] [--static] [--task TAG] [--no-log]
+CLI：  query.py "<SQL>" [--root PATH | --store PATH] [--static] [--task TAG] [--no-log]
 
-Runtime: resolve the plugin root, then `uv run --python 3.12 "$MR/scripts/query.py" ...`
+运行时：解析出 plugin root，然后 ``uv run --python 3.12 "$MR/scripts/query.py" ...``
 """
 from __future__ import annotations
 
@@ -33,14 +32,16 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib import config, db  # noqa: E402
-import trace  # noqa: E402  (sibling script; reuse its log semantics)
+# 同级脚本：复用其 log 语义
+import trace  # noqa: E402
 
 
+#### 对 project db 执行 SQL，返回列名与结果行 [@380kkm 2026-06-05] ####
 def execute_sql(db_path: Path, sql: str) -> tuple[list[str], list[tuple]]:
-    """Execute SQL against the project db. Returns (column_names, rows).
+    """对 project db 执行 SQL。返回 (column_names, rows)。
 
-    The db is opened read/write (some probes may use temp tables); callers pass
-    plain SELECTs in the common case. Column names come from cursor.description.
+    db 以读写方式打开（某些探查可能用到临时表）；常见情形下调用方传入纯 SELECT。
+    列名取自 cursor.description。
     """
     conn = db.connect(db_path)
     try:
@@ -53,35 +54,36 @@ def execute_sql(db_path: Path, sql: str) -> tuple[list[str], list[tuple]]:
         conn.close()
 
 
+#### 把一个单元格渲染为 TSV：转字符串并中和 tab/换行 [@380kkm 2026-06-05] ####
 def _tsv_cell(value) -> str:
-    """Render one cell for TSV output: stringify, neutralize tabs/newlines."""
+    """把一个单元格渲染为 TSV 输出：转字符串，中和 tab/换行。"""
     if value is None:
         return ""
     s = value if isinstance(value, str) else str(value)
-    # Keep one row == one line: collapse embedded tab/newline so columns align.
+    # 保持一行 == 一条记录：折叠内嵌的 tab/换行，使列对齐
     return s.replace("\t", "    ").replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
 
 
+#### 把结果行以带表头的 TSV 打印 [@380kkm 2026-06-05] ####
 def print_tsv(cols: list[str], rows: list[tuple]) -> None:
-    """Print rows as TSV with a header line (column names)."""
+    """把结果行以 TSV 打印，并带一行表头（列名）。"""
     if cols:
         print("\t".join(cols))
     for row in rows:
         print("\t".join(_tsv_cell(v) for v in row))
 
 
-# Match plausible file-path-ish string literals inside the SQL. We then keep
-# only those that actually exist as a `files.path` so file_state is grounded.
+#### 匹配 SQL 里像文件路径的字符串字面量 [@380kkm 2026-06-05] ####
 _LITERAL_RE = re.compile(r"""['"]([^'"]+)['"]""")
 
 
+#### 找出 SQL 中引用、且存在于 files 表里的文件路径 [@380kkm 2026-06-05] ####
 def referenced_paths(db_path: Path, sql: str) -> list[str]:
-    """Best-effort: file paths referenced in the SQL that exist in `files`.
+    """尽力而为：SQL 中引用、且存在于 ``files`` 里的文件路径。
 
-    Returns root-relative paths exactly as stored in the `files` table so that
-    trace.py can re-resolve them against the project root on later stale checks.
-    Matches both exact equality (`path = 'a/b.cpp'`) and LIKE/substring patterns
-    (`path LIKE '%RHI.cpp%'`) against the actual indexed paths.
+    返回与 ``files`` 表存储形式完全一致的相对 root 路径，以便 trace.py 在后续 stale
+    检查时能相对 project root 重新解析。同时匹配精确相等（``path = 'a/b.cpp'``）与
+    LIKE/子串模式（``path LIKE '%RHI.cpp%'``）对实际已索引路径的匹配。
     """
     literals = _LITERAL_RE.findall(sql)
     if not literals:
@@ -102,11 +104,11 @@ def referenced_paths(db_path: Path, sql: str) -> list[str]:
     found: list[str] = []
     seen: set[str] = set()
     for lit in literals:
-        # Strip common SQL LIKE wildcards/glob chars so a pattern can match a path.
+        # 剥掉常见的 SQL LIKE 通配符 / glob 字符，使模式能匹配路径
         core = lit.strip().strip("%").strip("*")
         if not core:
             continue
-        # 1. exact match against an indexed path
+        # 1. 与已索引路径精确匹配
         if lit in indexed_set and lit not in seen:
             found.append(lit)
             seen.add(lit)
@@ -115,7 +117,7 @@ def referenced_paths(db_path: Path, sql: str) -> list[str]:
             found.append(core)
             seen.add(core)
             continue
-        # 2. substring/suffix match (covers LIKE '%foo.cpp%' and bare basenames)
+        # 2. 子串 / 后缀匹配（覆盖 LIKE '%foo.cpp%' 与裸 basename）
         for p in indexed:
             if p in seen:
                 continue
@@ -125,13 +127,14 @@ def referenced_paths(db_path: Path, sql: str) -> list[str]:
     return found
 
 
+#### 按 trace.py 的 log 语义追加一行 trace，返回行 id [@380kkm 2026-06-05] ####
 def log_trace(cfg: config.ProjectConfig, sql: str, static: bool,
               task: str | None, rel_paths: list[str]) -> int:
-    """Append a trace row via trace.py's log semantics (imported as a module).
+    """按 trace.py 的 log 语义追加一行 trace（以模块方式 import）。
 
-    file_state is captured for `rel_paths` resolved to absolute filesystem paths
-    so mtime/size are read correctly; the paths are recorded as project-relative
-    (matching the `files` table) so later stale checks re-resolve via the root.
+    对 ``rel_paths`` 解析为绝对文件系统路径以正确读取 mtime/size，从而捕获
+    file_state；但记录时仍存为相对 project 的路径（与 ``files`` 表一致），使后续
+    stale 检查能相对 root 重新解析。
     """
     kind = "static" if static else "dynamic"
     db_path_str = str(Path(cfg.db_path))
@@ -165,6 +168,7 @@ def log_trace(cfg: config.ProjectConfig, sql: str, static: bool,
         conn.close()
 
 
+#### CLI 入口：执行 SQL、打印 TSV、自动记 trace [@380kkm 2026-06-05] ####
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="query.py",
@@ -193,21 +197,23 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 2
 
-    # 1. Execute + print rows as TSV.
+    #### 执行 SQL，把结果行以 TSV 打印 [@380kkm 2026-06-05] ####
     try:
         cols, rows = execute_sql(db_path, args.sql)
     except Exception as exc:
         print(f"error: SQL failed: {exc}", file=sys.stderr)
         return 1
     print_tsv(cols, rows)
+    #### /执行并打印 ####
 
-    # 2. Auto-log to the trace store (unless suppressed).
+    #### 自动记入 trace 库（除非被抑制） [@380kkm 2026-06-05] ####
     if not args.no_log:
         rel_paths = referenced_paths(db_path, args.sql)
         log_id = log_trace(cfg, args.sql, args.static, args.task, rel_paths)
         kind = "static" if args.static else "dynamic"
         print(f"# logged trace id={log_id} kind={kind} project={cfg.alias}",
               file=sys.stderr)
+    #### /自动记 trace ####
 
     return 0
 

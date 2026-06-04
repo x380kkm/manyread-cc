@@ -2,64 +2,62 @@
 # requires-python = ">=3.12"
 # dependencies = ["tree-sitter>=0.23", "tree-sitter-language-pack"]
 # ///
-"""manyread L2 — tree-sitter symbol/edge enrichment.
+"""manyread L2 —— 基于 tree-sitter 的 symbol/edge 富化。
 
-Reads the `files` table from a project's <root>/.manyread/source.db, parses each
-file by language with tree-sitter, and fills the `symbols` and `edges` tables:
+读取一个 project 的 <root>/.manyread/source.db 中的 ``files`` 表，按语言用
+tree-sitter 解析每个文件，填充 ``symbols`` 与 ``edges`` 表：
 
-  * symbols: name, kind, lang, precise start/end line + byte, parent_id (for
-    containment via lexical nesting).
-  * edges:   `contains` (parent -> child), `extends`/`implements` (from base
-    class clauses / heritage), and optional best-effort `references` (--refs).
+  * symbols：name、kind、lang、精确的起止行 + 字节、parent_id（按词法嵌套表达
+    containment）。
+  * edges：``contains``（parent -> child）、``extends``/``implements``（来自基类
+    子句 / heritage），以及可选的尽力 ``references``（--refs）。
 
-Grammar source: ALL grammars come from the single `tree-sitter-language-pack`
-wheel (300+ languages) via get_language(); it returns a standard tree_sitter
-Language so the standard Parser (bytes input, `children` property) drives every
-walker below. Adding a language = map its ext + pack name + a small walker.
+Grammar 来源：所有 grammar 均来自单个 ``tree-sitter-language-pack`` wheel（300+
+语言），经 get_language() 取得；它返回标准 tree_sitter Language，因此标准 Parser
+（bytes 输入、``children`` 属性）驱动下面每个 walker。新增一种语言 = 映射其扩展名 +
+pack 名 + 一个小 walker。
 
-Languages: cpp, python, javascript, typescript, csharp, glsl, java, gdscript.
-  - Java (.java) uses the java grammar: class/interface/enum/record + method/
-    constructor; superclass -> extends, interfaces -> implements.
-  - GDScript (.gd, Godot) uses the gdscript grammar: class_name + inner classes,
-    functions (methods when nested under a class).
-  - TypeScript (.ts) / TSX (.tsx) use tree-sitter-typescript: classes, interfaces,
-    enums, type aliases, functions, methods, arrow consts, extends/implements.
-    (.ts and .tsx are a pair: requesting "typescript" covers both grammars.)
-  - GLSL (.glsl/.vert/.frag/.comp/.geom/.tesc/.tese) uses tree-sitter-glsl:
-    functions + structs (C-like; no inheritance).
-  - C# (.cs) uses tree-sitter-c-sharp: class/struct/interface/enum + method/
-    constructor declarations, containment via nesting, base types -> extends.
-  - HLSL / shader-ish exts (.hlsl .cginc .usf .ush .compute .fx .shader) are routed
-    through the cpp grammar as *best-effort C-like parsing*. ShaderLab `.shader`
-    files embed HLSL blocks, so the cpp grammar yields only partial function/struct
-    symbols for them; treat the result as approximate.
-  - For cpp we ALSO record `preproc_ifdef` / `preproc_if` (and their #elif/#else
-    arms) as symbols of kind `ifdef_branch` so the prune layer (ref strip-ifdef)
-    can mechanically cut non-matching spans.
+Languages：cpp、python、javascript、typescript、csharp、glsl、java、gdscript。
+  - Java (.java) 用 java grammar：class/interface/enum/record + method/
+    constructor；superclass -> extends，interfaces -> implements。
+  - GDScript (.gd, Godot) 用 gdscript grammar：class_name + 内部类，函数
+    （嵌套在 class 下时记为 method）。
+  - TypeScript (.ts) / TSX (.tsx) 用 tree-sitter-typescript：class、interface、
+    enum、type alias、function、method、arrow const、extends/implements。
+    （.ts 与 .tsx 成对：请求 "typescript" 覆盖两套 grammar。）
+  - GLSL (.glsl/.vert/.frag/.comp/.geom/.tesc/.tese) 用 tree-sitter-glsl：
+    function + struct（类 C；无继承）。
+  - C# (.cs) 用 tree-sitter-c-sharp：class/struct/interface/enum + method/
+    constructor 声明，containment 经嵌套表达，基类型 -> extends。
+  - HLSL / 类 shader 扩展名（.hlsl .cginc .usf .ush .compute .fx .shader）经 cpp
+    grammar 走*尽力的类 C 解析*。ShaderLab ``.shader`` 文件内嵌 HLSL 块，所以 cpp
+    grammar 对它们只产出部分的 function/struct 符号；结果按近似看待。
+  - 对 cpp 还会把 ``preproc_ifdef`` / ``preproc_if``（及其 #elif/#else 分支）记为
+    kind 为 ``ifdef_branch`` 的符号，使 prune 层（ref strip-ifdef）能机械地切掉
+    不匹配的 span。
 
-After raw tree-sitter extraction, an optional project-scoped OVERRIDE-RULES pass
-(spec section 16) corrects codebase-specific idioms (e.g. Unreal export macros
-misread as class names). Rules live in <root>/.manyread/rules.json and are applied
-via the pure engine in rules.py; symbols gain `attrs` (json) + `provenance` (json).
-No rules file (and no --rules) -> identical to base behavior (backward compatible).
+原始 tree-sitter 抽取之后，有一个可选的 project 级 OVERRIDE-RULES pass
+（spec 第 16 节），用于纠正 codebase 特有的写法（例如 Unreal 导出宏被误读成类名）。
+规则存在 <root>/.manyread/rules.json，经 rules.py 中的纯引擎施加；符号会获得
+``attrs``（json）+ ``provenance``（json）。无规则文件（且无 --rules）-> 与基础行为
+完全一致（向后兼容）。
 
-Idempotent: clears existing `symbols`/`edges` then refills (full rebuild).
-Writes meta(enriched_at, enrich_langs). Prints per-language symbol/edge counts.
+Idempotent：先清空已有的 ``symbols``/``edges`` 再重填（全量重建）。写入
+meta(enriched_at, enrich_langs)。打印逐语言的 symbol/edge 计数。
 
-CLI:  enrich_treesitter.py <alias|--root PATH> [--langs cpp,python,csharp] [--refs]
+CLI：  enrich_treesitter.py <alias|--root PATH> [--langs cpp,python,csharp] [--refs]
                            [--rules PATH] [--no-rules] [--rules-preview]
 
-NOTE on grammars: tree-sitter-language-pack's get_language(name) returns a ready
-tree_sitter.Language (NOT a capsule), so Parser(get_language(name)) + parser.parse(
-bytes) is the supported path. The pack pins its own tree-sitter; do not also pin
-individual `tree-sitter-<lang>` wheels (they would fight over the binding).
+关于 grammar：tree-sitter-language-pack 的 get_language(name) 返回现成的
+tree_sitter.Language（不是 capsule），所以 Parser(get_language(name)) +
+parser.parse(bytes) 是受支持的路径。该 pack 钉住了它自己的 tree-sitter；不要同时再钉
+单独的 ``tree-sitter-<lang>`` wheel（它们会争抢 binding）。
 
-THIN FACADE (Phase-1 cleancode split): the implementation now lives in the
-`enrich` package (enrich/model.py, langreg.py, macro_strip.py, langs/*, query.py,
-extract.py, dbwrite.py, rules_glue.py, pipeline.py). This module re-exports the
-full public surface so `import enrich_treesitter as E; E.<name>` and
-`from enrich_treesitter import <name>` keep working unchanged, and keeps the
-`main()` + `__main__` entry point for `uv run enrich_treesitter.py`.
+THIN FACADE（Phase-1 cleancode 拆分）：实现现在落在 ``enrich`` 包里
+（enrich/model.py、langreg.py、macro_strip.py、langs/*、query.py、extract.py、
+dbwrite.py、rules_glue.py、pipeline.py）。本模块重新导出完整公开表面，使
+``import enrich_treesitter as E; E.<name>`` 与 ``from enrich_treesitter import <name>``
+保持原样可用，并保留 ``main()`` + ``__main__`` 入口供 ``uv run enrich_treesitter.py``。
 """
 from __future__ import annotations
 
@@ -71,19 +69,19 @@ import sys
 import time
 from pathlib import Path
 
-# Put scripts/ on sys.path FIRST (before importing enrich.*), so the package
-# modules that do `from lib import config, db` / `import rules` resolve, and so
-# `enrich` is importable as a top-level package. Identical mechanism to the
-# pre-split module (which inserted this line before `from lib import config, db`).
+# 把 scripts/ 放到 sys.path 最前（先于 import enrich.*），使做
+# from lib import config, db / import rules 的包模块能解析，且使 enrich 可作为顶层
+# 包被导入。机制与拆分前的模块完全一致（它在 from lib import config, db 之前插入此行）。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib import config, db
-import rules  # sibling module: pure override-rules engine + loader (spec section 16)
+# 同级模块：纯 override-rules 引擎 + 加载器（spec 第 16 节）
+import rules
 
-# Re-export the third-party tree-sitter surface (langreg is the wrapper boundary).
+# 重新导出第三方 tree-sitter 表面（langreg 是 wrapper 边界）
 from tree_sitter import Language, Node, Parser, Query, QueryCursor
 from tree_sitter_language_pack import get_language
 
-# --- re-export the full public surface from the enrich package ---------------
+#### 从 enrich 包重新导出完整公开表面 [@380kkm 2026-06-05] ####
 from enrich.langreg import (LANG_FOR_EXT, SUPPORTED_LANGS, _PACK_NAME,
                             _load_language)
 from enrich.model import (Pending, SymRow, _named_child_text, _text)
@@ -113,6 +111,7 @@ from enrich.dbwrite import _insert_file
 from enrich.rules_glue import (_default_rules_path, _preview_diff,
                                _resolve_merged_rules)
 from enrich.pipeline import enrich, main
+#### /从 enrich 包重新导出公开表面 ####
 
 
 if __name__ == "__main__":

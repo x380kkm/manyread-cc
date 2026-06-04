@@ -2,11 +2,11 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""manyscan.lib.boundary.zoning — target↔dependency ZONING.
+"""manyscan.lib.boundary.zoning — 目标↔依赖的分区（ZONING）。
 
-How to split indexed symbols into the TARGET (the code you are analyzing) and the
-DEPENDENCY zone (what it depends on, possibly MANY sources), the path primitives
-the rest of the boundary package builds on, and the dependency-side LABELLING.
+如何把已索引的符号划分到 TARGET（你正在分析的代码）与 DEPENDENCY 区
+（它所依赖的部分，可能来自多个源），boundary 包其余部分所依赖的路径原语，
+以及依赖侧的标注。
 """
 from __future__ import annotations
 
@@ -20,35 +20,35 @@ DEPENDENCY = "dependency"
 _NORM = deps.PathIndex._norm
 
 
-# --- zoning ------------------------------------------------------------------
+#### 分区配置：如何把符号划入目标区与依赖区 [@380kkm 2026-06-05] ####
 @dataclass(frozen=True)
 class Zoning:
-    """How to split symbols into the target (analyzed) and dependency zones.
+    """如何把符号划分到目标（被分析）区与依赖区。
 
-    ``target_root`` is the normalized, trailing-slash-free directory prefix that
-    defines the TARGET (``""`` means the whole repo is the target). ``dep_roots``
-    are LABEL/grouping hints for the dependency side only — they NEVER change the
-    target bit (a symbol is a dependency iff it is not under ``target_root``). The
-    dependency side may aggregate MULTIPLE distinct dependency sources, one per hint.
+    ``target_root`` 是规范化、去掉尾部斜杠的目录前缀，用于界定 TARGET
+    （``""`` 表示整个仓库即目标）。``dep_roots`` 仅用于依赖侧的标注/分组提示，
+    它们永不改变目标判定位（一个符号是依赖当且仅当它不在 ``target_root`` 之下）。
+    依赖侧可聚合多个不同的依赖源，每个提示一个。
     """
 
     target_root: str
-    dep_roots: tuple[str, ...] = ()  # normalized, sorted longest-first
+    # 规范化、按最长优先排序
+    dep_roots: tuple[str, ...] = ()
 
 
+#### 规范化根路径：归一斜杠、去前导 ./、去尾部 / [@380kkm 2026-06-05] ####
 def norm_root(p: str) -> str:
-    """Normalize a root path: slash-normalize, strip leading ``./``, strip trailing ``/``."""
     return _NORM(p or "").rstrip("/")
 
 
+#### 自动探测目标根：最短的模块根（*.uplugin / *.Build.cs / …） [@380kkm 2026-06-05] ####
 def detect_target_root(store) -> str:
-    """Autodetect the target root: the shortest module root (``*.uplugin`` / ``*.Build.cs`` / …).
+    """自动探测目标根：最短的模块根（``*.uplugin`` / ``*.Build.cs`` / …）。
 
-    Picks ``min`` by ``(len, str)`` for determinism; ``""`` (whole repo) if no
-    module markers are present. NOTE: ``""`` is AMBIGUOUS — it is also the legitimate
-    repo-root marker. Callers that must NOT silently classify the whole repo (incl.
-    the dependencies) as target should use :func:`has_module_markers` to tell the two
-    cases apart, or supply an explicit ``target_root``.
+    按 ``(len, str)`` 取 ``min`` 以保证确定性；若无模块标记文件则返回 ``""``
+    （整个仓库）。注意：``""`` 是有歧义的——它同时也是合法的仓库根标记。
+    若调用方不能容忍把整个仓库（含依赖）静默归类为目标，应使用
+    :func:`has_module_markers` 区分这两种情形，或显式提供 ``target_root``。
     """
     roots = rollup.module_roots(store)
     if not roots:
@@ -56,24 +56,24 @@ def detect_target_root(store) -> str:
     return min(roots, key=lambda r: (len(r), r))
 
 
+#### 判断索引中是否含任意模块标记文件 [@380kkm 2026-06-05] ####
 def has_module_markers(store) -> bool:
-    """True iff the index contains ANY module-marker file (``*.uplugin`` / ``*.Build.cs`` / …).
+    """当且仅当索引中含任意模块标记文件（``*.uplugin`` / ``*.Build.cs`` / …）时为 True。
 
-    When this is False, :func:`detect_target_root` cannot tell the target from its
-    dependencies (the L1 indexer only stores configured source extensions, so
-    ``.uplugin`` markers are typically absent) — so autodetect must NOT be trusted
-    and an explicit ``--target-root`` is required. This avoids the SILENT, UNSOUND
-    classification of the entire repo (dependencies included) as the target.
+    为 False 时，:func:`detect_target_root` 无法把目标与其依赖区分开
+    （L1 索引器只存储已配置的源扩展名，故 ``.uplugin`` 等标记通常缺失），
+    因此不能信任自动探测，必须显式给出 ``--target-root``。这样可避免把整个仓库
+    （含依赖）静默且不可靠地归类为目标。
     """
     return bool(rollup.module_roots(store))
 
 
+#### 构建 Zoning，未给出 target_root 时自动探测 [@380kkm 2026-06-05] ####
 def make_zoning(store, target_root: str | None, dep_roots: list[str] | None) -> Zoning:
-    """Build a :class:`Zoning`, autodetecting ``target_root`` when not given.
+    """构建一个 :class:`Zoning`，未给出 ``target_root`` 时自动探测。
 
-    ``dep_roots`` are normalized, de-duplicated, and sorted LONGEST-FIRST so that
-    the most specific dependency module wins in :func:`dependency_label`. Multiple
-    distinct dependency sources may be supplied.
+    ``dep_roots`` 会被规范化、去重，并按最长优先排序，使最具体的依赖模块在
+    :func:`dependency_label` 中胜出。可提供多个不同的依赖源。
     """
     pr = norm_root(target_root) if target_root is not None else detect_target_root(store)
     ers = sorted({norm_root(e) for e in (dep_roots or []) if norm_root(e)},
@@ -81,12 +81,13 @@ def make_zoning(store, target_root: str | None, dep_roots: list[str] | None) -> 
     return Zoning(target_root=pr, dep_roots=tuple(ers))
 
 
+#### 把定义文件路径分类为 target 或 dependency [@380kkm 2026-06-05] ####
 def zone_of_path(path: str | None, z: Zoning) -> str:
-    """Classify a defining file path into ``target`` or ``dependency`` (sound containment).
+    """把定义文件路径分类为 ``target`` 或 ``dependency``（可靠的包含判定）。
 
-    A symbol is TARGET iff its normalized path equals ``target_root`` or starts
-    with ``target_root + '/'``. ``target_root == ""`` ⇒ everything is target.
-    A missing path (no file) is conservatively a DEPENDENCY.
+    一个符号是 TARGET 当且仅当其规范化路径等于 ``target_root`` 或以
+    ``target_root + '/'`` 开头。``target_root == ""`` ⇒ 一切皆为目标。
+    缺失路径（无文件）保守地归为 DEPENDENCY。
     """
     if path is None:
         return DEPENDENCY
@@ -99,15 +100,17 @@ def zone_of_path(path: str | None, z: Zoning) -> str:
     return DEPENDENCY
 
 
+#### 为依赖侧符号的文件生成人类可读标签 [@380kkm 2026-06-05] ####
 def dependency_label(path: str, z: Zoning) -> str:
-    """A human label for a dependency-side symbol's file: ``<dep_root>::<basename>``.
+    """为依赖侧符号的文件生成人类可读标签：``<dep_root>::<basename>``。
 
-    Uses the longest matching ``dep_root`` prefix (roots are longest-first);
-    falls back to the bare basename when no dependency root matches.
+    使用最长匹配的 ``dep_root`` 前缀（根已按最长优先排序）；
+    无依赖根匹配时退化为裸文件名。
     """
     p = _NORM(path or "")
     base = p.rsplit("/", 1)[-1]
-    for er in z.dep_roots:  # already longest-first
+    # 已按最长优先排序
+    for er in z.dep_roots:
         if er and (p == er or p.startswith(er + "/")):
             return f"{er}::{base}"
     return base

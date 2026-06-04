@@ -2,19 +2,19 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""manyscan.lib.analyze — refactoring-support metrics over a dependency Graph (pure).
+"""manyscan.lib.analyze —— 依赖 Graph 之上的重构支持度量（纯函数）。
 
-Given any :class:`graph.Graph` (a scoped/rolled slice) this computes the signals a
-team needs to reason about modularization & refactoring — never mutating the graph:
+给定任意一个 :class:`graph.Graph`（一个有界/已 rollup 的切片），计算团队推理
+模块化与重构所需的信号，且从不改动该 graph：
 
-  * per-node coupling: ``fan_in``/``fan_out`` and Martin's ``Ca``/``Ce``/``instability``
-    (``Ce/(Ca+Ce)``; 0 = stable, 1 = unstable).
-  * ``cycles``    — strongly-connected groups (>1 node) that must be broken to decouple.
-  * ``bridges``   — edges whose removal splits the graph (candidate seams to cut).
-  * ``cut_nodes`` — articulation nodes whose removal splits it (fragile hubs).
-  * ``layers``    — topological layers (``leftover`` = nodes tangled in cycles).
+  * 逐节点耦合：``fan_in``/``fan_out`` 以及 Martin 的 ``Ca``/``Ce``/``instability``
+    （``Ce/(Ca+Ce)``；0 = 稳定，1 = 不稳定）。
+  * ``cycles``    —— 强连通分组（>1 个节点），必须打破才能解耦。
+  * ``bridges``   —— 移除后会切开 graph 的边（待切的候选缝）。
+  * ``cut_nodes`` —— 移除后会切开 graph 的关节节点（脆弱的枢纽）。
+  * ``layers``    —— 拓扑分层（``leftover`` = 缠在 cycle 里的节点）。
 
-All connectivity checks are exact and run on the *bounded* slice, so they stay cheap.
+所有连通性检查都是精确的，且运行在“有界”切片上，因此开销很小。
 """
 from __future__ import annotations
 
@@ -25,17 +25,22 @@ from lib import graph
 from lib.graph import Graph
 
 
+#### 单个节点的耦合度量 [@380kkm 2026-06-05] ####
 @dataclass
 class NodeMetric:
     id: str
     label: str
     fan_in: int
     fan_out: int
-    ca: int          # afferent coupling (depend on me)
-    ce: int          # efferent coupling (I depend on)
-    instability: float  # Ce / (Ca + Ce)
+    # afferent coupling（依赖我的）
+    ca: int
+    # efferent coupling（我依赖的）
+    ce: int
+    # Ce / (Ca + Ce)
+    instability: float
 
 
+#### 一个 graph 切片的完整度量集 [@380kkm 2026-06-05] ####
 @dataclass
 class Metrics:
     nodes: list[NodeMetric]
@@ -48,8 +53,9 @@ class Metrics:
     summary: dict
 
 
+#### 计算逐节点耦合度量，按最不稳定 / 被依赖最多优先排序 [@380kkm 2026-06-05] ####
 def node_metrics(g: Graph) -> list[NodeMetric]:
-    """Per-node coupling metrics, sorted most-unstable / most-depended-on first."""
+    """逐节点耦合度量，按最不稳定 / 被依赖最多优先排序。"""
     out: list[NodeMetric] = []
     for nid, node in g.nodes.items():
         ca = len({p for p in g.predecessors(nid) if p != nid})
@@ -60,12 +66,14 @@ def node_metrics(g: Graph) -> list[NodeMetric]:
     return out
 
 
+#### 找出真正构成 cycle 的强连通分量 [@380kkm 2026-06-05] ####
 def cycles(g: Graph) -> list[list[str]]:
-    """SCCs that are real cycles (>1 node, or a single node with a self-loop)."""
+    """构成真正 cycle 的 SCC（>1 个节点，或带自环的单节点）。"""
     self_loops = {e.src for e in g.edges if e.src == e.dst}
     return [c for c in graph.scc(g) if len(c) > 1 or (len(c) == 1 and c[0] in self_loops)]
 
 
+#### 构建忽略自环与方向的无向邻接表 [@380kkm 2026-06-05] ####
 def _undirected_adj(g: Graph) -> dict[str, set[str]]:
     adj: dict[str, set[str]] = defaultdict(set)
     for nid in g.nodes:
@@ -77,6 +85,7 @@ def _undirected_adj(g: Graph) -> dict[str, set[str]]:
     return adj
 
 
+#### 数无向图的连通分量数，可选跳过某节点 / 移除某条边 [@380kkm 2026-06-05] ####
 def _count_components(nodes, adj, skip_node=None, remove_pair=None) -> int:
     rp = frozenset(remove_pair) if remove_pair else None
     seen: set[str] = set()
@@ -100,11 +109,11 @@ def _count_components(nodes, adj, skip_node=None, remove_pair=None) -> int:
     return comps
 
 
+#### 找出移除后会增加连通分量数的边（无向桥） [@380kkm 2026-06-05] ####
 def bridges(g: Graph) -> list[tuple[str, str, str]]:
-    """Edges whose removal increases connected components (undirected bridges).
+    """移除后会增加连通分量数的边（无向桥）。
 
-    Parallel edges between a pair are never bridges (removing one leaves the link),
-    so only uniquely-connecting edges are tested.
+    一对节点间的平行边永远不是桥（移除其一仍保留连接），因此只测试唯一连接的边。
     """
     adj = _undirected_adj(g)
     nodes = list(g.nodes)
@@ -119,16 +128,18 @@ def bridges(g: Graph) -> list[tuple[str, str, str]]:
     return out
 
 
+#### 找出移除后会增加连通分量数的关节节点 [@380kkm 2026-06-05] ####
 def cut_nodes(g: Graph) -> list[str]:
-    """Articulation nodes: removing one increases connected components."""
+    """关节节点：移除其一会增加连通分量数。"""
     adj = _undirected_adj(g)
     nodes = list(g.nodes)
     base = _count_components(nodes, adj)
     return sorted(v for v in nodes if _count_components(nodes, adj, skip_node=v) > base)
 
 
+#### 按拓扑序把节点分到各层，cycle 节点归为 leftover [@380kkm 2026-06-05] ####
 def layers(g: Graph) -> tuple[list[list[str]], list[str]]:
-    """Topological layers (layer = 1 + max predecessor layer); leftover = cycle nodes."""
+    """拓扑分层（层号 = 1 + 前驱最大层号）；leftover = cycle 节点。"""
     order, leftover = graph.toposort(g)
     layer: dict[str, int] = {}
     for nid in order:
@@ -140,8 +151,9 @@ def layers(g: Graph) -> tuple[list[list[str]], list[str]]:
     return [sorted(by_layer[k]) for k in sorted(by_layer)], leftover
 
 
+#### 装配某 graph 切片的完整重构支持度量集 [@380kkm 2026-06-05] ####
 def metrics(g: Graph) -> Metrics:
-    """Assemble the full refactoring-support metric set for a graph slice."""
+    """装配某 graph 切片的完整重构支持度量集。"""
     nms = node_metrics(g)
     cy = cycles(g)
     br = bridges(g)
