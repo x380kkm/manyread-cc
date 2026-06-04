@@ -128,6 +128,17 @@ dashed/dotted = ambiguous/unresolved edge; **tap any node to see its file path**
 any browser, no install. `mermaid`/`dot` render in VS Code / GitHub / mermaid.live. For a
 many-node engine-scale slice, roll up with `--level dir|module`.
 
+### Asset↔source linking + cross-language reach
+- **`/mr-link-source`** (`scripts/link_source.py`): bridge a UE asset DSL to its source. Given a
+  DSL asset store (e.g. a matlang material), a code store (engine C++), and the type-dictionary
+  schema, it resolves each asset node to the C++ CLASS that implements it (`multiply` ->
+  `UMaterialExpressionMultiply` at `file:line`) with a `unique` / `ambiguous(N)` / `unresolved` /
+  `no-classPath` confidence (never silently picked). Read-only on both stores.
+- manyscan now reaches beyond cpp/python: **UE asset DSL graphs** (matlang / bplisp / animlang,
+  read by `/mr-enrich` as symbol+edge graphs — boundary/deps analyze the asset node graph / "连连看")
+  and **javascript / typescript / csharp** dependency graphs (the per-language `.scm` layer). Index
+  a DSL in its OWN store — a mixed C++ + matlang store blends `uses_type` semantics.
+
 
 ## Rules
 - Needs a manyread store (`<repo>/manyread/source.db`). If absent, build it first

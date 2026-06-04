@@ -152,9 +152,9 @@ enriched, then fall back to FTS5. Do not conclude the symbol is absent until cov
 
 ### Operator 3 — Graph probe (L2, `edges` table)
 
-Use for containment, inheritance, and best-effort references. **Pre-check relations** before
-interpreting — v1 edges are containment + inheritance + optional name references, NOT a
-resolved call graph:
+Use for containment, inheritance, dependency edges, and best-effort references. **Pre-check
+relations** before interpreting — edges are containment + inheritance + declarative DEPENDENCY
+edges + optional name references; not a fully resolved call graph:
 
 ```sql
 SELECT DISTINCT relation, COUNT(*) FROM edges GROUP BY relation;
@@ -164,6 +164,8 @@ SELECT DISTINCT relation, COUNT(*) FROM edges GROUP BY relation;
 |---|---|---|
 | `contains` | parent symbol → child symbol | structure/outline, not call flow |
 | `extends` / `implements` | type hierarchy | OOP inheritance analysis |
+| `calls` / `imports` / `uses_type` | dependency edges from a per-language `.scm` query — cpp via the walker; python/javascript/typescript/csharp/… via `scripts/queries/<lang>.scm`, overridable per project at `<root>/.manyread/queries/<lang>.scm` | dependency / impact analysis (feeds manyscan) |
+| `binds` / `casts` / `ref` | UE asset DSL graph edges (bplisp/animlang); matlang wires use `uses_type` | asset node-graph ("连连看") analysis |
 | `references` | best-effort name match (`--refs`) | weak dependency hints only |
 
 Inspect edges out of a symbol (resolved by `dst_symbol_id`, else by `dst_name`):
@@ -269,11 +271,14 @@ others reuse it via `ref select`. Cross-project selection is allowed (`ref list 
 
 ## Enrichment Override Rules (self-repair loop)
 
-Base tree-sitter extraction (L2) is generic and occasionally wrong on codebase-specific
-idioms — e.g. an Unreal export macro misread as a class name (`class MYMOD_API UThing` →
-symbol `MYMOD_API`), or forward-declaration / used-type junk leaking in as fake classes.
-Corrections live in a **project-scoped, agent-editable override layer** at
-`<store>/rules.json`, applied as a pure transform pass AFTER raw extraction:
+Base tree-sitter extraction (L2) is generic and occasionally wrong on codebase-specific idioms.
+The common C++ export-macro-as-class-name case (`class MYMOD_API UThing` → symbol `MYMOD_API`,
+plus the lost class body) is now auto-corrected **before parse** by the built-in length-preserving
+**macro_strip** (default on; generic all-caps detector, extend/disable via `manyread.json`'s
+`macro_strip` key) — it needs no rule. The remaining idioms — forward-declaration / used-type junk
+leaking in as fake symbols, a project-specific macro the generic detector misses, wrong `kind` —
+are corrected by a **project-scoped, agent-editable override layer** at `<store>/rules.json`,
+applied as a pure transform pass AFTER raw extraction:
 
 ```
 tree-sitter extract (raw)  ->  apply project override rules  ->  write symbols/edges
@@ -328,7 +333,10 @@ rules above are the only path you use. See `references/enrich-overrides.md` and 
 | ref/prune workflow | `references/ref-prune-workflow.md` |
 | Reference index | `references/INDEX.md` |
 
-Commands: `/mr-init`, `/mr-index`, `/mr-enrich`, `/mr-query`, `/mr-trace`, `/mr-ref`.
+Commands — build/read: `/mr-init`, `/mr-index`, `/mr-enrich`, `/mr-query`, `/mr-trace`,
+`/mr-ref`, `/mr-rules`. UE asset DSL: `/mr-validate` (pre-flight structural + schema check of a
+matlang/bplisp/animlang file), `/mr-link-source` (asset node → the C++ class that implements it).
+Dependency / refactoring analysis (the **manyscan** skill): `/mr-deps`, `/mr-boundary`.
 
 ## Common Pitfalls
 
@@ -336,7 +344,8 @@ Commands: `/mr-init`, `/mr-index`, `/mr-enrich`, `/mr-query`, `/mr-trace`, `/mr-
 2. Reading whole files. Bounded extraction is mandatory; never `substr(content,1,length(content))`.
 3. Forgetting the dot in `files.ext` (use `.py`, not `py`).
 4. Assuming a symbol/edge is absent from one empty query — check counts and extension coverage.
-5. Treating `contains` edges as call flow — pre-check `relation`s; v1 has no resolved call graph.
+5. Treating `contains` edges as call flow — pre-check `relation`s; dependency edges
+   (`calls`/`imports`/`uses_type`) come from per-language `.scm` queries, not a fully-resolved call graph.
 6. Rebuilding L1 and forgetting to re-run `/mr-enrich` — a rebuild drops `symbols`/`edges`.
 7. Shelving/clearing a stale trace without asking the user — that decision is human-in-the-loop.
 8. Hardcoding absolute roots in committed artifacts — refs store paths relative to the project root.
