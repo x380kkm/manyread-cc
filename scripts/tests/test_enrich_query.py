@@ -657,3 +657,232 @@ def test_real_fixture_smoke_js_csharp_isolated(tmp_path, monkeypatch):
 
     # Hub isolation: the registry write went to the temp MANYREAD_HOME, not the user's.
     assert (home / "stores.json").exists()
+
+
+# ===========================================================================
+# macro_strip: LENGTH-PRESERVING pre-parse strip of declaration-modifier macros
+# (`class|struct <ALLCAPS_MACRO> <RealName>`). PURE, deterministic, span-exact,
+# default-ON, generalization-safe (clean cpp + non-cpp byte-identical). See the
+# transform in enrich_treesitter._strip_decl_macros + config.load_macro_strip.
+# ===========================================================================
+_MS_DEFAULT = {"enabled": True, "extra_names": [], "extra_patterns": []}
+
+
+def _cpp_class(src: str):
+    """(has_error, class/struct name, members-with-body) via the real cpp grammar."""
+    parser = Parser(get_language("cpp"))
+    tree = parser.parse(src.encode())
+    cs = [None]
+
+    def find(n):
+        if n.type in ("class_specifier", "struct_specifier") and cs[0] is None:
+            cs[0] = n
+        for c in n.children:
+            find(c)
+
+    find(tree.root_node)
+    node = cs[0]
+    nm = node.child_by_field_name("name") if node else None
+    body = node.child_by_field_name("body") if node else None
+    return tree.root_node.has_error, (nm.text.decode() if nm else None), body is not None
+
+
+@pytest.mark.parametrize("src,real_name", [
+    ("class ENGINE_API UMaterial : public UMaterialInterface { int A; void F(){} };", "UMaterial"),
+    ("class BASE_EXPORT Foo {};", "Foo"),                       # Chromium
+    ("struct PROTOBUF_EXPORT Bar { int x; };", "Bar"),          # protobuf
+    ("class UE_DEPRECATED(5.0) UOld {};", "UOld"),              # macro WITH args
+    ("class CV_EXPORTS Mat { int rows; };", "Mat"),             # OpenCV
+    ("class ENGINE_API UMaterial final : public X {};", "UMaterial"),
+    ("template<typename T> class ENGINE_API TFoo {};", "TFoo"),
+])
+def test_macro_strip_recovers_real_name(src, real_name):
+    """POSITIVE: strip yields no parse error, the REAL name, and a real body."""
+    stripped = E._strip_decl_macros(src, _MS_DEFAULT)
+    assert len(stripped) == len(src)                            # length-preserving
+    orig_err, orig_name, _ = _cpp_class(src)
+    err, name, has_body = _cpp_class(stripped)
+    assert orig_name != real_name                               # bug: original name was the macro
+    assert name == real_name and not err and has_body
+
+
+def test_macro_strip_recovers_member_rows_and_spans():
+    """The class is renamed AND its body methods become child symbols; surviving
+    token byte offsets are byte-for-byte identical to a hand-(space)-blanked source."""
+    src = "class ENGINE_API UMaterial : public UMaterialInterface { int A; void F(){} };"
+    rows_on, edges_on = E._extract_file(
+        1, src, "cpp", Parser(get_language("cpp")), False, None, _MS_DEFAULT)
+    names = {r["name"] for r in rows_on}
+    assert {"UMaterial", "F"} <= names and "ENGINE_API" not in names
+    um = next(r for r in rows_on if r["name"] == "UMaterial")
+    fm = next(r for r in rows_on if r["name"] == "F")
+    assert fm["parent_local"] == um["_local"]                   # F is a member of UMaterial
+    assert ("UMaterialInterface", "extends") in {
+        (e["dst_name"], e["relation"]) for e in edges_on}
+    # span exactness vs hand-blanked source
+    hand = src.replace("ENGINE_API ", " " * len("ENGINE_API "))
+    rows_hand, _ = E._extract_file(
+        1, hand, "cpp", Parser(get_language("cpp")), False, None, {"enabled": False})
+    assert um["start_byte"] == next(r for r in rows_hand if r["name"] == "UMaterial")["start_byte"]
+
+
+@pytest.mark.parametrize("src", [
+    "class Baz {};",                                            # plain class
+    "class RGBA {};",                                          # ALL-CAPS NAME, no 2nd ident
+    "struct UPPER {};",
+    "class Foo : public Bar { int a; void f(){} };",          # clean inheritance
+    "class Foo : public BAR_API Base {};",                     # macro in BASE list, not name pos
+    "int ENGINE_API_VERSION = 3;",                             # macro-like NAME, value position
+    "void ENGINE_API Foo();",                                  # function-return modifier (out of scope)
+    "enum class EColor { Red };",
+    # word-boundary: `class`/`struct` as a SUBSTRING of a user identifier must NOT match
+    # (else the all-caps token after it would be blanked as if it were a modifier macro).
+    "subclass ENGINE_API Foo x;",
+    "metaclass FOO_API Bar y;",
+    "mystruct ENGINE_API_T xVar;",
+    "superclass DLL_API Baz q;",
+])
+def test_macro_strip_negative_byte_identical(src):
+    """NEGATIVE / generalization-safety: clean cpp + non-class-position macros + the
+    class/struct-as-substring identifiers are byte-identical no-ops (default-enabled)."""
+    assert E._strip_decl_macros(src, _MS_DEFAULT) == src
+
+
+@pytest.mark.parametrize("src,real_name", [
+    # Stacked export+visibility/attribute macros: BOTH must be stripped (fixed-point).
+    ("class DLL_EXPORT ENGINE_API UMaterial { int A; void F(){} };", "UMaterial"),
+    ("struct BASE_EXPORT PROTOBUF_EXPORT Bar {};", "Bar"),
+    ("class A_API B_API C_API UFoo {};", "UFoo"),
+])
+def test_macro_strip_stacked_macros_recovered(src, real_name):
+    """Stacked declaration-modifier macros are fully stripped -> real name, no error."""
+    stripped = E._strip_decl_macros(src, _MS_DEFAULT)
+    assert len(stripped) == len(src)
+    err, name, has_body = _cpp_class(stripped)
+    assert name == real_name and not err and has_body
+
+
+def test_macro_strip_enum_class_macro_recovered():
+    """`enum class <MACRO> <Name>` recovers the enum's real name (the \\b word boundary
+    still fires at the `class` word start inside `enum class`)."""
+    src = "enum class ENGINE_API EColor { Red, Green };"
+    stripped = E._strip_decl_macros(src, _MS_DEFAULT)
+    assert len(stripped) == len(src)
+    parser = Parser(get_language("cpp"))
+    tree = parser.parse(stripped.encode())
+    assert not tree.root_node.has_error
+    # the recovered enum is named EColor (not ENGINE_API)
+    rows, _ = E._extract_file(1, src, "cpp", parser, False, None, _MS_DEFAULT)
+    assert any(r["name"] == "EColor" and r["kind"] == "enum" for r in rows)
+    assert all(r["name"] != "ENGINE_API" for r in rows)
+
+
+def test_macro_strip_utf8_byte_offsets_preserved():
+    """HIGH-severity regression: a non-ASCII char inside the blanked macro-args region
+    (e.g. an em-dash in a UE_DEPRECATED message) must NOT shift downstream BYTE offsets.
+    The blank emits one space per UTF-8 BYTE so the encoded length is unchanged, and a
+    trailing symbol's start_byte equals its offset in the ORIGINAL (unmodified) content.
+    """
+    src = ('class UE_DEPRECATED(5.0, "Use NewType — deprecated") UOld {};\n'
+           "class Bar {};")
+    stripped = E._strip_decl_macros(src, _MS_DEFAULT)
+    # byte-length preserved despite the multi-byte em-dash in the blanked args.
+    assert len(stripped.encode("utf-8")) == len(src.encode("utf-8"))
+    assert stripped.count("\n") == src.count("\n")
+    rows, _ = E._extract_file(1, src, "cpp", Parser(get_language("cpp")), False, None, _MS_DEFAULT)
+    names = {r["name"] for r in rows}
+    assert {"UOld", "Bar"} <= names and "UE_DEPRECATED" not in names
+    # Bar's recorded start_byte must index into the ORIGINAL bytes at 'class Bar'.
+    orig_bytes = src.encode("utf-8")
+    bar = next(r for r in rows if r["name"] == "Bar")
+    assert orig_bytes[bar["start_byte"]:bar["start_byte"] + len(b"class Bar")] == b"class Bar"
+
+
+def test_macro_strip_comment_false_positive_is_harmless():
+    """DOCUMENTED open risk: the raw-text regex can blank a `class MACRO Name` that
+    appears inside a // comment. It is HARMLESS because the blank is length-preserving
+    and applied ONLY to the local parse copy (stored content stays original), so the
+    extracted SYMBOLS are unchanged vs. the unblanked source."""
+    src = ("class RealClass {\n"
+           "  // class ENGINE_API Fake Inner {}; in a comment\n"
+           "};\n")
+    stripped = E._strip_decl_macros(src, _MS_DEFAULT)
+    assert len(stripped) == len(src)                           # still length-preserving
+    parser = Parser(get_language("cpp"))
+    rows_blanked, _ = E._extract_file(1, src, "cpp", parser, False, None, _MS_DEFAULT)
+    rows_raw, _ = E._extract_file(1, src, "cpp", parser, False, None, {"enabled": False})
+    # the only symbol is RealClass in BOTH cases; the comment text is never a symbol.
+    assert [(r["name"], r["start_byte"], r["end_byte"]) for r in rows_blanked] \
+        == [(r["name"], r["start_byte"], r["end_byte"]) for r in rows_raw]
+
+
+def test_macro_strip_disabled_is_identity():
+    src = "class ENGINE_API UMaterial : public X { int A; };"
+    assert E._strip_decl_macros(src, {"enabled": False}) == src
+    assert E._strip_decl_macros(src, None) == src
+
+
+def test_macro_strip_extra_names_and_patterns():
+    """Config extends the built-in detector; the positional gate still bounds it."""
+    # GTEST_API_ (trailing underscore) is a documented _is_macro_type gap.
+    g = "class GTEST_API_ MyTest : public Test {};"
+    assert E._strip_decl_macros(g, _MS_DEFAULT) == g            # default no-op
+    ext = {"enabled": True, "extra_names": ["GTEST_API_"], "extra_patterns": []}
+    assert _cpp_class(E._strip_decl_macros(g, ext))[1] == "MyTest"
+    # extra_patterns OR'd in (no underscore -> base regex misses MYLIBEXPORT)
+    m = "class MYLIBEXPORT Thing {};"
+    pat = {"enabled": True, "extra_names": [], "extra_patterns": ["^MYLIB[A-Z]+$"]}
+    assert E._strip_decl_macros(m, _MS_DEFAULT) == m            # default no-op
+    assert _cpp_class(E._strip_decl_macros(m, pat))[1] == "Thing"
+    # even a configured extra_name cannot strip a real NAME (no 2nd identifier)
+    assert E._strip_decl_macros("class FOO {};", {"enabled": True, "extra_names": ["FOO"]}) \
+        == "class FOO {};"
+
+
+def test_macro_strip_idempotent_and_newline_preserving():
+    src = "class ENGINE_API\n  UMaterial : public X { int A; };"
+    once = E._strip_decl_macros(src, _MS_DEFAULT)
+    assert E._strip_decl_macros(once, _MS_DEFAULT) == once      # idempotent
+    assert once.count("\n") == src.count("\n") and len(once) == len(src)
+    assert _cpp_class(once)[1] == "UMaterial"
+
+
+def test_macro_strip_only_cfamily_lang():
+    """Non-cpp langs never run the transform (lang not in _CFAMILY_STRIP_LANGS)."""
+    assert "cpp" in E._CFAMILY_STRIP_LANGS
+    for lang in ("python", "javascript", "typescript", "csharp", "glsl", "java"):
+        assert lang not in E._CFAMILY_STRIP_LANGS
+    pysrc = "class A(Base):\n    def m(self): return 1\n"
+    on = E._extract_file(1, pysrc, "python", Parser(get_language("python")), False, None, _MS_DEFAULT)
+    off = E._extract_file(1, pysrc, "python", Parser(get_language("python")), False, None, {"enabled": False})
+    assert on == off
+
+
+def test_macro_strip_golden_cpp_unchanged():
+    """The committed cpp golden has no modifier macros -> default-enabled strip is a
+    no-op, so the byte-identical golden stays green even with the production default."""
+    assert E._strip_decl_macros(_CPP_GOLDEN_SRC, _MS_DEFAULT) == _CPP_GOLDEN_SRC
+    rows, edges = E._extract_file(
+        1, _CPP_GOLDEN_SRC, "cpp", Parser(get_language("cpp")), False, None, _MS_DEFAULT)
+    assert rows == _CPP_GOLDEN_ROWS and edges == _CPP_GOLDEN_EDGES
+
+
+def test_macro_strip_config_load(tmp_path):
+    """config.load_macro_strip: absent=>ON, disable, extend, malformed=>default+warn."""
+    import json
+    from lib import config
+    store = tmp_path
+    assert config.load_macro_strip(store) == _MS_DEFAULT        # no manyread.json
+    (store / "manyread.json").write_text(json.dumps({"alias": "x"}))
+    assert config.load_macro_strip(store) == _MS_DEFAULT        # absent key
+    (store / "manyread.json").write_text(json.dumps({"macro_strip": {"enabled": False}}))
+    assert config.load_macro_strip(store)["enabled"] is False
+    (store / "manyread.json").write_text(json.dumps(
+        {"macro_strip": {"enabled": True, "extra_names": ["GTEST_API_"], "extra_patterns": ["^X_[A-Z]+$"]}}))
+    got = config.load_macro_strip(store)
+    assert got["extra_names"] == ["GTEST_API_"] and got["extra_patterns"] == ["^X_[A-Z]+$"]
+    (store / "manyread.json").write_text(json.dumps({"macro_strip": {"extra_patterns": ["("]}}))
+    assert config.load_macro_strip(store) == _MS_DEFAULT        # bad regex -> default
+    (store / "manyread.json").write_text(json.dumps({"macro_strip": {"enabled": True, "bogus": 1}}))
+    assert config.load_macro_strip(store) == _MS_DEFAULT        # unknown key stripped
+    assert config.validate_macro_strip({"enabled": "no"}) == ["macro_strip.enabled must be a bool"]

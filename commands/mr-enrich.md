@@ -61,6 +61,67 @@ auto-installs `tree-sitter` + `tree-sitter-language-pack` (one wheel bundling 30
 - `--langs cpp,python,csharp` — restrict to a subset of configured languages (default: all configured).
 - `--refs` — also emit best-effort `references` edges by identifier match (off by default; noisy).
 
+### C-family macro strip (`macro_strip` in `manyread.json`)
+
+A LENGTH-PRESERVING **pre-parse** transform fixes a generic C++ defect: a declaration-
+modifier macro makes tree-sitter take the MACRO as the class name and re-home the real
+name + base list + BODY into an ERROR node — so `class ENGINE_API UMaterial : public X { … }`
+parses as a class named `ENGINE_API` with the members LOST. This hits export/visibility/
+deprecation macros across many codebases (UE `*_API`/`UE_DEPRECATED`, Chromium `BASE_EXPORT`,
+protobuf `PROTOBUF_EXPORT`, OpenCV `CV_EXPORTS`, WebRTC `RTC_EXPORT`, ICU `U_I18N_API`, …).
+
+Before parsing a `cpp` file (HLSL/shader exts route to cpp, so they are covered too), the
+enricher blanks a modifier macro in the `class|struct <MACRO> <RealName>` position with the
+SAME number of bytes (newlines kept), so the class parses with its REAL name + a real body
+and **every surviving byte offset / line is unchanged**. Only the local parse copy is blanked;
+the stored file content and all extracted spans stay valid. It fires ONLY when a SECOND
+identifier (the real name) follows the macro, so `class RGBA {}` (all-caps NAME, no second
+ident) is untouched; non-cpp langs never run it.
+
+- **Default: ON** (no config needed) — this is a parse-correctness fix, so it helps every
+  cpp project out of the box. The detector is the same all-caps `_API`/`_EXPORT`/… macro
+  pattern enrich already uses for type-position macros (real names like `RGBA`/`GUID`/`UINT`
+  survive). To get exact pre-fix behavior, opt out with `{"macro_strip": {"enabled": false}}`.
+- **Extend** it per-project in `<store>/manyread.json`:
+  ```json
+  { "macro_strip": {
+      "enabled": true,
+      "extra_names": ["GTEST_API_"],        // literal macro tokens (e.g. trailing-underscore)
+      "extra_patterns": ["^MYLIB_[A-Z]+$"]  // extra regexes OR'd with the built-in detector
+  } }
+  ```
+  Even a configured name/pattern only strips in the strict `class|struct <macro> <name>`
+  position, so it cannot rename a real class. Malformed config / bad regex → default + a stderr
+  warning. The resolved config is recorded in `meta.macro_strip` for provenance.
+- **Re-index required:** the transform runs at enrich time and changes EXTRACTION, not stored
+  data, so an existing store benefits only after a fresh `/mr-enrich`. Re-enriching surfaces the
+  real class name + base/`extends` edges + nested type defs + methods-WITH-BODIES as child
+  symbols, and removes the bogus macro-named symbol. (It restores exactly what a CLEAN class
+  would yield: declaration-only members — plain fields `int A;` and decl-only methods `void F();`
+  — are still not symbols, same as any clean class in the pre-existing cpp-walker contract;
+  only methods with a body `void F(){}` and nested type defs become child rows.)
+- **Relation to `unreal/api-export-rename`:** that rule renames a symbol *after* parsing and
+  cannot recover the lost body — so the pre-parse strip supersedes it for `_API` classes (the
+  name is already correct at parse time). Keep or retire that preset deliberately rather than
+  double-handle.
+- **Stacked macros handled:** export+visibility/attribute macros (`class DLL_EXPORT ENGINE_API
+  UMaterial {}`) are fully recovered — the strip iterates to a fixed point, blanking each
+  modifier macro in turn until the real name is reached.
+- **`enum class <MACRO> <Name>` handled:** the recovered enum keeps its real name (the macro
+  is blanked just as for a plain `class`/`struct`).
+- **Out of scope (v1):** leading-attribute (`ENGINE_API class UFoo {}`) and function-return
+  modifiers (`ENGINE_API void Foo()`) are a different parse shape and are left untouched.
+  Nested-paren macro args (`UE_DEPRECATED(MAKE_VERSION(5,0))`) are not fully consumed; common
+  `(5.0)`/`("msg")` forms work.
+- **Narrow false-positive (documented):** an *elaborated-type* variable declaration whose TYPE
+  is itself all-caps-with-underscore — e.g. `struct AB_CD myvar;` — also matches the
+  `class|struct <macro-shaped> <ident>` shape, so the type token is blanked and the variable is
+  read as the symbol. This requires a real type named in the macro shape (engines use `FFoo`/
+  `UBar`, not `AB_CD`), and the pre-fix parse was *also* wrong on these (it mis-reported `AB_CD`
+  as a struct definition), so the transform trades one wrong symbol for another only on
+  already-mis-parsed, unusual input. Multi-byte UTF-8 inside the blanked span (e.g. an em-dash
+  in a `UE_DEPRECATED(5.0, "… — …")` message) is byte-length-preserved, so spans stay exact.
+
 ### Override-rules flags (spec §16; author/validate via `/mr-rules`)
 
 - `--rules PATH` — use an explicit override-rules file (default `<store>/rules.json`

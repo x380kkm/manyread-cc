@@ -237,6 +237,93 @@ def load_view_hide(store: Path, override_path: Path | None = None) -> dict | Non
     return vh
 
 
+# --- macro_strip config (committed, shared, PARSE-INPUT transform) -----------
+# A length-preserving PRE-PARSE transform for the c-family (cpp) walker: strips a
+# declaration-modifier MACRO token in the `class|struct <MACRO> <RealName>` position
+# (export/visibility/deprecation macros: ENGINE_API, BASE_EXPORT, PROTOBUF_EXPORT,
+# CV_EXPORTS, UE_DEPRECATED(5.0), …) that otherwise makes tree-sitter take the MACRO
+# as the class name and re-home the real name + base list + BODY into an ERROR node
+# (losing the members). The blank is byte-length + newline preserving so every
+# downstream span/offset is UNCHANGED, and only the local copy fed to parser.parse()
+# is mutated (the stored DB content stays original). See enrich_treesitter
+# `_strip_decl_macros`. Home: a committed `macro_strip` key in <store>/manyread.json.
+#
+# DEFAULT (key ABSENT) => ENABLED with the built-in `_is_macro_type` detector. This
+# INVERTS view_hide's absent=>off, by design: the c-family parse fix is a correctness
+# improvement that should help every cpp project out of the box. Opt out with
+# {"macro_strip": {"enabled": false}} for exact pre-fix behavior. Re-enrich is
+# required for the change to take effect on an existing store.
+_MACRO_STRIP_KEYS = {"enabled", "extra_names", "extra_patterns"}
+
+
+def validate_macro_strip(ms: dict) -> list[str]:
+    """Return a list of human-readable validation errors for a macro_strip doc (empty == OK)."""
+    if not isinstance(ms, dict):
+        return ["macro_strip must be an object"]
+    errs: list[str] = []
+    en = ms.get("enabled", True)
+    if not isinstance(en, bool):
+        errs.append("macro_strip.enabled must be a bool")
+    for k in ("extra_names", "extra_patterns"):
+        v = ms.get(k)
+        if v is not None and not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
+            errs.append(f"macro_strip.{k} must be a list of strings")
+    import re as _re
+    for pat in (ms.get("extra_patterns") or []):
+        if isinstance(pat, str):
+            try:
+                _re.compile(pat)
+            except _re.error as exc:
+                errs.append(f"macro_strip.extra_patterns bad regex {pat!r}: {exc}")
+    return errs
+
+
+def load_macro_strip(store: Path) -> dict:
+    """Resolve the committed c-family macro-strip config from <store>/manyread.json.
+
+    ABSENT key => {"enabled": True, "extra_names": [], "extra_patterns": []} (the
+    generic default is ON; this INVERTS view_hide's absent=>off, by design — the
+    c-family parse fix should help every cpp project out of the box).
+
+    Malformed structure / bad regex => default + warn to stderr. Unknown keys =>
+    warn + proceed. A present-but-unreadable manyread.json => default + warn (mirror
+    of load_view_hide). Always returns a dict (never None) so the caller can pass it
+    straight to the transform.
+    """
+    import sys
+
+    DEFAULT = {"enabled": True, "extra_names": [], "extra_patterns": []}
+    mr_json = store / "manyread.json"
+    if not mr_json.is_file():
+        return dict(DEFAULT)
+    shared = _read_json(mr_json)
+    if not shared:
+        # present but unreadable/empty (a botched hand-merge): treat as default, but
+        # warn so the reset is visible (manyread.json invites hand-editing).
+        if mr_json.stat().st_size > 0:
+            print(f"manyread: {mr_json} present but unreadable/empty — "
+                  "shared config (incl. macro_strip) ignored, using defaults", file=sys.stderr)
+        return dict(DEFAULT)
+    ms = shared.get("macro_strip")
+    if ms is None:
+        return dict(DEFAULT)
+    if not isinstance(ms, dict):
+        print("manyread: macro_strip must be an object — using defaults", file=sys.stderr)
+        return dict(DEFAULT)
+    errs = validate_macro_strip(ms)
+    if errs:
+        print("manyread: ignoring malformed macro_strip config: " + "; ".join(errs)
+              + " — using defaults", file=sys.stderr)
+        return dict(DEFAULT)
+    unknown = sorted(set(ms) - _MACRO_STRIP_KEYS)
+    if unknown:
+        print("manyread: macro_strip has unknown key(s) " + ", ".join(unknown)
+              + " (known: enabled/extra_names/extra_patterns) — ignoring them", file=sys.stderr)
+    out = dict(DEFAULT)
+    out.update({k: v for k, v in ms.items() if k in _MACRO_STRIP_KEYS})
+    return out
+
+
 def init_store(location: Path, alias: str | None = None,
                languages: list[str] | None = None, exts: list[str] | None = None,
                ignore_globs: list[str] | None = None, root: Path | None = None) -> Path:
