@@ -10,17 +10,32 @@ errors that would otherwise blow up the importer (unparseable text, a wire that
 targets nothing, a duplicate node id, a cycle in a DAG, a missing required root)
 in milliseconds, fully OFFLINE — no UE, no network, no index db.
 
-This is the SYNTAX / STRUCTURAL layer only. A future SEMANTIC layer (a schema /
-type dictionary: valid node classes, pin existence, type compatibility, CDO
-defaults — which needs a one-time UE export) PLUGS IN as additional check passes:
-append a `(Context) -> Iterable[Issue]` callable to `STRUCTURAL_PASSES[lang]` and
-it consumes the SAME immutable Context (rows already carry `kind` + `attrs`,
-edges carry `relation` + `dst_name`). No change to `dsl_validate` is needed.
+There are two layers, both consuming the SAME immutable Context:
 
-Entry: the pure function `dsl_validate(text, lang) -> list[Issue]` runs the
-lang's ordered check passes and returns the issues SORTED deterministically by
-(byte, code, message). A thin __main__ CLI validates one file, prints the issues
-and a summary, and exits nonzero iff any error-severity issue exists.
+  * STRUCTURAL (always on) — the syntax/shape checks (unparseable text, dangling
+    wire, dup id, cycle, missing root). Registered in `STRUCTURAL_PASSES[lang]`.
+  * SEMANTIC (OPTIONAL, schema-driven) — a TYPE-DICTIONARY check: is the node a
+    known expression class, are its properties known, are its REQUIRED INPUT PINS
+    connected. Registered in `SEMANTIC_PASSES[lang]`; it runs ONLY when a `--schema`
+    JSON is supplied. Each pass is a pure `(Context) -> Iterable[Issue]` callable and
+    reads `ctx.schema` (rows carry `kind` + `attrs.node_type`; the connected pins /
+    present props are re-walked from `ctx.tree`, because the `uses_type` edges record
+    the wired SOURCE id but NOT the pin keyword). No change to either pass list's
+    callers is needed to add more passes — just append.
+
+The semantic schema is HARVEST-READY: it mirrors what a future one-time UE
+reflection export would emit (lang -> nodeType -> {classPath?, properties, pins}).
+In UE delta-serialization every UPROPERTY has a CDO default (absent == default,
+NEVER missing), so required-ness lives on INPUT PINS, never on properties. The
+bundled `scripts/schemas/matlang.sample.json` is PARTIAL + inferred from the two
+example files; bplisp/animlang semantic schemas await the harvest.
+
+Entry: the pure function `dsl_validate(text, lang, schema=None) -> list[Issue]`
+runs the lang's structural passes (and, iff `schema` is given, its semantic
+passes) and returns the issues SORTED deterministically by (byte, code, message).
+With `schema=None` the result is BYTE-IDENTICAL to the structural-only validator.
+A thin __main__ CLI validates one file, optionally loads a `--schema`, prints the
+issues and a summary, and exits nonzero iff any error-severity issue exists.
 
 REUSE: there is ONE parse path and ONE set of .scm captures — the validator
 imports `enrich_treesitter` and calls its in-memory helpers `_load_language`,
@@ -91,8 +106,9 @@ class Issue:
 class Context:
     """Immutable-by-convention bundle built ONCE, shared by every check pass.
 
-    The future SEMANTIC layer consumes the SAME Context (rows.kind/attrs +
-    edges.relation/dst_name), so adding a schema pass needs no new plumbing.
+    The SEMANTIC layer consumes the SAME Context (rows.kind/attrs +
+    edges.relation/dst_name) plus the OPTIONAL `schema` type-dictionary, so
+    adding a schema pass needs no new plumbing.
     """
 
     lang: str
@@ -102,6 +118,7 @@ class Context:
     edges: list[dict]
     by_local: dict  # _local -> row
     names: set  # all in-file symbol names
+    schema: dict | None = None  # the per-lang node-type dictionary, or None (structural-only)
 
     def _row_loc(self, local):
         """edges carry no byte -> attribute an edge issue to its source row."""
@@ -258,16 +275,196 @@ def pass_external_warn(ctx: Context) -> Iterable[Issue]:
                         "(resolves against engine/schema later)", ln, by)
 
 
-# --- the check-pass registry (the plug-in seam) ------------------------------
-# Ordered, per-lang. The future SEMANTIC layer simply APPENDS passes here; each
-# pass is pure + independent and consumes the same Context, so no other code
-# changes. Structural now; schema later.
+# --- SEMANTIC layer: schema (type-dictionary) driven check passes ------------
+# These run ONLY when a schema is supplied (dsl_validate(..., schema=...)). Each
+# is a pure (Context)->Iterable[Issue]; it looks up a node row's
+# attrs.node_type in ctx.schema[lang] and checks unknown type / unknown property
+# / missing-required-pin. The schema is HARVEST-READY (mirrors a future UE
+# reflection export): lang -> nodeType -> {classPath?, properties, pins}.
+def _find_node_list(node, sb, eb):
+    """Locate the `list` subtree whose byte span == (sb, eb) in ctx.tree.
+
+    The semantic pass re-walks the node's own list to recover its :keyword
+    properties and which input pins are CONNECTED — neither is on the edges (the
+    matlang `uses_type` edge records the wired SOURCE id but NOT the pin keyword).
+    """
+    if node.type == "list" and node.start_byte == sb and node.end_byte == eb:
+        return node
+    for c in node.children:
+        r = _find_node_list(c, sb, eb)
+        if r is not None:
+            return r
+    return None
+
+
+def _matlang_node_fields(ctx: Context, row: dict) -> tuple[set[str], set[str]]:
+    """Return (connected_pins, present_props) for a node/material row.
+
+    Walks the row's `list` children IN ORDER. A child whose type is `symbol` and
+    whose text starts with ':' is a keyword; its value is the IMMEDIATELY-following
+    child. The (:keyword, value) pair is a PIN connection iff value is a `list`
+    whose first `symbol` child is exactly `connect`; otherwise it is a PROPERTY.
+    Keyword names are returned WITHOUT the leading ':' (to match schema keys).
+
+    CRITICAL: the child iteration excludes ONLY the structural tokens '(', ')'
+    and 'comment'. It must NOT filter to a symbol/list/string allowlist — numeric
+    values parse as `number` nodes (e.g. ':u-tiling 2.0', ':value 0.3'), so an
+    allowlist would drop them and MISALIGN the keyword/value pairing. Pure +
+    deterministic (the tree is already on ctx.tree).
+
+    DEFENSIVE PAIRING: a value-less keyword (one whose immediately-following child
+    is itself another ':'-keyword, or which is the last child) is recorded as a
+    PROPERTY and consumes only ITSELF — it does NOT swallow the next keyword as its
+    value. This stops a malformed `(:a :b (connect ...))` from mis-pairing `:b` as
+    the value of `:a` and then dropping `:b` from the pin set (which could spuriously
+    fire MISSING_REQUIRED_PIN for b). Such input is malformed and not in any bundled
+    example; the structural layer doesn't catch it either, so this is best-effort
+    hardening on top of structural validation.
+    """
+    pins: set[str] = set()
+    props: set[str] = set()
+    n = _find_node_list(ctx.tree.root_node, row["start_byte"], row["end_byte"])
+    if n is None:
+        return pins, props
+    src = ctx.text.encode("utf-8", "replace")
+    kids = [c for c in n.children if c.type not in ("(", ")", "comment")]
+
+    def _is_keyword(c) -> bool:
+        return c.type == "symbol" and src[c.start_byte:c.end_byte].startswith(b":")
+
+    i = 0
+    while i < len(kids):
+        k = kids[i]
+        if _is_keyword(k):
+            name = src[k.start_byte:k.end_byte].decode("utf-8", "replace")[1:]  # strip one ':'
+            val = kids[i + 1] if i + 1 < len(kids) else None
+            if val is None or _is_keyword(val):
+                # value-less keyword: record as a property, do NOT consume the next
+                # keyword as its value (advance by 1, re-examine the next child).
+                props.add(name)
+                i += 1
+                continue
+            is_connect = (val.type == "list" and any(
+                c.type == "symbol" and src[c.start_byte:c.end_byte] == b"connect"
+                for c in val.children))
+            (pins if is_connect else props).add(name)
+            i += 2
+        else:
+            i += 1
+    return pins, props
+
+
+def pass_semantic_schema(ctx: Context) -> Iterable[Issue]:
+    """SEMANTIC type-dictionary check (matlang). Emits NOTHING unless a schema is
+    carried on the Context (so the no-schema path stays byte-identical).
+
+    Per node/material row, look up attrs.node_type (or 'material') in
+    ctx.schema[lang] and emit:
+      * UNKNOWN_NODE_TYPE (warning) — type not in the (PARTIAL) dictionary.
+      * UNKNOWN_PROP (warning)      — a :keyword that is neither a known property
+                                      nor a known pin name.
+      * MISSING_REQUIRED_PIN (error) — a schema pin with required:true whose
+                                      keyword is absent from the connected set.
+    Absent OPTIONAL properties are NEVER flagged (absent == CDO default). Only
+    kind=='node' (with a non-empty node_type) and kind=='material' rows are
+    processed; outputs / node_type-less rows are skipped (their slot keywords
+    would otherwise false-warn). Iterates rows + sorted props/pins so emission is
+    deterministic; the single final sort in dsl_validate orders the combined list.
+    """
+    if not ctx.schema:
+        return
+    lang_schema = ctx.schema.get(ctx.lang)
+    if not lang_schema:  # no dictionary for this lang -> emit nothing
+        return
+    for r in sorted(ctx.rows, key=lambda r: (r["start_byte"], r["end_byte"])):
+        if r["kind"] == "node":
+            nt = (r.get("attrs") or {}).get("node_type")
+        elif r["kind"] == "material":
+            nt = "material"
+        else:
+            continue
+        if not nt:
+            continue
+        spec = lang_schema.get(nt)
+        if spec is None:
+            yield Issue("warning", "UNKNOWN_NODE_TYPE",
+                        f"node type {nt!r} not in schema (dictionary is partial)",
+                        r["start_line"], r["start_byte"])
+            continue
+        connected, props = _matlang_node_fields(ctx, r)
+        known_props = set((spec.get("properties") or {}).keys())
+        known_pins = set((spec.get("pins") or {}).keys())
+        for p in sorted(props):
+            if p not in known_props and p not in known_pins:
+                yield Issue("warning", "UNKNOWN_PROP",
+                            f"{nt}: unknown property :{p}",
+                            r["start_line"], r["start_byte"])
+        for pin, pspec in sorted((spec.get("pins") or {}).items()):
+            if pspec.get("required") and pin not in connected:
+                yield Issue("error", "MISSING_REQUIRED_PIN",
+                            f"{nt} (id {r['name']}): required pin :{pin} not connected",
+                            r["start_line"], r["start_byte"])
+
+
+# --- the check-pass registries (the plug-in seam) ----------------------------
+# Ordered, per-lang. STRUCTURAL always runs; SEMANTIC runs only when a schema is
+# supplied. Each pass is pure + independent and consumes the same Context, so a
+# new pass is just an APPEND here — no other code changes. Structural now; the
+# matlang schema dictionary now; bplisp/animlang schemas after a UE harvest.
 STRUCTURAL_PASSES: dict[str, list[Callable[[Context], Iterable[Issue]]]] = {
     "matlang": [pass_parse, pass_matlang_required, pass_matlang_dup_id,
                 pass_matlang_dangling, pass_matlang_cycle],
     "bplisp": [pass_parse, pass_bplisp_required, pass_external_warn],
     "animlang": [pass_parse, pass_animlang_required, pass_external_warn],
 }
+
+# Mirrors STRUCTURAL_PASSES. Only matlang has a sample schema today; bplisp /
+# animlang await a UE reflection harvest (UFunction / anim-node signatures).
+SEMANTIC_PASSES: dict[str, list[Callable[[Context], Iterable[Issue]]]] = {
+    "matlang": [pass_semantic_schema],
+    "bplisp": [],
+    "animlang": [],
+}
+
+
+def load_schema(path: str) -> dict:
+    """PURE semantic-schema loader: json.load + shape validation. Raises
+    ValueError (with a clear message) on a malformed shape so the CLI can report a
+    clean error instead of a traceback. Top-level metadata keys starting with '$'
+    (e.g. '$schema_note') are allowed and ignored.
+
+    Shape: root is an object; each non-'$' key (a lang) maps to an object;
+    each nodeType maps to an object; optional 'properties' is an object; optional
+    'pins' is an object whose entries are objects with an optional bool 'required'.
+    """
+    import json
+
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)  # JSONDecodeError surfaces to the CLI
+    if not isinstance(data, dict):
+        raise ValueError("schema root must be a JSON object (lang -> nodeType -> spec)")
+    for lang, types in data.items():
+        if lang.startswith("$"):  # metadata key -> ignore
+            continue
+        if not isinstance(types, dict):
+            raise ValueError(f"schema[{lang!r}] must be an object of nodeType -> spec")
+        for nt, spec in types.items():
+            if not isinstance(spec, dict):
+                raise ValueError(f"schema[{lang!r}][{nt!r}] must be an object")
+            props = spec.get("properties", {})
+            pins = spec.get("pins", {})
+            if not isinstance(props, dict):
+                raise ValueError(f"schema[{lang!r}][{nt!r}].properties must be an object")
+            if not isinstance(pins, dict):
+                raise ValueError(f"schema[{lang!r}][{nt!r}].pins must be an object")
+            for pn, pv in pins.items():
+                if not isinstance(pv, dict):
+                    raise ValueError(
+                        f"schema[{lang!r}][{nt!r}].pins[{pn!r}] must be an object")
+                if "required" in pv and not isinstance(pv["required"], bool):
+                    raise ValueError(
+                        f"schema[{lang!r}][{nt!r}].pins[{pn!r}].required must be a bool")
+    return data
 
 
 # --- Context construction (ONE parse path; in-memory; no DB) -----------------
@@ -284,9 +481,14 @@ def _build_context(text: str, lang: str) -> Context:
                    {r["_local"]: r for r in rows}, {r["name"] for r in rows})
 
 
-def dsl_validate(text: str, lang: str) -> list[Issue]:
-    """PURE pre-flight structural validator: run the lang's check passes and
-    return the issues sorted deterministically by (byte, code, message).
+def dsl_validate(text: str, lang: str, schema: dict | None = None) -> list[Issue]:
+    """PURE pre-flight validator: run the lang's STRUCTURAL passes and, iff a
+    `schema` is supplied, its SEMANTIC passes, then return the issues sorted
+    deterministically by (byte, code, message).
+
+    With schema=None the result is BYTE-IDENTICAL to the structural-only validator
+    (no semantic pass is constructed or run, the same single final sort applies) —
+    so every existing 2-arg caller is unaffected.
 
     When the parse fails, the other passes STILL run on the partial rows/edges
     (PARSE_ERROR dominates the summary); this keeps the pipeline simple and a
@@ -296,7 +498,10 @@ def dsl_validate(text: str, lang: str) -> list[Issue]:
         return [Issue("error", "UNKNOWN_LANG", f"no validator for language {lang!r}", 1, 0)]
     ctx = _build_context(text, lang)
     issues = [i for p in STRUCTURAL_PASSES[lang] for i in p(ctx)]
-    issues.sort(key=lambda i: i.sort_key())
+    if schema is not None:
+        ctx.schema = schema  # carry the dictionary; structural passes ignore it
+        issues += [i for p in SEMANTIC_PASSES.get(lang, []) for i in p(ctx)]
+    issues.sort(key=lambda i: i.sort_key())  # ONE final sort -> determinism preserved
     return issues
 
 
@@ -312,6 +517,10 @@ def main(argv=None) -> int:
     ap.add_argument("file", help="the DSL file to validate")
     ap.add_argument("--lang", default=None,
                     help="matlang|bplisp|animlang (default: auto-detect by extension)")
+    ap.add_argument("--schema", default=None,
+                    help="optional semantic schema JSON (a node-type dictionary); "
+                         "enables the SEMANTIC layer (unknown type/prop, missing required pin). "
+                         "No --schema -> structural-only.")
     ap.add_argument("--json", action="store_true", help="emit issues as a JSON list")
     a = ap.parse_args(argv)
 
@@ -327,7 +536,15 @@ def main(argv=None) -> int:
         print(f"error: cannot read {a.file!r}: {exc}", file=sys.stderr)
         return 2
 
-    issues = dsl_validate(text, lang)
+    schema = None
+    if a.schema:
+        try:
+            schema = load_schema(a.schema)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"error: malformed schema {a.schema!r}: {exc}", file=sys.stderr)
+            return 2
+
+    issues = dsl_validate(text, lang, schema)
     if a.json:
         print(json.dumps([asdict(i) for i in issues], indent=2))
     else:

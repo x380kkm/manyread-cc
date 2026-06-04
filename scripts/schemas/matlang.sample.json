@@ -1,0 +1,99 @@
+{
+  "$schema_note": "SAMPLE / PARTIAL / INFERRED. Hand-authored from DSL/Examples/*.matlang (simple_pbr.matlang + emissive_rim.matlang) plus the real CDO defaults in MatBPImporter.cpp::SetExpressionProperties. This is NOT a complete UE reflection harvest: it covers ONLY the node types observed in the two bundled examples (plus 'component-mask' as the one genuinely required-pin demonstration type), so every other expression type surfaces as a designed UNKNOWN_NODE_TYPE warning. A COMPLETE schema (all UMaterialExpression subclasses, all langs, all real CDO defaults + input pins) comes from a future one-time UE reflection export (the MatNodeExporter.cpp harvest, Phase-2 exporter territory). Format: lang -> nodeType -> {classPath?, properties:{name:{type,default?}}, pins:{name:{required:bool}}}. Property/pin names are stored WITHOUT a leading ':'. In UE delta-serialization every UPROPERTY has a CDO default (absent property == default, NEVER missing), so required-ness lives on INPUT PINS only, never on properties.",
+  "$required_pin_caveat": "IMPORTANT HONESTY NOTE on pins.required. (1) NOT REFLECTION-DERIVABLE: the actual MatNodeExporter.cpp harvest emits only the class name + reflected UPROPERTY names ((define-expr <name> (properties ...))); it does NOT emit input pins, and UE's FExpressionInput carries no 'connection required' bit. The exporter/importer read pins via CountInputs()/GetInput(i)/GetInputName(i) (MatBPExporter.cpp:440-449, MatBPImporter.cpp:567-639) — none expose required-ness. So the PROPERTIES half of this format is genuinely auto-harvestable, but the pins.required half must be HAND-CURATED (or sourced from a separate per-type overlay). (2) MANY MATH-OP PINS ARE OPTIONAL, NOT REQUIRED: UMaterialExpressionMultiply/Add/Subtract/Divide carry ConstA/ConstB UPROPERTY fallbacks, so an unconnected A or B is a VALID, common authoring pattern (multiply a texture by a scalar ConstB). The importer silently skips an unconnected input (MatBPImporter.cpp:571 `if (!InputAST.IsConnected()) continue;`) and the exporter emits a (connect ...) wire ONLY when Input->Expression is set (MatBPExporter.cpp:452), so a real round-tripped material that leaves B on ConstB exports `(multiply $m :a (connect ...))` with NO :b — marking multiply.{a,b} required:true would FALSE-ERROR it. Therefore multiply.{a,b} are required:false here. required:true is reserved for pins with NO const fallback, e.g. component-mask.input (a ComponentMask is meaningless without an input and UE provides no scalar default).",
+  "$source_examples": [
+    "MaterialBP2DSL/DSL/Examples/simple_pbr.matlang",
+    "MaterialBP2DSL/DSL/Examples/emissive_rim.matlang"
+  ],
+  "matlang": {
+    "material": {
+      "classPath": "/Script/Engine.Material",
+      "properties": {
+        "domain": {"type": "enum", "default": "surface"},
+        "blend-mode": {"type": "enum", "default": "opaque"},
+        "shading-model": {"type": "enum", "default": "default-lit"},
+        "two-sided": {"type": "bool", "default": false}
+      },
+      "pins": {}
+    },
+    "multiply": {
+      "classPath": "/Script/Engine.MaterialExpressionMultiply",
+      "$pin_note": "a/b are required:false: UMaterialExpressionMultiply has ConstA/ConstB UPROPERTY fallbacks, so an unconnected A or B is valid (UE uses the const). Marking them required would false-error real round-tripped materials. See $required_pin_caveat.",
+      "properties": {},
+      "pins": {
+        "a": {"required": false},
+        "b": {"required": false}
+      }
+    },
+    "component-mask": {
+      "classPath": "/Script/Engine.MaterialExpressionComponentMask",
+      "$pin_note": "input is required:true: a ComponentMask has NO const fallback (its FExpressionInput Input has no scalar default), so it is meaningless / a real importer degradation without an incoming connection. This is the one genuinely-required pin in the sample.",
+      "properties": {
+        "mask": {"type": "string", "default": "rgba"}
+      },
+      "pins": {
+        "input": {"required": true}
+      }
+    },
+    "constant": {
+      "classPath": "/Script/Engine.MaterialExpressionConstant",
+      "properties": {
+        "value": {"type": "float", "default": 0.0}
+      },
+      "pins": {}
+    },
+    "constant3-vector": {
+      "classPath": "/Script/Engine.MaterialExpressionConstant3Vector",
+      "properties": {
+        "value": {"type": "vector3", "default": [0.0, 0.0, 0.0]}
+      },
+      "pins": {}
+    },
+    "scalar-parameter": {
+      "classPath": "/Script/Engine.MaterialExpressionScalarParameter",
+      "properties": {
+        "name": {"type": "string"},
+        "default": {"type": "float", "default": 0.0},
+        "group": {"type": "string"}
+      },
+      "pins": {}
+    },
+    "vector-parameter": {
+      "classPath": "/Script/Engine.MaterialExpressionVectorParameter",
+      "properties": {
+        "name": {"type": "string"},
+        "default": {"type": "vector4", "default": [0.0, 0.0, 0.0, 1.0]},
+        "group": {"type": "string"}
+      },
+      "pins": {}
+    },
+    "fresnel": {
+      "classPath": "/Script/Engine.MaterialExpressionFresnel",
+      "properties": {
+        "exponent": {"type": "float", "default": 5.0},
+        "base-reflect-fraction": {"type": "float", "default": 0.04}
+      },
+      "pins": {
+        "normal": {"required": false}
+      }
+    },
+    "texture-coordinate": {
+      "classPath": "/Script/Engine.MaterialExpressionTextureCoordinate",
+      "properties": {
+        "coordinate-index": {"type": "int", "default": 0},
+        "u-tiling": {"type": "float", "default": 1.0},
+        "v-tiling": {"type": "float", "default": 1.0}
+      },
+      "pins": {}
+    },
+    "texture-sample": {
+      "classPath": "/Script/Engine.MaterialExpressionTextureSample",
+      "properties": {
+        "texture": {"type": "asset"}
+      },
+      "pins": {
+        "uv": {"required": false}
+      }
+    }
+  }
+}

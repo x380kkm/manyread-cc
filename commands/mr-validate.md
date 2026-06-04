@@ -13,11 +13,16 @@ milliseconds — no UE, no network, no index db. This is the **AI-generate guard
 the data-driven-config safety net: it turns a multi-minute import blow-up into a sub-second
 file check.
 
-It is the **SYNTAX / STRUCTURAL layer only**. A future **SEMANTIC layer** (a schema / type
-dictionary: valid node classes, pin existence, type compatibility, CDO defaults — which
-needs a one-time UE export) plugs in as additional check passes on the same engine; until
-that export exists, unresolved *external* names are reported as **warnings**, not errors
-(see below).
+There are **two layers**, both running on the same parse + the same `Context`:
+
+- **STRUCTURAL** (always on) — the syntax/shape checks below. Unresolved *external* names
+  are reported as **warnings**, not errors (see the warning-vs-error rule).
+- **SEMANTIC** (OPTIONAL, `--schema`) — a TYPE-DICTIONARY check driven by a JSON schema (a
+  harvest-ready node-type dictionary): is the node a known expression class, are its
+  properties known, are its **required input pins** connected. It runs **only** when you
+  pass `--schema PATH`; with no flag the validator is structural-only and **byte-identical**
+  to before. The bundled `scripts/schemas/matlang.sample.json` is **PARTIAL + matlang-only +
+  inferred from the two bundled examples** — see the honest boundary at the bottom.
 
 ## What it checks
 
@@ -42,6 +47,32 @@ that export exists, unresolved *external* names are reported as **warnings**, no
   (animlang has no `graph` kind; the root is the sole top-level node, e.g. `anim-blueprint`).
 - `(ref "Title")` cross-graph refs that don't resolve in-file → **UNRESOLVED_REF warning**.
 
+### SEMANTIC layer (`--schema`) — a node-type dictionary (matlang)
+Pass `--schema scripts/schemas/matlang.sample.json` to additionally run the schema-driven
+semantic pass. Per node it looks up the expression type in the dictionary and reports:
+- **UNKNOWN_NODE_TYPE** *(warning)* — the node's type is not in the dictionary. The sample
+  schema is **partial**, so an unlisted type is "not yet harvested", **not** invalid — this
+  is a warning, never an error (a future *complete* harvested schema could flip it to an
+  error via a strict flag).
+- **UNKNOWN_PROP** *(warning)* — a `:keyword` property that is neither a known property nor
+  a known pin of that type.
+- **MISSING_REQUIRED_PIN** *(error)* — a schema **input pin** marked `required:true` has no
+  incoming `(connect …)` wire. This is the one real semantic catch — but `required:true` is
+  reserved for pins with **no const fallback** (e.g. `component-mask`'s `:input`: a
+  ComponentMask is meaningless without an incoming connection). It is **NOT** applied to
+  math-op inputs like `multiply.{a,b}`: UE's `UMaterialExpressionMultiply` carries
+  `ConstA`/`ConstB` UPROPERTY fallbacks, so an unconnected A or B is a **valid, common**
+  authoring pattern (multiply a texture by a scalar `ConstB`). Marking those `required` would
+  false-error real round-tripped materials (the exporter omits the `:b` wire when B is on its
+  const default), which is exactly the false-positive the design avoids.
+
+**Defaults are never flagged.** In UE delta-serialization every UPROPERTY has a CDO default,
+so an **absent property == its default**, never "missing". Required-ness therefore lives on
+**input pins**, not properties — only an unconnected *required pin* is an error. (`BAD_PROP_TYPE`
+is intentionally **not shipped** in v1: matlang prop values are too heterogeneous — the same
+`:value` is a float on `constant` but a vec3 list on `constant3-vector` — for a cheap text
+check to avoid false positives; it may return later as a narrow optional warning.)
+
 ### Warning vs error (the key rule)
 - **ERROR** = a reference the DSL contract says **must resolve IN-FILE** and does not
   (matlang dangling `(connect $id)`, plus `DUP_ID` / `CYCLE` / required-form for all DSLs,
@@ -55,7 +86,16 @@ that export exists, unresolved *external* names are reported as **warnings**, no
 
 ```
 uv run --python 3.12 --with "tree-sitter>=0.23" --with tree-sitter-language-pack \
-  ${CLAUDE_PLUGIN_ROOT}/scripts/dsl_validate.py <file> [--lang matlang|bplisp|animlang] [--json]
+  ${CLAUDE_PLUGIN_ROOT}/scripts/dsl_validate.py <file> \
+    [--lang matlang|bplisp|animlang] [--schema PATH] [--json]
+```
+
+To also run the SEMANTIC layer, point `--schema` at the bundled matlang dictionary:
+
+```
+uv run --python 3.12 --with "tree-sitter>=0.23" --with tree-sitter-language-pack \
+  ${CLAUDE_PLUGIN_ROOT}/scripts/dsl_validate.py <file.matlang> \
+    --schema ${CLAUDE_PLUGIN_ROOT}/scripts/schemas/matlang.sample.json
 ```
 
 This script declares its tree-sitter dependencies in PEP 723 metadata, so the first
@@ -67,6 +107,10 @@ This script declares its tree-sitter dependencies in PEP 723 metadata, so the fi
 - `<file>` — the DSL file to validate.
 - `--lang matlang|bplisp|animlang` — force the DSL (default: auto-detect by extension via
   the same `LANG_FOR_EXT` map `/mr-enrich` uses; `.matlang`/`.bplisp`/`.animlang` are mapped).
+- `--schema PATH` — optional semantic schema JSON (a node-type dictionary). Enables the
+  SEMANTIC layer. **No flag → structural-only** (byte-identical to before). A malformed schema
+  (bad JSON or bad shape) → a clean `error: malformed schema …` message and **exit 2**, never a
+  traceback. Only `matlang` has a bundled sample today.
 - `--json` — emit the issues as a JSON list (`severity`, `code`, `message`, `line`, `byte`)
   for machine consumption (e.g. an AI-generation guardrail loop).
 
@@ -86,7 +130,50 @@ This script declares its tree-sitter dependencies in PEP 723 metadata, so the fi
   the network or UE. No `/mr-index` or `/mr-enrich` is required first.
 - When validating a *batch*, use `--json` and gate on the presence of any
   `severity == "error"` issue.
-- **SemanticPass is future work**: deeper checks (valid node classes, pin existence,
-  type-compat, CDO defaults) need a one-time UE schema export and will be added as extra
-  check passes — at which point today's `UNRESOLVED_REF` warnings get upgraded to real
-  semantic checks. The validator's `STRUCTURAL_PASSES[lang]` list is the single plug-in seam.
+- **Run the semantic layer for AI-generated matlang**: pass `--schema` with the bundled
+  dictionary to catch a node whose **no-fallback** required input pin is unconnected (e.g. a
+  `component-mask` with no `:input` — a real importer degradation) on top of the structural
+  checks. The validator's `STRUCTURAL_PASSES[lang]` / `SEMANTIC_PASSES[lang]` lists are the
+  plug-in seams — a new check is just an append.
+
+## Schema format + the honest boundary
+
+The semantic schema is a **harvest-ready** JSON dictionary: `lang → nodeType → { classPath?,
+properties:{name:{type, default?}}, pins:{name:{required:bool}} }`. Property and pin names are
+stored **without** a leading `:`. The **PROPERTIES** half mirrors exactly what a future one-time **UE reflection
+export** (the `MatNodeExporter.cpp` harvest, Phase-2 exporter territory) would emit — it
+iterates `UMaterialExpression` subclasses, kebab-cases the class name, and collects the
+reflected `UPROPERTY`s (name + type + **CDO default**). The **PROPERTIES vs INPUT PINS** split
+is deliberate and load-bearing: in UE delta-serialization every UPROPERTY has a CDO default
+(absent == default), so required-ness applies **only** to input pins, never to properties.
+
+**Honest caveat on `pins.required` — it is NOT reflection-derivable.** The actual harvest
+(`MatNodeExporter.cpp`) emits only the class name + reflected property names; it does **not**
+emit input pins, and UE's `FExpressionInput` carries **no** "connection required" bit. The
+exporter/importer read pins via `CountInputs()` / `GetInput(i)` / `GetInputName(i)`
+(`MatBPExporter.cpp:440-449`, `MatBPImporter.cpp:567-639`) — none of which expose required-ness.
+So the **properties** half of the format is genuinely auto-harvestable, but the
+**`pins.required` half must be hand-curated** (or sourced from a separate per-type overlay).
+A complete pipeline would model pins as the reflection-emittable part (name + input type via
+`GetInputType`) and keep `required` in a clearly hand-authored overlay so the harvest-ready
+claim stays honest.
+
+What ships **now** is the **FORMAT + the SEAM + a PROOF**, not a complete dictionary:
+
+- `scripts/schemas/matlang.sample.json` is **SAMPLE / PARTIAL / INFERRED**. It is hand-authored
+  to cover the **9 expression types observed in the two bundled examples**
+  (`material`, `multiply`, `constant`, `constant3-vector`, `scalar-parameter`,
+  `vector-parameter`, `fresnel`, `texture-coordinate`, `texture-sample`) with real CDO
+  defaults from `MatBPImporter.cpp`, **plus `component-mask`** as the one genuinely
+  required-pin demonstration type. It makes **both bundled examples validate with zero
+  semantic errors** (it is inferred from them). On required-ness: only `component-mask.input`
+  is `required:true` (no const fallback — meaningless unconnected). `multiply.{a,b}` are
+  deliberately `required:false` because UE's `ConstA`/`ConstB` make them optional (see the
+  MISSING_REQUIRED_PIN note above); `texture-sample.uv` and `fresnel.normal` are likewise
+  optional (valid UE leaves them unconnected → default mesh UVs / vertex normal). Every other
+  real matlang type (`add`, `lerp`, `panner`, …) is intentionally absent and surfaces as the
+  designed `UNKNOWN_NODE_TYPE` warning.
+- A **COMPLETE** schema — all `UMaterialExpression` subclasses, all langs, real CDO defaults
+  and all input pins — comes from that **future one-time UE reflection harvest**. The
+  **bplisp** and **animlang** semantic schemas (UFunction signatures / anim-node signatures)
+  await the same harvest; their `SEMANTIC_PASSES` entries are empty until then.
