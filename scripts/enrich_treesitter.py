@@ -98,12 +98,18 @@ LANG_FOR_EXT: dict[str, str] = {
     ".java": "java",
     # gdscript (Godot)
     ".gd": "gdscript",
+    # UE asset DSLs (S-expression text emitted by external editor plugins). These
+    # have NO walker — symbols + edges come entirely from their .scm query (see
+    # _query_symbols + the walker-less branch in _extract_file). They all parse
+    # with the `scheme` grammar (see _PACK_NAME); distinct lang keys give each its
+    # own stem-keyed .scm via _load_query_specs while sharing one grammar.
+    ".matlang": "matlang", ".bplisp": "bplisp", ".animlang": "animlang",
 }
 
 # The languages we can actually parse.
 SUPPORTED_LANGS: tuple[str, ...] = (
     "cpp", "python", "javascript", "typescript", "tsx", "csharp", "glsl",
-    "java", "gdscript",
+    "java", "gdscript", "matlang", "bplisp", "animlang",
 )
 
 
@@ -121,6 +127,13 @@ _PACK_NAME: dict[str, str] = {
     "glsl": "glsl",
     "java": "java",
     "gdscript": "gdscript",
+    # UE asset DSLs all use the `scheme` grammar (every (...) form is a `list`;
+    # head/keyword/$id are `symbol`; "..." is `string` with the quotes included).
+    # VERIFIED: get_language("scheme") parses all real .matlang/.bplisp/.animlang
+    # samples with has_error=False.
+    "matlang": "scheme",
+    "bplisp": "scheme",
+    "animlang": "scheme",
 }
 
 
@@ -635,6 +648,133 @@ WALKERS = {
     "gdscript": _walk_gdscript,
 }
 
+# A language with a WALKER owns its symbols (cpp/python/...): the walker yields rows,
+# the .scm query adds EDGE-only `@dep` captures (byte-identical to pre-DSL behavior).
+# A language WITHOUT a walker but WITH a .scm (the UE asset DSLs: matlang/bplisp/
+# animlang) is fully QUERY-DRIVEN: `@def.<kind>` captures become SYMBOLS and
+# `@dep.<relation>` captures become edges. Absence from WALKERS is the gate — see
+# the walker-less branch in _extract_file.
+HAS_WALKER = frozenset(WALKERS)
+
+
+# --- walker-less DSL symbol extraction (UE asset graphs) ---------------------
+# S-expression asset DSLs have no walker; their NODE GRAPH (the "连连看" wiring)
+# comes entirely from the .scm query: `@def.<kind>` -> a SYMBOL, `@dep.<relation>`
+# -> an edge from the enclosing @def-symbol (via the reused _query_edges). The
+# scheme grammar parses every (...) form as a `list`, so a captured token's
+# CONTAINMENT span is its nearest enclosing `list` ancestor (the token itself —
+# the $id / quoted-string / head symbol — does NOT cover the node's nested wires).
+def _dsl_list_ancestor(node: Node) -> Node | None:
+    """Nearest enclosing `list` ancestor of a captured token (its symbol span)."""
+    n = node
+    while n is not None and n.type != "list":
+        n = n.parent
+    return n  # may be None (defensive) -> caller skips the capture
+
+
+def _dsl_name(node: Node, src: bytes) -> str:
+    """Symbol name from THIS captured node only (never zip a sibling capture).
+
+    A scheme `string` node's text INCLUDES the surrounding quotes, so strip them
+    for a quoted name (material "M_X" -> M_X). KEEP the leading '$' on matlang
+    $ids: _simplify_dep leaves '$mul1' intact, so the (connect $mul1) edge's
+    dst_name '$mul1' must equal the node symbol name '$mul1' for by-name resolution.
+    """
+    nm = _text(node, src)
+    if node.type == "string":          # scheme `string` text includes the quotes
+        nm = nm.strip('"')
+    return nm or "<anon>"
+
+
+def _query_symbols(file_id: int, tree, src: bytes, query, lang: str) -> list[dict]:
+    """Symbols from `@def.<kind>` captures, for a walker-less DSL (the query OWNS
+    symbols). Each capture lands on a token; the symbol's span is the token's
+    enclosing `list` ancestor. parent = innermost STRICTLY-enclosing @def span.
+
+    Returns the SHARED-CONTRACT row-dict shape (same keys walkers produce).
+    Deterministic: captures() membership is stable but ORDER is not, so we sort
+    the tuples by a TOTAL key (start_byte, end_byte, kind, name) before assigning
+    `_local` indices.
+    """
+    try:
+        caps = QueryCursor(query).captures(tree.root_node)
+    except Exception:  # noqa: BLE001 - a bad query must never abort enrichment
+        return []
+
+    # Collect (start_byte, end_byte, kind, name, head) for every `@def.*` capture,
+    # using the captured token's enclosing `list` ancestor as the span. `head` is
+    # the first child `symbol` of that list (the node TYPE), promoted into attrs.
+    raw: dict[tuple[int, int, str, str], str] = {}  # 4-key -> head (de-dupes lists
+    #   matched by >1 pattern; Node is NOT part of the key — span is recoverable).
+    for cap_name in sorted(caps):
+        if not cap_name.startswith("def."):
+            continue
+        kind = cap_name[4:]
+        for node in caps[cap_name]:
+            anc = _dsl_list_ancestor(node)
+            if anc is None:
+                continue
+            name = _dsl_name(node, src)
+            head = ""
+            for ch in anc.children:
+                if ch.type == "symbol":
+                    head = _text(ch, src)
+                    break
+            key = (anc.start_byte, anc.end_byte, kind, name)
+            raw.setdefault(key, head)
+
+    # Total-order the surviving rows; assign deterministic _local indices.
+    keys = sorted(raw)            # (start_byte, end_byte, kind, name) is a total order
+    spans = [(k[0], k[1]) for k in keys]
+
+    def _parent_of(i: int) -> int | None:
+        si, ei = spans[i]
+        best = None  # (size, local) of the smallest STRICTLY-enclosing prior span
+        for j, (sj, ej) in enumerate(spans):
+            if j == i:
+                continue
+            if sj <= si and ei <= ej and (ej - sj) > (ei - si):
+                size = ej - sj
+                if best is None or size < best[0] or (size == best[0] and j < best[1]):
+                    best = (size, j)
+        return best[1] if best is not None else None
+
+    # Need line numbers from the ancestor node; re-collect ancestor nodes by span.
+    # (A span is unique per `list`; map span -> node from the first capture seen.)
+    span_to_node: dict[tuple[int, int], Node] = {}
+    for cap_name in sorted(caps):
+        if not cap_name.startswith("def."):
+            continue
+        for node in caps[cap_name]:
+            anc = _dsl_list_ancestor(node)
+            if anc is None:
+                continue
+            span_to_node.setdefault((anc.start_byte, anc.end_byte), anc)
+
+    rows: list[dict] = []
+    for i, (sb, eb, kind, name) in enumerate(keys):
+        head = raw[(sb, eb, kind, name)]
+        anc = span_to_node[(sb, eb)]
+        # Promote the node TYPE into attrs only when it differs from the name (the
+        # matlang case: head=type e.g. 'multiply', name=$id e.g. '$mul1'). For
+        # material/outputs/graph/... head==name (or is redundant) -> no attr.
+        attrs = {"node_type": head} if (head and head != name and kind == "node") else {}
+        rows.append({
+            "_local": i,
+            "file_id": file_id,
+            "name": name,
+            "kind": kind,
+            "lang": lang,
+            "start_line": anc.start_point[0] + 1,
+            "end_line": anc.end_point[0] + 1,
+            "start_byte": sb,
+            "end_byte": eb,
+            "parent_local": _parent_of(i),
+            "attrs": attrs,
+            "provenance": [],
+        })
+    return rows
+
 
 # --- raw extraction -> SHARED CONTRACT dicts ---------------------------------
 # --- declarative dependency-edge queries (project-customizable) --------------
@@ -727,58 +867,79 @@ def _extract_file(file_id: int, content: str, lang: str, parser: Parser,
     """
     src = content.encode("utf-8", "replace")
     tree = parser.parse(src)
-    pend = Pending()
-    WALKERS[lang](tree.root_node, src, pend, None)
 
-    rows: list[dict] = []
-    for local_idx, r in enumerate(pend.rows):
-        rows.append({
-            "_local": local_idx,
-            "file_id": file_id,
-            "name": r.name,
-            "kind": r.kind,
-            "lang": lang,
-            "start_line": r.start_line,
-            "end_line": r.end_line,
-            "start_byte": r.start_byte,
-            "end_byte": r.end_byte,
-            "parent_local": r.parent_local,
-            "attrs": {},
-            "provenance": [],
-        })
+    if lang in HAS_WALKER:
+        # WALKER-OWNED langs (cpp/python/...): byte-identical to pre-DSL behavior.
+        pend = Pending()
+        WALKERS[lang](tree.root_node, src, pend, None)
 
-    edges: list[dict] = []
-    # contains edges (parent -> child) from lexical containment.
-    for local_idx, r in enumerate(pend.rows):
-        if r.parent_local is not None:
+        rows: list[dict] = []
+        for local_idx, r in enumerate(pend.rows):
+            rows.append({
+                "_local": local_idx,
+                "file_id": file_id,
+                "name": r.name,
+                "kind": r.kind,
+                "lang": lang,
+                "start_line": r.start_line,
+                "end_line": r.end_line,
+                "start_byte": r.start_byte,
+                "end_byte": r.end_byte,
+                "parent_local": r.parent_local,
+                "attrs": {},
+                "provenance": [],
+            })
+
+        edges: list[dict] = []
+        # contains edges (parent -> child) from lexical containment.
+        for local_idx, r in enumerate(pend.rows):
+            if r.parent_local is not None:
+                edges.append({
+                    "file_id": file_id,
+                    "src_local": r.parent_local,
+                    "dst_local": local_idx,
+                    "dst_name": r.name,
+                    "relation": "contains",
+                })
+        # extends/implements edges from base clauses. dst_local stays None: these are
+        # resolved to a same-file symbol id at insert time (after any rule renames).
+        for src_local, dst_name, relation in pend.inherit:
+            simple = dst_name.split("<")[0].strip()
+            simple = simple.split("::")[-1].split(".")[-1].strip()
             edges.append({
                 "file_id": file_id,
-                "src_local": r.parent_local,
-                "dst_local": local_idx,
-                "dst_name": r.name,
-                "relation": "contains",
+                "src_local": src_local,
+                "dst_local": None,
+                "dst_name": simple or dst_name,
+                "relation": relation,
             })
-    # extends/implements edges from base clauses. dst_local stays None: these are
-    # resolved to a same-file symbol id at insert time (after any rule renames).
-    for src_local, dst_name, relation in pend.inherit:
-        simple = dst_name.split("<")[0].strip()
-        simple = simple.split("::")[-1].split(".")[-1].strip()
-        edges.append({
-            "file_id": file_id,
-            "src_local": src_local,
-            "dst_local": None,
-            "dst_name": simple or dst_name,
-            "relation": relation,
-        })
 
-    # declarative dependency edges from the language's .scm query (if any).
-    if query is not None:
-        edges.extend(_query_edges(file_id, tree, src, query, rows))
+        # declarative dependency edges from the language's .scm query (if any).
+        if query is not None:
+            edges.extend(_query_edges(file_id, tree, src, query, rows))
 
-    # optional best-effort references (off by default). Computed on raw spans;
-    # attributed to the enclosing symbol by _local index.
-    if do_refs:
-        edges.extend(_reference_edges(file_id, tree, src, pend))
+        # optional best-effort references (off by default). Computed on raw spans;
+        # attributed to the enclosing symbol by _local index. refs needs `pend`,
+        # so it stays WALKER-ONLY (the DSL branch has no pend).
+        if do_refs:
+            edges.extend(_reference_edges(file_id, tree, src, pend))
+    else:
+        # WALKER-LESS DSL (matlang/bplisp/animlang): the query OWNS the symbols.
+        rows = _query_symbols(file_id, tree, src, query, lang) if query is not None else []
+        edges = []
+        # Synthesize `contains` from parent_local (same shape the walkers use).
+        for r in rows:
+            if r["parent_local"] is not None:
+                edges.append({
+                    "file_id": file_id,
+                    "src_local": r["parent_local"],
+                    "dst_local": r["_local"],
+                    "dst_name": r["name"],
+                    "relation": "contains",
+                })
+        # @dep -> wire edges, attributed to the innermost enclosing @def-symbol.
+        if query is not None and rows:
+            edges.extend(_query_edges(file_id, tree, src, query, rows))
 
     return rows, edges
 
@@ -870,10 +1031,17 @@ def _insert_file(conn, file_id: int, lang: str, rows: list[dict],
                 (local_to_db[parent_local], local_to_db[row["_local"]]),
             )
 
-    # Name -> db id for type symbols (resolve inheritance targets in-file).
+    # Name -> db id for type symbols (resolve inheritance targets in-file). For a
+    # walker-less DSL, WIDEN this to ALL symbols so an asset wire ((connect $mul1)
+    # / (ref ...)) resolves to its in-file node symbol by name; cpp/python keep the
+    # exact class/struct/interface resolvable set (byte-identical). Names are
+    # assumed UNIQUE within a DSL file (true for matlang $ids); duplicate names in
+    # animlang resolve first-wins by (start_byte,end_byte) order — deterministic
+    # because _query_symbols emits rows in a total sort order.
+    is_dsl = lang not in HAS_WALKER
     name_to_id: dict[str, int] = {}
     for row in rows:
-        if row.get("kind") in ("class", "struct", "interface"):
+        if is_dsl or row.get("kind") in ("class", "struct", "interface"):
             name_to_id.setdefault(row.get("name"), local_to_db[row["_local"]])
 
     n_edges = 0

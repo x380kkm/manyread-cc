@@ -14,6 +14,36 @@ csharp, glsl, java (`.java`), gdscript (`.gd`) — all grammars come from the si
 HLSL/shader exts `.hlsl .cginc .usf .ush .compute .fx .shader` route through the cpp grammar as
 best-effort C-like parsing.
 
+### UE asset DSLs (S-expression asset graphs)
+
+Three Unreal-Engine asset DSLs — emitted as S-expression text by external UE-editor
+exporter plugins — are read as symbol+edge graphs so `/mr-deps` and `/mr-boundary` can
+analyze the asset node graph (the "连连看" wiring):
+
+- **MatLang** (`.matlang`) — a UMaterial DAG. `(TYPE $id …)` → a `node` symbol named `$id`
+  with `attrs.node_type=TYPE`; `(material "M_X" … (expressions …) (outputs …))` → a
+  `material` + `outputs` symbol; `(connect $id idx)` → a `uses_type` wire edge that
+  resolves in-file by `$id` to the node symbol (so the material DAG re-knits).
+- **BlueprintLisp** (`.bplisp`) — a Blueprint event/function graph tree. `(event|func|…)`
+  → `graph`; control/stmt heads (`let`/`set`/`branch`/…) → `node`; capitalized
+  UFunction heads → `call`. Exec/data flow comes from the synthesized `contains` tree;
+  `let`/`set` emit a `binds` edge, `call-parent`/`call-macro` a `calls`, `cast` a `casts`.
+- **AnimLang** (`.animlang`) — an AnimBP pose tree + cached-pose DAG. Pose/state heads →
+  `node` (variable type-tags, operators, structural heads are excluded); the pose tree
+  comes from `contains`. Exporter forms `(define X …)` → `binding` and `(ref "Title")` →
+  a `ref` wire (cross-graph, usually unresolved). NOTE: the `(define …)`/`(ref …)` forms
+  are exporter-only and are not present in the bundled samples — best-effort, re-verify
+  against a real exporter dump.
+
+All three share the `scheme` grammar and are fully QUERY-DRIVEN: symbols + edges come
+from `scripts/queries/{matlang,bplisp,animlang}.scm` (a project override at
+`<root>/.manyread/queries/<lang>.scm` wins). A `@def.<kind>` capture → a symbol; a
+`@dep.<relation>` capture → an edge from the enclosing symbol. Walker-backed langs
+(cpp/python/…) are unaffected — their `.scm` stays edge-only. Only the matlang `uses_type`
+wire is in the manyscan boundary REL gate; bplisp/animlang relations (binds/calls/casts/
+ref) are asset-graph detail (query the `edges` table directly). For a clean boundary view,
+index a DSL in its OWN store (a mixed C++ + matlang store blends `uses_type` semantics).
+
 ## Call
 
 ```

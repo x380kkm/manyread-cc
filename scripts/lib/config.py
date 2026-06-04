@@ -47,6 +47,14 @@ LANG_EXTS: dict[str, list[str]] = {
     "gdscript": [".gd"],
     "shader": [".hlsl", ".usf", ".ush"],
     "glsl": [".glsl", ".vert", ".frag", ".comp", ".geom", ".tesc", ".tese"],
+    # UE asset DSLs (S-expression text from external editor plugins). Listing the
+    # exts here makes index_build's DEFAULT_EXTS fallback + default_exts_for()
+    # pick them up so `--langs matlang` / a bare --root index actually ingests
+    # the .matlang/.bplisp/.animlang files (enrich then reads them via the scheme
+    # grammar + the per-DSL .scm query).
+    "matlang": [".matlang"],
+    "bplisp": [".bplisp"],
+    "animlang": [".animlang"],
     "docs": [".md", ".json", ".ini"],
 }
 
