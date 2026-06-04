@@ -68,7 +68,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib import config, db
 import rules  # sibling module: pure override-rules engine + loader (spec section 16)
 
-from tree_sitter import Language, Node, Parser
+from tree_sitter import Language, Node, Parser, Query, QueryCursor
 from tree_sitter_language_pack import get_language
 
 # --- Language registry -------------------------------------------------------
@@ -637,8 +637,88 @@ WALKERS = {
 
 
 # --- raw extraction -> SHARED CONTRACT dicts ---------------------------------
+# --- declarative dependency-edge queries (project-customizable) --------------
+# Symbols come from the walkers above; dependency EDGES can be declared per language
+# in a tree-sitter query (.scm): every `@dep.<relation>` capture becomes an edge from
+# the enclosing symbol to the captured name (relation = the suffix). Built-in presets
+# live in scripts/queries/<lang>.scm; a project overrides one at
+# <root>/.manyread/queries/<lang>.scm (full replace). A language with no .scm keeps
+# walker-only edges (e.g. C++), so this is purely additive + backward compatible.
+_QUERY_DIR = Path(__file__).resolve().parent / "queries"
+
+
+def _load_query_specs(root) -> dict[str, str]:
+    """lang -> .scm text: built-in presets, then project overrides (which win)."""
+    specs: dict[str, str] = {}
+    if _QUERY_DIR.is_dir():
+        for p in sorted(_QUERY_DIR.glob("*.scm")):
+            try:
+                specs[p.stem] = p.read_text(encoding="utf-8")
+            except OSError:
+                pass
+    if root is not None:
+        odir = Path(root) / ".manyread" / "queries"
+        if odir.is_dir():
+            for p in sorted(odir.glob("*.scm")):
+                try:
+                    specs[p.stem] = p.read_text(encoding="utf-8")
+                except OSError:
+                    pass
+    return specs
+
+
+def _simplify_dep(name: str) -> str:
+    """Reduce a captured type/name to a bare identifier for by-name resolution
+    (mirrors the inherit simplification): union -> first, strip generics, last segment."""
+    s = name.split("|")[0].strip()
+    s = s.split("[")[0].split("<")[0].strip()
+    return s.split("::")[-1].split(".")[-1].strip()
+
+
+def _query_edges(file_id: int, tree, src: bytes, query, rows: list[dict]) -> list[dict]:
+    """Edges from `@dep.<relation>` captures, each attributed to the enclosing symbol
+    (smallest row span containing the capture). Sorted + deduped => deterministic."""
+    if not rows:
+        return []
+    spans = sorted(((r["start_byte"], r["end_byte"], r["_local"]) for r in rows),
+                   key=lambda s: (s[0], -s[1]))
+
+    def enclosing(byte: int):
+        best = None
+        for s, e, sid in spans:
+            if s <= byte < e:
+                best = sid
+        return best
+
+    try:
+        caps = QueryCursor(query).captures(tree.root_node)
+    except Exception:  # noqa: BLE001 - a bad query must never abort enrichment
+        return []
+    out: list[dict] = []
+    seen: set[tuple] = set()
+    for cap_name in sorted(caps):
+        if not cap_name.startswith("dep."):
+            continue
+        relation = cap_name[4:]
+        for node in caps[cap_name]:
+            src_local = enclosing(node.start_byte)
+            if src_local is None:
+                continue
+            dst = _simplify_dep(_text(node, src))
+            if not dst:
+                continue
+            key = (src_local, relation, dst)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"file_id": file_id, "src_local": src_local,
+                        "dst_local": None, "dst_name": dst, "relation": relation})
+    out.sort(key=lambda e: (e["src_local"], e["relation"], e["dst_name"]))
+    return out
+
+
 def _extract_file(file_id: int, content: str, lang: str, parser: Parser,
-                  do_refs: bool):
+                  do_refs: bool, query=None):
     """Parse one file into the SHARED-CONTRACT dict shape (rows + edges).
 
     Returns (rows, edges) where rows is a list of symbol dicts keyed by a per-file
@@ -690,6 +770,10 @@ def _extract_file(file_id: int, content: str, lang: str, parser: Parser,
             "dst_name": simple or dst_name,
             "relation": relation,
         })
+
+    # declarative dependency edges from the language's .scm query (if any).
+    if query is not None:
+        edges.extend(_query_edges(file_id, tree, src, query, rows))
 
     # optional best-effort references (off by default). Computed on raw spans;
     # attributed to the enclosing symbol by _local index.
@@ -907,6 +991,9 @@ def enrich(cfg: config.ProjectConfig, langs: list[str], do_refs: bool,
         n_errors = 0
         diff_lines: list[str] = []
 
+        query_specs = _load_query_specs(getattr(cfg, "root", None))
+        query_objs: dict[str, object] = {}            # lang -> compiled Query (or None)
+
         rows = conn.execute("SELECT id, path, ext, content FROM files").fetchall()
         for file_id, path, ext, content in rows:
             lang = LANG_FOR_EXT.get((ext or "").lower())
@@ -923,8 +1010,15 @@ def enrich(cfg: config.ProjectConfig, langs: list[str], do_refs: bool,
             parser = parsers.get(lang)
             if parser is None:
                 continue
+            if lang in query_specs and lang not in query_objs:   # compile the .scm once per lang
+                try:
+                    query_objs[lang] = Query(_load_language(lang), query_specs[lang])
+                except Exception as exc:  # noqa: BLE001 - a bad query must not abort enrichment
+                    print(f"warning: bad dependency query for {lang}: {exc}", file=sys.stderr)
+                    query_objs[lang] = None
             try:
-                raw_rows, raw_edges = _extract_file(file_id, content, lang, parser, do_refs)
+                raw_rows, raw_edges = _extract_file(file_id, content, lang, parser, do_refs,
+                                                    query_objs.get(lang))
                 # Override-rules transform (pure; identity when merged_rules == []).
                 new_rows, new_edges, _prov = rules.apply_rules(
                     raw_rows, raw_edges, {file_id: content}, merged_rules,

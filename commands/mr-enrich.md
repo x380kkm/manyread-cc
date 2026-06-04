@@ -6,7 +6,8 @@ description: Run L2 tree-sitter enrichment — fill the symbols and edges tables
 # /mr-enrich — L2 tree-sitter enrichment
 
 Parse the indexed `files` with tree-sitter and fill the `symbols` (with precise line/byte
-spans + `parent_id` containment) and `edges` (`contains`, `extends`/`implements`, optional
+spans + `parent_id` containment) and `edges` (`contains`, `extends`/`implements`, plus
+per-language **dependency-edge queries** — `calls`/`uses_type`/`imports` etc. — and optional
 best-effort `references`) tables. Languages: cpp, python, javascript, typescript (`.ts`/`.tsx`),
 csharp, glsl, java (`.java`), gdscript (`.gd`) — all grammars come from the single
 `tree-sitter-language-pack` wheel (300+ languages; adding more is just an ext + walker).
