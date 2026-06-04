@@ -239,5 +239,21 @@ def resolve_edge_targets(store: "stores.Store", dst_name: str,
 
     manyread resolves extends/implements only within one file; this lifts it to the
     whole store by exact name. ``len(result)`` is the ambiguity (0 = external/absent).
+
+    DEFINITION-PREFERENCE: when >1 candidate and at least one is a body-bearing
+    DEFINITION, the declaration-sized FORWARD-DECLARATIONS are dropped. A C++ header
+    forward-declares a class in many files (``class UMaterial;`` -> a symbol whose span
+    is ~len("class <name>")), which would otherwise mark a sound single definition as
+    ``ambiguous``. A forward declaration is never the definition; if ONLY declarations
+    exist (no definition under that name) all are kept (honest). Mirrors link_source.
     """
-    return store.symbols_named(dst_name, kinds=kinds)
+    cands = store.symbols_named(dst_name, kinds=kinds)
+    if len(cands) <= 1:
+        return cands
+    ids = [int(c["id"]) for c in cands]
+    placeholders = ",".join("?" * len(ids))
+    span_of = {r["id"]: r["end_byte"] - r["start_byte"] for r in store.conn.execute(
+        f"SELECT id, start_byte, end_byte FROM symbols WHERE id IN ({placeholders})", ids)}
+    definitional = len(dst_name) + 16
+    defs = [c for c in cands if span_of.get(int(c["id"]), 0) > definitional]
+    return defs if defs else cands

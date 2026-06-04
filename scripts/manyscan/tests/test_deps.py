@@ -63,3 +63,55 @@ def test_resolve_edge_targets_global(synth_store):
         assert len(hits) == 1 and hits[0]["path"].endswith("c.py")
         # 'Base' is referenced (extends) but never defined -> external, zero candidates
         assert deps.resolve_edge_targets(st, "Base") == []
+
+
+# --- definition-preference: forward declarations dropped when a definition exists ---
+def _store_with_spans(tmp_path, syms):
+    """syms: [(id, path, name, start_byte, end_byte)] — all kind=class, lang cpp."""
+    _, mr_db = stores.manyread_lib()
+    store = tmp_path / "manyread"
+    store.mkdir(parents=True)
+    db_path = store / "source.db"
+    conn = mr_db.connect(db_path)
+    mr_db.init_schema(conn)
+    files: dict[str, int] = {}
+    for _sid, path, _name, _sb, _eb in syms:
+        files.setdefault(path, len(files) + 1)
+    for path, fid in files.items():
+        conn.execute(
+            "INSERT INTO files(id,path,ext,size,mtime,content) VALUES(?,?,'.h',0,0,'')",
+            (fid, path),
+        )
+    for sid, path, name, sb, eb in syms:
+        conn.execute(
+            "INSERT INTO symbols(id,file_id,name,kind,lang,start_line,end_line,"
+            "start_byte,end_byte,parent_id) VALUES(?,?,?, 'class','cpp',1,1,?,?,NULL)",
+            (sid, files[path], name, sb, eb),
+        )
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+def test_resolve_prefers_definition_over_forward_declarations(tmp_path):
+    # one body-bearing definition (large span) + three `class UMaterial;` fwd-decls
+    db = _store_with_spans(tmp_path, [
+        (1, "engine/Mat.h", "UMaterial", 0, 2000),
+        (2, "a/A.h", "UMaterial", 0, 15),
+        (3, "b/B.h", "UMaterial", 0, 15),
+        (4, "c/C.h", "UMaterial", 0, 15),
+    ])
+    with stores.Store(db) as st:
+        cands = deps.resolve_edge_targets(st, "UMaterial")
+    assert len(cands) == 1 and cands[0]["path"] == "engine/Mat.h"
+
+
+def test_resolve_keeps_all_when_only_forward_declarations(tmp_path):
+    # no definition under the name -> honest, keep all (stays ambiguous)
+    db = _store_with_spans(tmp_path, [
+        (1, "a/A.h", "UThing", 0, 12),
+        (2, "b/B.h", "UThing", 0, 12),
+    ])
+    with stores.Store(db) as st:
+        cands = deps.resolve_edge_targets(st, "UThing")
+    assert len(cands) == 2
