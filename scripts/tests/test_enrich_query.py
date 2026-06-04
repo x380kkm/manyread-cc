@@ -386,3 +386,274 @@ def test_python_walker_byte_identical():
     rows, edges = _walker_extract(_PY_GOLDEN_SRC, "python")
     assert rows == _PY_GOLDEN_ROWS
     assert edges == _PY_GOLDEN_EDGES
+
+
+# ===========================================================================
+# javascript / typescript / tsx / csharp dependency-edge presets.
+# Symbols come from the (already-wired) tree-sitter WALKERS for these langs;
+# the new scripts/queries/{javascript,typescript,tsx,csharp}.scm add EDGE-only
+# @dep.calls / @dep.imports / @dep.uses_type captures. Same in-memory harness
+# as the python case: _extract_file with the built-in preset, no DB.
+# ===========================================================================
+def _lang_edges(src: str, lang: str):
+    """(rows, edges) for a walker lang using its built-in .scm preset."""
+    L = get_language(E._PACK_NAME[lang])
+    specs = E._load_query_specs(None)
+    assert lang in specs, f"missing built-in preset for {lang}"
+    return E._extract_file(1, src, lang, Parser(L), False, Query(L, specs[lang]))
+
+
+def _rel_pairs(rows, edges, relations):
+    """{(enclosing_symbol_name, relation, dst_name)} restricted to `relations`."""
+    by_local = {r["_local"]: r["name"] for r in rows}
+    return {(by_local[e["src_local"]], e["relation"], e["dst_name"])
+            for e in edges if e["relation"] in relations}
+
+
+# --- javascript -------------------------------------------------------------
+_JS_SRC = (
+    'import topdep from "./top.js";\n'           # module-scope: dropped (no enclosing sym)
+    "function loader() {\n"
+    '    const fs = require("node:fs");\n'        # require -> calls 'require' AND imports 'node:fs'
+    "    helper(loader);\n"                       # free call
+    "    return obj.read(fs);\n"                  # member call -> 'read'
+    "}\n"
+    "class Widget extends Base {\n"               # extends comes from the WALKER, not the .scm
+    "    render() { this.draw(); helper(); }\n"
+    "}\n"
+)
+
+
+def test_javascript_edges_end_to_end():
+    rows, edges = _lang_edges(_JS_SRC, "javascript")
+    calls_imports = _rel_pairs(rows, edges, {"calls", "imports"})
+    # free + member + the require() call itself attach to loader; node:fs is the import.
+    assert ("loader", "calls", "helper") in calls_imports
+    assert ("loader", "calls", "read") in calls_imports
+    assert ("loader", "calls", "require") in calls_imports      # require IS a real call
+    assert ("loader", "imports", "node:fs") in calls_imports    # ...and an import (no collision)
+    # method body calls attach to the method.
+    assert ("render", "calls", "draw") in calls_imports
+    assert ("render", "calls", "helper") in calls_imports
+    # JS is untyped: the preset declares no uses_type at all.
+    assert not any(e["relation"] == "uses_type" for e in edges)
+    # inheritance: exactly one extends, emitted by the WALKER (no .scm double-count).
+    assert sum(1 for e in edges if e["relation"] == "extends") == 1
+    # module-scope `import ... from` has no enclosing symbol -> dropped.
+    assert all(e["dst_name"] != "top" for e in edges if e["relation"] == "imports")
+
+
+def test_javascript_module_scope_import_dropped():
+    # a top-of-file import with no enclosing symbol produces zero edges (like python).
+    _rows, edges = _lang_edges('import x from "pkg";\n', "javascript")
+    assert not edges
+
+
+# --- typescript / tsx -------------------------------------------------------
+_TS_SRC = (
+    "class Circle extends Base implements Shape {\n"   # extends/implements -> WALKER
+    "    area(): Box {\n"                               # return type -> uses_type Box
+    '        const legacy = require("legacy");\n'       # require -> imports 'legacy', NOT a call
+    "        return helper(this.svc.doThing());\n"      # calls helper + doThing (final prop only)
+    "    }\n"
+    "}\n"
+    "function compute(a: Vec3): Result {\n"             # param Vec3 + return Result -> uses_type
+    "    const col: Color = make(a);\n"                 # var type Color -> uses_type; make -> calls
+    "    return new Widget();\n"                        # new T -> uses_type Widget
+    "}\n"
+)
+_TS_EXPECTED_CALLS_IMPORTS = {
+    ("area", "calls", "helper"),
+    ("area", "calls", "doThing"),
+    ("area", "imports", "legacy"),
+    ("compute", "calls", "make"),
+}
+_TS_EXPECTED_TYPES = {
+    ("area", "uses_type", "Box"),
+    ("compute", "uses_type", "Vec3"),
+    ("compute", "uses_type", "Result"),
+    ("compute", "uses_type", "Color"),
+    ("compute", "uses_type", "Widget"),
+}
+
+
+@pytest.mark.parametrize("lang", ["typescript", "tsx"])
+def test_typescript_edges_end_to_end(lang):
+    # the tsx grammar shares typescript's node/field names; the tsx.scm preset is a
+    # mirror, so .ts and .tsx must yield the SAME dep edges for this snippet.
+    rows, edges = _lang_edges(_TS_SRC, lang)
+    assert _TS_EXPECTED_CALLS_IMPORTS <= _rel_pairs(rows, edges, {"calls", "imports"})
+    assert _TS_EXPECTED_TYPES <= _rel_pairs(rows, edges, {"uses_type"})
+    # require() is captured as an import, NOT a call (the #not-eq? predicate excludes it).
+    assert ("area", "calls", "require") not in _rel_pairs(rows, edges, {"calls"})
+    # extends + implements come from the WALKER, exactly once each (no .scm double-count).
+    assert sum(1 for e in edges if e["relation"] == "extends") == 1
+    assert sum(1 for e in edges if e["relation"] == "implements") == 1
+
+
+def test_typescript_predicate_distinguishes_require():
+    # a non-`require` single-string call is a normal call, not an import.
+    src = "function f() {\n  const a = notrequire('x');\n  const b = require('mod');\n}\n"
+    rows, edges = _lang_edges(src, "typescript")
+    pairs = _rel_pairs(rows, edges, {"calls", "imports"})
+    assert ("f", "calls", "notrequire") in pairs
+    assert ("f", "imports", "mod") in pairs
+    assert ("f", "calls", "require") not in pairs       # require excluded from calls
+    assert ("f", "imports", "x") not in pairs           # notrequire is NOT an import
+
+
+# --- csharp -----------------------------------------------------------------
+_CS_SRC = (
+    "using System;\n"                                   # module-scope using -> dropped (no sym)
+    "using Alias = Some.Long.Name;\n"                   # alias name must NOT be an import
+    "namespace MyApp {\n"
+    "  public class Widget : BaseWidget, IDisposable {\n"   # base_list -> WALKER extends/implements
+    "    private Helper _helper;\n"                      # field type -> uses_type (encloser: class)
+    "    public Result DoWork(Config cfg) {\n"           # param + return type -> uses_type
+    "      var sb = new StringBuilder();\n"              # object-creation type -> uses_type
+    '      Console.WriteLine("hi");\n'                   # member call -> WriteLine
+    "      _helper.Process(cfg);\n"                      # member call -> Process
+    "      return new Result(Compute());\n"              # free call Compute + new Result
+    "    }\n"
+    "    private int Compute() => 2;\n"
+    "  }\n"
+    "}\n"
+)
+
+
+def test_csharp_edges_end_to_end():
+    rows, edges = _lang_edges(_CS_SRC, "csharp")
+    calls = _rel_pairs(rows, edges, {"calls"})
+    types = _rel_pairs(rows, edges, {"uses_type"})
+    assert {("DoWork", "calls", "WriteLine"),
+            ("DoWork", "calls", "Process"),
+            ("DoWork", "calls", "Compute")} <= calls
+    # field type attaches to the enclosing CLASS; param/return/new attach to the method.
+    assert ("Widget", "uses_type", "Helper") in types
+    assert {("DoWork", "uses_type", "Config"),
+            ("DoWork", "uses_type", "Result"),
+            ("DoWork", "uses_type", "StringBuilder")} <= types
+    # extends + implements from the WALKER (base_list), exactly once each.
+    assert sum(1 for e in edges if e["relation"] == "extends") == 1
+    assert sum(1 for e in edges if e["relation"] == "implements") == 1
+    # the `var` local is implicit_type -> NOT a uses_type dep; primitives skipped too.
+    assert all(e["dst_name"] not in ("var", "int") for e in edges
+               if e["relation"] == "uses_type")
+
+
+def test_csharp_aliased_using_excludes_alias_name():
+    # `using Alias = Some.Long.Name;` must capture the SOURCE, never the alias 'Alias'.
+    # Top-level usings have no enclosing symbol (dropped at edge time), so assert at the
+    # raw-capture level that the !name anchor never grabs the alias identifier.
+    L = get_language(E._PACK_NAME["csharp"])
+    specs = E._load_query_specs(None)
+    q = Query(L, specs["csharp"])
+    from tree_sitter import QueryCursor
+    tree = Parser(L).parse("using Alias = Some.Long.Name;\nusing System;\n".encode("utf-8"))
+    caps = QueryCursor(q).captures(tree.root_node)
+    imports = {n.text.decode("utf-8") for n in caps.get("dep.imports", [])}
+    assert "Alias" not in imports                       # the !name anchor excludes it
+    assert "System" in imports
+    assert any("Some.Long.Name" in s for s in imports)  # the aliased source IS captured
+
+
+def test_js_ts_csharp_deterministic():
+    for src, lang in ((_JS_SRC, "javascript"), (_TS_SRC, "typescript"),
+                      (_TS_SRC, "tsx"), (_CS_SRC, "csharp")):
+        r1, e1 = _lang_edges(src, lang)
+        r2, e2 = _lang_edges(src, lang)
+        assert r1 == r2 and e1 == e2
+
+
+# ===========================================================================
+# REGRESSION: a walker lang with NO .scm preset is unaffected by this layer —
+# it keeps walker-only edges (contains/extends), zero @dep edges. `java` has a
+# walker (symbols + extends) but ships no java.scm, so it is the perfect probe.
+# ===========================================================================
+def test_walker_lang_without_scm_has_no_dep_edges():
+    assert "java" not in E._load_query_specs(None)       # no java.scm preset exists
+    src = ("class A extends B {\n"
+           "  void m(C c) { helper(); }\n"
+           "}\n")
+    rows, edges = _walker_extract(src, "java")            # passes query=None (no preset)
+    rels = {e["relation"] for e in edges}
+    # walker still emits structure...
+    assert "contains" in rels and "extends" in rels
+    # ...but the declarative dep layer added NOTHING (no calls/imports/uses_type).
+    assert not (rels & {"calls", "imports", "uses_type"})
+    assert any(r["name"] == "A" and r["kind"] == "class" for r in rows)
+
+
+# ===========================================================================
+# REAL-FIXTURE SMOKE: build a tiny throwaway repo per lang, index + enrich into
+# an ISOLATED store, and assert the dep edges land in the DB. MANYREAD_HOME is
+# pointed at a temp dir so the hub registry write NEVER touches the user hub
+# (~/.manyread/stores.json); everything is removed in a finally. This exercises
+# the full index_build -> enrich_treesitter -> edges-table path, not just the
+# in-memory extractor.
+# ===========================================================================
+def test_real_fixture_smoke_js_csharp_isolated(tmp_path, monkeypatch):
+    import sqlite3
+    import index_build
+    from lib import config
+
+    home = tmp_path / "home"
+    repo = tmp_path / "repo"
+    home.mkdir()
+    repo.mkdir()
+    # Isolate the hub + any ambient store discovery so we never touch the user hub.
+    monkeypatch.setenv("MANYREAD_HOME", str(home))
+    monkeypatch.delenv("MANYREAD_STORE", raising=False)
+
+    (repo / "a.js").write_text(
+        "function loader() {\n"
+        '    const fs = require("node:fs");\n'
+        "    helper();\n"
+        "    return fs.readFileSync(loader);\n"
+        "}\n"
+        "class Widget extends Base { render() { this.draw(); } }\n",
+        encoding="utf-8",
+    )
+    (repo / "b.cs").write_text(
+        "using System;\n"
+        "namespace N {\n"
+        "  class C {\n"
+        "    public Result Do(Config c) {\n"
+        "      var s = new StringBuilder();\n"
+        '      Console.WriteLine("x");\n'
+        "      return new Result();\n"
+        "    }\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    rc = index_build.main(["--init", "--store-at", str(repo), "--root", str(repo),
+                           "--langs", "javascript,csharp", "--exts", ".js,.cs"])
+    assert rc == 0
+    store = repo / "manyread"
+    rc = E.main(["--store", str(store), "--root", str(repo)])
+    assert rc == 0
+
+    cfg = config.resolve_project(root=str(repo), store=str(store))
+    conn = sqlite3.connect(cfg.db_path)
+    try:
+        got = {(name, rel, dst) for name, rel, dst in conn.execute(
+            "SELECT sy.name, e.relation, e.dst_name FROM edges e "
+            "JOIN symbols sy ON sy.id = e.src_symbol_id "
+            "WHERE e.relation IN ('calls','imports','uses_type')")}
+    finally:
+        conn.close()
+
+    # JavaScript: require() inside a function attaches as both a call + an import.
+    assert ("loader", "calls", "helper") in got
+    assert ("loader", "calls", "readFileSync") in got
+    assert ("loader", "imports", "node:fs") in got
+    assert ("render", "calls", "draw") in got
+    # C#: calls + type usages land in the edges table.
+    assert ("Do", "calls", "WriteLine") in got
+    assert {("Do", "uses_type", "Config"), ("Do", "uses_type", "Result"),
+            ("Do", "uses_type", "StringBuilder")} <= got
+
+    # Hub isolation: the registry write went to the temp MANYREAD_HOME, not the user's.
+    assert (home / "stores.json").exists()
