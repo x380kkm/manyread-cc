@@ -1,7 +1,8 @@
 ;; BlueprintLisp (Blueprint EventGraph/FunctionGraph -> S-expr) — tree-shaped;
 ;; there is NO `connect` form, so exec/data flow comes FREE from the synthesized
 ;; `contains` (byte-range parenting). Validated on Tests/Regression/
-;; villager_select_before_print.bplisp: def.graph=1, def.node=4, def.call=4,
+;; villager_select_before_print.bplisp: def.graph=1, def.node=4, def.call=3
+;; (PrintString/SpawnSystemAttached/K2_SetTimer — the `:param` type is NOT a call),
 ;; dep.binds=4 (Selected, returnvalue, NS_Path, returnvalue).
 
 ;; graph roots -> kind=graph
@@ -10,10 +11,12 @@
 ;; control / statement nodes -> kind=node
 (list . (symbol) @def.node (#match? @def.node "^(let|set|seq|branch|foreach|call|delay|cast|return|exit|switch|switch-int|switch-enum|switch-string|call-parent|call-macro|vec|rot|make-array|get-array-item|break-struct)$"))
 
-;; capitalized head = a UFunction / pure-call node -> kind=call (exclude the
-;; `None` placeholder). KNOWN benign extra: `:param (Selected Actor)` makes
-;; `Selected` a spurious def.call (head of a param sub-list); accepted as noise.
-(list . (symbol) @def.call (#match? @def.call "^[A-Z]") (#not-match? @def.call "^None$"))
+;; A UFunction / pure-call node = a capitalized head IMMEDIATELY followed by a `:pin`
+;; keyword (exclude the `None` placeholder). The `. (symbol) @_pin ^:` anchor excludes
+;; `:param (Name Type)` sub-lists — their 2nd child is a Type symbol, not a `:pin` — so
+;; the param type is no longer mis-captured as a call.
+(list . (symbol) @def.call . (symbol) @_pin
+  (#match? @def.call "^[A-Z]") (#not-match? @def.call "^None$") (#match? @_pin "^:"))
 
 ;; let/set BIND a name (the IMMEDIATE 2nd child) -> relation binds. The strict
 ;; anchor `@_h . name` is REQUIRED (without it the trailing :id keyword also

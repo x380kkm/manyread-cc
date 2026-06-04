@@ -228,8 +228,10 @@ def test_bplisp_symbols_and_binds():
     nodes = sorted(r["name"] for r in rows if r["kind"] == "node")
     assert nodes == ["let", "let", "set", "set"]
     calls = sorted(r["name"] for r in rows if r["kind"] == "call")
-    # PrintString/SpawnSystemAttached/K2_SetTimer + the benign param-head 'Selected'.
-    assert calls == ["K2_SetTimer", "PrintString", "Selected", "SpawnSystemAttached"]
+    # only real UFunction calls — the `:param (Selected Actor)` type is NO LONGER
+    # mis-captured as a call (the call rule now requires a :pin as the 2nd child).
+    assert calls == ["K2_SetTimer", "PrintString", "SpawnSystemAttached"]
+    assert "Selected" not in calls  # regression guard: param type is not a call
     # binds dst names (the let/set bound vars). returnvalue/NS_Path have no in-file
     # symbol of that name, so they stay UNRESOLVED (dst_local None at extract time);
     # only matlang $id wires resolve in-file.
@@ -241,7 +243,7 @@ def test_bplisp_symbols_and_binds():
     # nest one level deeper under their `let` (innermost enclosing @def).
     contained_under_graph = {e["dst_name"] for e in edges
                              if e["relation"] == "contains" and e["src_local"] == g_local}
-    assert {"PrintString", "set", "let", "Selected"} <= contained_under_graph
+    assert {"PrintString", "set", "let"} <= contained_under_graph
     # the pure-call nodes under a `let` are parented to that let, not the graph.
     let_locals = {r["_local"] for r in rows if r["name"] == "let"}
     nested_calls = {e["dst_name"] for e in edges
