@@ -26,6 +26,7 @@ def register_ingest(reg) -> None:
     # 语义 schema 目录 + 命令文档
     reg.add_schema_dir(_HERE / "schemas")
     reg.add_command(_HERE / "commands" / "mr-validate.md")
+    reg.add_command(_HERE / "commands" / "mr-equiv.md")
     reg.add_command(_HERE / "commands" / "mr-link-source.md")
 
 

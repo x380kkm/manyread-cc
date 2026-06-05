@@ -13,4 +13,9 @@ UE 资产 DSL（matlang / bplisp / animlang）专属的 skill 片段。仅当 UE
 ## Commands（UE 资产 DSL）
 
 - `/mr-validate` — pre-flight structural + schema check of a matlang/bplisp/animlang file.
+- `/mr-equiv` — canonical S-expr equivalence check of a regenerated/edited DSL file vs a
+  reference. Authoring guardrail: run `/mr-validate --schema` first (structural + schema),
+  then `/mr-equiv` to confirm the validated candidate is semantically equivalent to the
+  reference (parse-tree canonicalization catches what the enrich-graph diff cannot — a
+  matlang `:a`/`:b` swap, a literal value change).
 - `/mr-link-source` — asset node → the C++ class that implements it.
