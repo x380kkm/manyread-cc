@@ -164,6 +164,76 @@ def cmd_boundary(args) -> int:
 #### /cmd_boundary ####
 
 
+#### 从 --modules / --module / manyread.json 解析出 N 路模块规格 [@380kkm 2026-06-05] ####
+def _resolve_module_spec(args, info):
+    """优先级：--modules 文件（含 --module 内联合并）> manyread.json['modules']（含内联合并）。
+    任何来源都没有时返回 None（CLI 据此退出 2）。内联 ``--module NAME=PREFIX[,...]`` 解析出错
+    抛 ValueError（由 main 统一处理）。
+    """
+    inline = [boundary.parse_inline_module(s) for s in (args.module or [])]
+    mr_cfg = stores.manyread_lib()[0]
+    doc = mr_cfg.load_modules(info.store, Path(args.modules) if args.modules else None)
+    if doc is None and not inline:
+        return None
+    return boundary.make_module_spec(doc, inline=inline, fallback=args.fallback)
+
+
+#### modules 子命令：构建并渲染符号级 N 路模块分区 [@380kkm 2026-06-05] ####
+def cmd_modules(args) -> int:
+    info = _store_info(args)
+    spec = _resolve_module_spec(args, info)
+    if spec is None:
+        print("error: no module spec given. Provide --modules <file>, one or more "
+              "--module NAME=PREFIX[,PREFIX...], or a manyread.json['modules'] block.",
+              file=sys.stderr)
+        return 2
+    with stores.Store(info.db_path) as st:
+        budget = Budget(max_nodes=args.max_nodes, max_depth=2, direction="out")
+        g = boundary.build_modules(st, spec, budget, alias=info.alias, dep_depth=args.dep_depth)
+        if not g.nodes:
+            print("warning: no symbols under any declared module prefix", file=sys.stderr)
+        if args.format == "html":
+            band_of, bands_meta, modules_list, zmatrix = _module_render_data(g, spec)
+            _emit(render.to_html(g, band_of=band_of, bands_meta=bands_meta,
+                                 module_mode=True, modules_list=modules_list,
+                                 zone_matrix=zmatrix))
+        elif args.format in ("json", "text"):
+            data = render.modules_to_dict(g, spec)
+            _emit(json.dumps(data, ensure_ascii=False, indent=2))
+        else:
+            _emit(render.render(g, args.format))
+    return 0
+#### /cmd_modules ####
+
+
+#### 为 N 路 html 渲染算出 band / bands_meta / 模块列表 / 区矩阵 [@380kkm 2026-06-05] ####
+def _module_render_data(g, spec):
+    band_of, bands_meta = _module_bands(g, spec)
+    modules_list = [z.name for z in spec.zones] + [spec.fallback]
+    mat = boundary.zone_matrix(g)
+    # 区矩阵的可序列化网格：每对 {src,dst,edge_count}
+    zmatrix = [{"src": a, "dst": b, "edge_count": s.edge_count, "kind": "intra" if a == b else "cross"}
+               for (a, b), s in sorted(mat.items())]
+    return band_of, bands_meta, modules_list, zmatrix
+#### /N 路 html 渲染数据 ####
+
+
+#### 按声明序（External 末列）把每个节点分到一个模块 band [@380kkm 2026-06-05] ####
+def _module_bands(g, spec):
+    order = [z.name for z in spec.zones] + [spec.fallback, "(ambiguous)"]
+    band_index = {name: i for i, name in enumerate(order)}
+    band_of = {nid: band_index.get(g.nodes[nid].attrs.get("module"), len(order) - 1)
+               for nid in sorted(g.nodes)}
+    present = sorted({band_of[nid] for nid in band_of})
+    # 仅保留出现的 band，重新致密化下标，使列连续
+    dense = {b: i for i, b in enumerate(present)}
+    band_of = {nid: dense[b] for nid, b in band_of.items()}
+    label_of = {dense[b]: order[b] for b in present}
+    bands_meta = [{"band": i, "label": label_of[i]} for i in sorted(label_of)]
+    return band_of, bands_meta
+#### /模块 band 分配 ####
+
+
 #### 为 scan/analyze/export 子命令注册公共参数 [@380kkm 2026-06-05] ####
 def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("seed", help="symbol / file path / dir / keyword to scan from")
@@ -233,6 +303,23 @@ def main(argv: list[str] | None = None) -> int:
                          ".cpp/.h coalesce) | dir (module=parent dir). Default ALL modules "
                          "collapsed; expand per-module from the side panel MODULES section.")
     pb.set_defaults(func=cmd_boundary)
+
+    md = sub.add_parser("modules", help="symbol-level N-way module zoning (decoupling views)")
+    md.add_argument("--store", default=None, help="store dir, source.db path, or hub alias")
+    md.add_argument("--alias", default=None, help="hub alias (synonym for --store)")
+    md.add_argument("--root", default=None, help="source root to discover the store from")
+    md.add_argument("--modules", default=None,
+                    help="module spec file ({version,fallback,zones} or a {modules:{...}} "
+                         "wrapper). Default: auto-discover manyread.json['modules'].")
+    md.add_argument("--module", action="append", default=[],
+                    help="inline zone NAME=PREFIX[,PREFIX...] (repeatable; merged onto file spec)")
+    md.add_argument("--fallback", default="External",
+                    help="zone name for paths matching no module (default: External)")
+    md.add_argument("--max-nodes", dest="max_nodes", type=int, default=4000)
+    md.add_argument("--dep-depth", dest="dep_depth", type=int, default=1,
+                    help="fallback (External) expansion layers behind the surface (1=surface only)")
+    md.add_argument("--format", choices=list(render.FORMATS), default="html")
+    md.set_defaults(func=cmd_modules)
 
     args = ap.parse_args(argv)
     try:

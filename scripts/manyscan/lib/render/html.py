@@ -28,6 +28,8 @@ _PALETTE = ["#4e79a7", "#f28e2b", "#59a14f", "#e15759", "#76b7b2",
 
 _BOOTSTRAP_ASSET = _ASSET_DIR / "boundary_bootstrap.js"
 _HTML_BOOTSTRAP = _BOOTSTRAP_ASSET.read_text(encoding="utf-8")
+# N 路模块附加脚本：仅 module_mode 时追加，二进制路径绝不读取/追加（保 byte-identity）
+_MODULE_ADDON_ASSET = _ASSET_DIR / "module_addon.js"
 #### /自包含交互式 HTML 的素材与库清单 ####
 
 
@@ -147,13 +149,21 @@ def _seed_xy(i: int, n_total: int, zone: str | None = None,
 def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "both",
             band_of: dict | None = None, bands_meta: list | None = None,
             default_hidden: list[str] | None = None,
-            module_of: dict | None = None, modules_meta: list | None = None) -> str:
+            module_of: dict | None = None, modules_meta: list | None = None,
+            module_mode: bool | None = None, zone_matrix: list | None = None,
+            modules_list: list | None = None) -> str:
     """``default_hidden``（可选）：起始即应用隐藏、但仍列在隐藏面板中可重新启用的节点 id；
     渲染器把已排序的列表烘焙进受门控的 ``const HIDDEN=``，为 ``None`` 时省略该行。
     ``module_of`` / ``modules_meta``（可选，可折叠的 模块↔符号 商图视图）：两者都给出时，
     每个节点获得受门控的 ``attrs['module']``（带侧前缀的模块 id），并烘焙已排序的
     ``const MODULES=`` 列表，bootstrap 渲染默认全折叠的商图；为 ``None`` 时不烘焙这两项。
+
+    ``module_mode`` / ``zone_matrix`` / ``modules_list``（可选，N 路模块分区）：``module_mode``
+    为真时，跨 cluster 的边按 cross 上色，并烘焙受门控的 ``const MODULE_MODE`` / ``ZONE_MATRIX``
+    / ``MODULE_LIST``，bootstrap 据此装配 N 路视图选择器 + 区矩阵面板；三者均为 ``None`` /
+    缺省时一律省略，输出与不带这些参数时逐字节一致（与 HIDDEN/MODULES 同一门控纪律）。
     """
+    mod_mode = bool(module_mode)
     n_sorted = sorted(g.nodes.values(), key=lambda n: n.id)
     n_total = len(n_sorted)
 
@@ -220,6 +230,9 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
         # 门控于 module_of is not None：烘焙带侧前缀的模块 id
         if module_of is not None:
             attrs["module"] = module_of.get(n.id, "")
+        # 门控于 module_mode：N 路分区把每节点的模块名烘焙到 attrs['module']
+        elif mod_mode:
+            attrs["module"] = n.attrs.get("module") or n.attrs.get("cluster") or ""
         nodes.append({"key": n.id, "attrs": attrs})
 
     # 边：{key, source, target, attrs}
@@ -243,6 +256,14 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
             if (s is not None and d is not None
                     and s.attrs.get("zone") == "target" and d.attrs.get("zone") == "dependency"):
                 # 目标→依赖的跨越（缝隙）
+                ea["cross"] = 1
+                ea["size"] = 1.5
+                ea["color"] = "#7f8a9c"
+        elif mod_mode:
+            s, d = g.nodes.get(e.src), g.nodes.get(e.dst)
+            if (s is not None and d is not None
+                    and s.attrs.get("cluster") != d.attrs.get("cluster")):
+                # 跨模块的跨越（解耦缝）
                 ea["cross"] = 1
                 ea["size"] = 1.5
                 ea["color"] = "#7f8a9c"
@@ -380,8 +401,18 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
     # 受门控的可折叠商图：已排序的 modules_meta，为 None 时完全省略
     if modules_meta is not None:
         consts += f"const MODULES={json.dumps(modules_meta, ensure_ascii=False)};\n"
+    # 受门控的 N 路模块分区：module_mode 为真时烘焙，其它情形完全省略
+    if mod_mode:
+        consts += "const MODULE_MODE=true;\n"
+        consts += f"const MODULE_LIST={json.dumps(modules_list or [], ensure_ascii=False)};\n"
+        consts += f"const ZONE_MATRIX={json.dumps(zone_matrix or [], ensure_ascii=False)};\n"
     # const 放在一个裸 <script>，bootstrap 带 id="ms-boot"
     consts_tag = "<script>" + consts + "</script>"
     boot_tag = '<script id="ms-boot">' + _HTML_BOOTSTRAP + "</script>"
-    return head + lib + consts_tag + boot_tag + "</body></html>"
+    # 受门控的 N 路附加脚本：module_mode 时才读取并追加；否则完全不出现（byte-identical）
+    addon_tag = ""
+    if mod_mode:
+        addon_tag = ('<script id="ms-module-addon">'
+                     + _MODULE_ADDON_ASSET.read_text(encoding="utf-8") + "</script>")
+    return head + lib + consts_tag + boot_tag + addon_tag + "</body></html>"
 #### /把图渲染为单个自包含交互式 HTML 文件 ####

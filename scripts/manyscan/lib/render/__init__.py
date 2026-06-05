@@ -14,7 +14,7 @@ from lib.graph import Graph
 
 from .graphfmt import to_dot, to_mermaid
 from .html import _importance, to_html
-from .jsonfmt import graph_to_dict, metrics_to_dict, to_json
+from .jsonfmt import graph_to_dict, metrics_to_dict, modules_to_dict, to_json
 from .textfmt import metrics_text, to_text
 
 #### 格式名到 emitter 的注册表 [@380kkm 2026-06-05] ####
@@ -32,5 +32,5 @@ def render(g: Graph, fmt: str) -> str:
 __all__ = [
     "render", "FORMATS",
     "to_json", "to_html", "to_mermaid", "to_dot", "to_text",
-    "graph_to_dict", "metrics_to_dict", "metrics_text", "_importance",
+    "graph_to_dict", "metrics_to_dict", "modules_to_dict", "metrics_text", "_importance",
 ]

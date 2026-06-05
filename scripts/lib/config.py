@@ -277,6 +277,99 @@ def load_view_hide(store: Path, override_path: Path | None = None) -> dict | Non
     return vh
 
 
+#### modules 配置的合法顶层键集合（已提交、共享、N 路模块分区声明） [@380kkm 2026-06-05] ####
+_MODULES_KEYS = {"version", "fallback", "zones"}
+#### 单个 zone 的合法键集合 [@380kkm 2026-06-05] ####
+_MODULE_ZONE_KEYS = {"name", "include", "exclude", "glob"}
+
+
+#### 校验一份 modules 文档，返回人类可读的错误列表 [@380kkm 2026-06-05] ####
+def validate_modules(doc: dict) -> list[str]:
+    """空列表 == 合法。要求 ``version==1``、``zones`` 为列表，每个 zone 名唯一非空、
+    ``include``/``exclude`` 为字符串列表。``fallback`` 可选（字符串）。"""
+    if not isinstance(doc, dict):
+        return ["modules must be an object"]
+    errs: list[str] = []
+    if doc.get("version", 1) != 1:
+        errs.append("modules.version must be 1")
+    fb = doc.get("fallback")
+    if fb is not None and not isinstance(fb, str):
+        errs.append("modules.fallback must be a string")
+    zones = doc.get("zones")
+    if not isinstance(zones, list) or not zones:
+        errs.append("modules.zones must be a non-empty list")
+        return errs
+    seen: set[str] = set()
+    for i, z in enumerate(zones):
+        if not isinstance(z, dict):
+            errs.append(f"modules.zones[{i}] must be an object")
+            continue
+        name = z.get("name")
+        if not isinstance(name, str) or not name:
+            errs.append(f"modules.zones[{i}].name must be a non-empty string")
+        elif name in seen:
+            errs.append(f"modules.zones[{i}].name {name!r} is duplicated")
+        else:
+            seen.add(name)
+        inc = z.get("include")
+        if not (isinstance(inc, list) and inc and all(isinstance(x, str) for x in inc)):
+            errs.append(f"modules.zones[{i}].include must be a non-empty list of strings")
+        for k in ("exclude", "glob"):
+            v = z.get(k)
+            if v is not None and not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
+                errs.append(f"modules.zones[{i}].{k} must be a list of strings")
+    return errs
+
+
+#### 解析已提交的 N 路 modules 配置（优先 --modules 文件） [@380kkm 2026-06-05] ####
+def load_modules(store: Path, override_path: Path | None = None) -> dict | None:
+    """优先级：``override_path``（--modules 文件）> ``manyread.json['modules']`` > None。
+
+    一个 --modules 文件既可以是 ``{modules:{...}}`` 包装形式，也可以是裸的
+    ``{version,fallback,zones}``。结构损坏 => 向 stderr 告警并返回 None。
+    """
+    import sys
+
+    if override_path is not None:
+        p = Path(override_path)
+        if not p.is_file():
+            print(f"manyread: --modules file not found: {p}", file=sys.stderr)
+            return None
+        try:
+            doc = json.loads(p.read_text(encoding="utf-8-sig"))
+        except (json.JSONDecodeError, OSError) as exc:
+            print(f"manyread: --modules file is not valid JSON ({p}): {exc}", file=sys.stderr)
+            return None
+        if not isinstance(doc, dict):
+            print(f"manyread: --modules file must be a JSON object: {p}", file=sys.stderr)
+            return None
+        # 接受包装形式或裸形式
+        md = doc.get("modules", doc)
+    else:
+        mr_json = store / "manyread.json"
+        if mr_json.is_file():
+            # 存在但不可读/为空时告警
+            shared = _read_json(mr_json)
+            if not shared:
+                print(f"manyread: {mr_json} present but unreadable/empty — "
+                      "shared config (incl. modules) ignored", file=sys.stderr)
+                return None
+            md = shared.get("modules")
+        else:
+            md = None
+    if not md or not isinstance(md, dict):
+        return None
+    errs = validate_modules(md)
+    if errs:
+        print("manyread: ignoring malformed modules config: " + "; ".join(errs), file=sys.stderr)
+        return None
+    unknown = sorted(set(md) - _MODULES_KEYS)
+    if unknown:
+        print("manyread: modules has unknown key(s) " + ", ".join(unknown)
+              + " (known: version/fallback/zones) — proceeding", file=sys.stderr)
+    return md
+
+
 #### macro_strip 配置的合法键集合（已提交、共享、解析输入变换） [@380kkm 2026-06-05] ####
 _MACRO_STRIP_KEYS = {"enabled", "extra_names", "extra_patterns"}
 
