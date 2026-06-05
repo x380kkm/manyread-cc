@@ -1,12 +1,12 @@
-"""Regression tests for the ASSET->SOURCE cross-layer linker (scripts/link_source.py).
+"""ASSET->SOURCE 跨层链接器（scripts/link_source.py）的回归测试。
 
-Self-contained and FAST: builds BOTH input stores by DIRECT SQL INSERT via
-manyread's own ``db.init_schema`` (the conftest ``boundary_store`` idiom) — NO
-tree-sitter, NO index/enrich. It tests the LINKER's confidence logic (the parser
-is already covered by test_enrich_query). Uses the REAL sample schema
-(scripts/schemas/matlang.sample.json). Fully isolated with MANYREAD_HOME=tmp.
+自包含且快速：两个输入存储库都经 manyread 自带的 ``db.init_schema`` 用直接 SQL
+INSERT 构建（沿用 conftest 的 ``boundary_store`` 写法）—— 不走 tree-sitter，不走
+index/enrich。本套测试针对链接器的置信度逻辑（解析器本身已由 test_enrich_query 覆盖）。
+使用真实的样例 schema（scripts/schemas/matlang.sample.json）。以 MANYREAD_HOME=tmp
+完全隔离。
 
-Run from the scripts/ dir (no tree-sitter needed)::
+须在 scripts/ 目录下运行（无需 tree-sitter）::
 
     cd scripts && uv run --python 3.12 --with pytest -m pytest tests/test_link_source.py -q
 """
@@ -15,8 +15,8 @@ import os
 import sys
 from pathlib import Path
 
-# scripts/ on path so ``import link_source`` resolves; link_source itself adds
-# scripts/manyscan for the stores layer.
+# 把 scripts/ 加入路径，使 ``import link_source`` 能解析；link_source 自身会再把
+# scripts/manyscan 加入路径以接入存储库层。
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), "..")))
 
 import link_source as L  # noqa: E402
@@ -26,12 +26,12 @@ SCHEMA = os.path.normpath(
 )
 
 
-# --- MOCK CODE store: stub C++ class symbols ---------------------------------
-# UMaterialExpressionMultiply (unique for 'multiply'),
-# UMaterialExpressionConstant (unique for 'constant'),
-# UMaterial (unique for the 'material' root via the U-prefix),
-# UMaterialExpressionScalarParameter DUPLICATED across two files (ambiguous(2)),
-# and DELIBERATELY OMIT UMaterialExpressionFresnel (unresolved for 'fresnel').
+#### 模拟 CODE 存储库：桩 C++ 类符号 [@380kkm 2026-06-05] ####
+# UMaterialExpressionMultiply（'multiply' 唯一命中），
+# UMaterialExpressionConstant（'constant' 唯一命中），
+# UMaterial（经 U- 前缀作为 'material' 根的唯一命中），
+# UMaterialExpressionScalarParameter 在两个文件中重复（歧义(2)），
+# 并刻意省略 UMaterialExpressionFresnel（'fresnel' 解析失败）。
 _CODE_FILES = [
     (1, "engine/Mul.h", ".h", "class UMaterialExpressionMultiply {};\n"),
     (2, "engine/Const.h", ".h", "class UMaterialExpressionConstant {};\n"),
@@ -44,13 +44,16 @@ _CODE_SYMS = [
     (1, 1, "UMaterialExpressionMultiply", "class"),
     (2, 2, "UMaterialExpressionConstant", "class"),
     (3, 3, "UMaterial", "class"),
-    (4, 4, "UMaterialExpressionScalarParameter", "class"),  # dup #1
-    (5, 5, "UMaterialExpressionScalarParameter", "class"),  # dup #2
+    # 重复 #1
+    (4, 4, "UMaterialExpressionScalarParameter", "class"),
+    # 重复 #2
+    (5, 5, "UMaterialExpressionScalarParameter", "class"),
 ]
+#### /模拟 CODE 存储库 ####
 
-# --- DSL store: matlang node rows + a material root --------------------------
-# Each node carries attrs {"node_type": ...}. 'panner' is NOT in the sample schema
-# (no-classPath). The material root has kind='material', attrs={} (no node_type).
+#### DSL 存储库：matlang 节点行 + 一个 material 根 [@380kkm 2026-06-05] ####
+# 每个节点携带 attrs {"node_type": ...}。'panner' 不在样例 schema 中（无 classPath）。
+# material 根 kind='material'，attrs={}（无 node_type）。
 _DSL_FILES = [
     (1, "M_Test.matlang", ".matlang", "(material M_Test ...)\n"),
 ]
@@ -61,11 +64,15 @@ _DSL_SYMS = [
     (3, 1, "$const1", "node", '{"node_type": "constant"}'),
     (4, 1, "$sparam1", "node", '{"node_type": "scalar-parameter"}'),
     (5, 1, "$fresnel1", "node", '{"node_type": "fresnel"}'),
-    (6, 1, "$pan1", "node", '{"node_type": "panner"}'),  # not in schema -> no-classPath
-    (7, 1, "$out", "outputs", "{}"),  # excluded by the WHERE clause
+    # 不在 schema 中 -> 无 classPath
+    (6, 1, "$pan1", "node", '{"node_type": "panner"}'),
+    # 被 WHERE 子句排除
+    (7, 1, "$out", "outputs", "{}"),
 ]
+#### /DSL 存储库 ####
 
 
+#### 构建桩 CODE 存储库并返回其 source.db 路径 [@380kkm 2026-06-05] ####
 def _build_code_store(tmp: Path) -> Path:
     _, mr_db = L.stores.manyread_lib()
     store = tmp / "manyread"
@@ -88,8 +95,10 @@ def _build_code_store(tmp: Path) -> Path:
     conn.commit()
     conn.close()
     return db_path
+#### /构建桩 CODE 存储库 ####
 
 
+#### 构建桩 DSL 存储库并返回其 source.db 路径 [@380kkm 2026-06-05] ####
 def _build_dsl_store(tmp: Path) -> Path:
     _, mr_db = L.stores.manyread_lib()
     store = tmp / "manyread"
@@ -112,27 +121,33 @@ def _build_dsl_store(tmp: Path) -> Path:
     conn.commit()
     conn.close()
     return db_path
+#### /构建桩 DSL 存储库 ####
 
 
 import pytest  # noqa: E402
 
 
+#### 夹具：隔离的 MANYREAD_HOME + 各自目录下的 code 与 DSL 存储库 [@380kkm 2026-06-05] ####
 @pytest.fixture
 def stores_pair(tmp_path, monkeypatch):
-    """Isolated MANYREAD_HOME + a code store and a DSL store under their own dirs."""
+    """隔离的 MANYREAD_HOME，外加各自目录下的一个 code 存储库与一个 DSL 存储库。"""
     monkeypatch.setenv("MANYREAD_HOME", str(tmp_path / "hub"))
     code_db = _build_code_store(tmp_path / "code")
     dsl_db = _build_dsl_store(tmp_path / "dsl")
     return dsl_db, code_db
+#### /隔离 MANYREAD_HOME + code/DSL 存储库夹具 ####
 
 
+#### 按节点名从报告里取出对应的节点条目 [@380kkm 2026-06-05] ####
 def _by_name(rep, name):
     for e in rep["nodes"]:
         if e["node_name"] == name:
             return e
     raise AssertionError(f"node {name!r} not in report")
+#### /按名取节点条目 ####
 
 
+#### 测试 reflected_name 从 classPath 反推反射名 [@380kkm 2026-06-05] ####
 def test_reflected_name():
     assert L.reflected_name("/Script/Engine.MaterialExpressionMultiply") == "MaterialExpressionMultiply"
     assert L.reflected_name("/Script/Engine.Material") == "Material"
@@ -140,13 +155,15 @@ def test_reflected_name():
     assert L.reflected_name("NoDot") is None
 
 
+#### 测试 'outputs' 容器行被排除、不可链接 [@380kkm 2026-06-05] ####
 def test_outputs_row_excluded(stores_pair):
     dsl_db, code_db = stores_pair
     rep = L.link(str(dsl_db), str(code_db), SCHEMA)
-    # the 'outputs' container is not a linkable node
+    # 'outputs' 容器不是可链接节点
     assert all(e["node_name"] != "$out" for e in rep["nodes"])
 
 
+#### 测试 multiply 唯一命中并解析到正确符号 [@380kkm 2026-06-05] ####
 def test_multiply_resolved_unique(stores_pair):
     dsl_db, code_db = stores_pair
     rep = L.link(str(dsl_db), str(code_db), SCHEMA)
@@ -159,6 +176,7 @@ def test_multiply_resolved_unique(stores_pair):
     assert e["resolved"]["confidence"] == "unique"
 
 
+#### 测试 fresnel 因符号缺失而解析失败 [@380kkm 2026-06-05] ####
 def test_fresnel_unresolved(stores_pair):
     dsl_db, code_db = stores_pair
     rep = L.link(str(dsl_db), str(code_db), SCHEMA)
@@ -168,6 +186,7 @@ def test_fresnel_unresolved(stores_pair):
     assert e["resolved"] is None
 
 
+#### 测试 scalar-parameter 因符号重复而歧义(2) [@380kkm 2026-06-05] ####
 def test_scalar_parameter_ambiguous(stores_pair):
     dsl_db, code_db = stores_pair
     rep = L.link(str(dsl_db), str(code_db), SCHEMA)
@@ -178,6 +197,7 @@ def test_scalar_parameter_ambiguous(stores_pair):
     assert e["resolved"]["candidates"] == ["engine/Scalar.h:1", "engine/Scalar2.h:1"]
 
 
+#### 测试 panner 不在 schema 中而无 classPath [@380kkm 2026-06-05] ####
 def test_panner_no_classpath(stores_pair):
     dsl_db, code_db = stores_pair
     rep = L.link(str(dsl_db), str(code_db), SCHEMA)
@@ -188,22 +208,24 @@ def test_panner_no_classpath(stores_pair):
     assert e["resolved"] is None
 
 
+#### 测试 material 根经 kind 合成 node_type 并唯一命中 [@380kkm 2026-06-05] ####
 def test_material_root_resolved_unique(stores_pair):
     dsl_db, code_db = stores_pair
     rep = L.link(str(dsl_db), str(code_db), SCHEMA)
     e = _by_name(rep, "M_Test")
-    # the material ROOT has attrs={} -> node_type synthesized from kind=='material'
+    # material 根 attrs={} -> node_type 由 kind=='material' 合成
     assert e["node_type"] == "material"
     assert e["classPath"] == "/Script/Engine.Material"
     assert e["status"] == "resolved-unique"
-    assert e["resolved"]["symbol_name"] == "UMaterial"  # via the U-prefix variant
+    # 经 U- 前缀变体命中
+    assert e["resolved"]["symbol_name"] == "UMaterial"
 
 
+#### 测试 code_lang 过滤使跨语言同名符号不破坏唯一解析 [@380kkm 2026-06-05] ####
 def test_code_lang_filter_keeps_unique(tmp_path, monkeypatch):
-    """A cross-lang class-kind symbol sharing a ReflectedName must NOT flip a
-    'cpp' resolution to ambiguous (audit fix: resolve_class filters by code_lang).
-    With code_lang=None (resolve across ALL langs) it DOES become ambiguous, proving
-    the lang cut is what protects the default 'cpp' resolution."""
+    """共享同一 ReflectedName 的跨语言 class-kind 符号不得把 'cpp' 解析翻成歧义
+    （审计修复：resolve_class 按 code_lang 过滤）。当 code_lang=None（跨所有语言解析）时它
+    确会变成歧义，由此证明正是语言切分保护了默认的 'cpp' 解析。"""
     monkeypatch.setenv("MANYREAD_HOME", str(tmp_path / "hub"))
     _, mr_db = L.stores.manyread_lib()
     store = tmp_path / "code2" / "manyread"
@@ -219,7 +241,7 @@ def test_code_lang_filter_keeps_unique(tmp_path, monkeypatch):
         conn.execute("INSERT INTO files(id,path,ext,size,mtime,content) VALUES(?,?,?,?,0,?)",
                      (fid, path, ext, len(content), content))
         conn.execute("INSERT INTO files_fts(rowid,path,content) VALUES(?,?,?)", (fid, path, content))
-    # A cpp class AND a (contrived) matlang class-kind symbol, both named UMaterial.
+    # 一个 cpp class，以及一个（人为构造的）matlang class-kind 符号，二者都名为 UMaterial。
     conn.execute("INSERT INTO symbols(id,file_id,name,kind,lang,start_line,end_line,"
                  "start_byte,end_byte,parent_id) VALUES(1,1,'UMaterial','class','cpp',1,1,0,1,NULL)")
     conn.execute("INSERT INTO symbols(id,file_id,name,kind,lang,start_line,end_line,"
@@ -228,39 +250,47 @@ def test_code_lang_filter_keeps_unique(tmp_path, monkeypatch):
     conn.close()
 
     dsl_db = _build_dsl_store(tmp_path / "dsl")
-    # default code_lang='cpp' -> only the cpp UMaterial counts -> unique
+    # 默认 code_lang='cpp' -> 只有 cpp 的 UMaterial 计入 -> 唯一
     rep = L.link(str(dsl_db), str(code_db), SCHEMA)
     e = _by_name(rep, "M_Test")
     assert e["status"] == "resolved-unique"
     assert e["resolved"]["symbol_name"] == "UMaterial"
     assert e["resolved"]["loc"] == "engine/Material.h:1"
-    # code_lang=None -> the matlang UMaterial is also counted -> ambiguous(2)
+    # code_lang=None -> matlang 的 UMaterial 也被计入 -> 歧义(2)
     rep_any = L.link(str(dsl_db), str(code_db), SCHEMA, code_lang=None)
     e_any = _by_name(rep_any, "M_Test")
     assert e_any["status"] == "resolved-ambiguous"
     assert e_any["resolved"]["ambiguity"] == 2
 
 
+#### 测试 summary 各状态计数正确 [@380kkm 2026-06-05] ####
 def test_summary_counts(stores_pair):
     dsl_db, code_db = stores_pair
     rep = L.link(str(dsl_db), str(code_db), SCHEMA)
     s = rep["summary"]
-    assert s["resolved_unique"] >= 3   # multiply, constant, material (root)
-    assert s["resolved_ambiguous"] == 1  # scalar-parameter
-    assert s["unresolved"] == 1          # fresnel
-    assert s["no_class_path"] == 1       # panner
-    assert s["total"] == 6               # 6 node/material rows ('outputs' excluded)
+    # multiply、constant、material（根）
+    assert s["resolved_unique"] >= 3
+    # scalar-parameter
+    assert s["resolved_ambiguous"] == 1
+    # fresnel
+    assert s["unresolved"] == 1
+    # panner
+    assert s["no_class_path"] == 1
+    # 6 个 node/material 行（'outputs' 已排除）
+    assert s["total"] == 6
 
 
+#### 测试顶层溯源路径做反斜杠归一化、报告跨平台逐字节可移植 [@380kkm 2026-06-05] ####
 def test_toplevel_paths_normalized(stores_pair):
-    """Top-level provenance paths are backslash-normalized -> whole report is
-    byte-portable across OSes, not just the resolution locs (audit fix #2)."""
+    """顶层溯源路径做反斜杠归一化 -> 整份报告跨操作系统逐字节可移植，而非仅解析的 loc
+    可移植（审计修复 #2）。"""
     dsl_db, code_db = stores_pair
     rep = L.link(str(dsl_db), str(code_db), SCHEMA)
     for k in ("dsl_store", "code_store", "schema"):
         assert "\\" not in rep[k], f"{k} retains a backslash: {rep[k]!r}"
 
 
+#### 测试两次链接的 JSON 序列化逐字节一致（确定性） [@380kkm 2026-06-05] ####
 def test_determinism_byte_identical(stores_pair):
     dsl_db, code_db = stores_pair
     a = json.dumps(L.link(str(dsl_db), str(code_db), SCHEMA), ensure_ascii=False, indent=2)
@@ -268,14 +298,17 @@ def test_determinism_byte_identical(stores_pair):
     assert a == b
 
 
+#### 测试链接为只读、输入存储库不被改动（纯函数） [@380kkm 2026-06-05] ####
 def test_purity_input_stores_unchanged(stores_pair):
     dsl_db, code_db = stores_pair
     before = {p: (p.stat().st_size, p.stat().st_mtime_ns) for p in (dsl_db, code_db)}
     L.link(str(dsl_db), str(code_db), SCHEMA)
     after = {p: (p.stat().st_size, p.stat().st_mtime_ns) for p in (dsl_db, code_db)}
-    assert before == after  # mode=ro: neither input store is mutated
+    # mode=ro：两个输入存储库都不被改动
+    assert before == after
 
 
+#### 测试文本渲染可运行且含关键行 [@380kkm 2026-06-05] ####
 def test_text_render_runs(stores_pair):
     dsl_db, code_db = stores_pair
     rep = L.link(str(dsl_db), str(code_db), SCHEMA)
@@ -285,11 +318,14 @@ def test_text_render_runs(stores_pair):
     assert "AMBIGUOUS(2)" in text
 
 
+#### 测试加载非法 schema 抛 ValueError [@380kkm 2026-06-05] ####
 def test_bad_schema_raises():
+    # 空文件 -> json.load 在形状检查前即失败
     with pytest.raises(ValueError):
-        L.load_schema(os.devnull)  # empty -> json.load fails before shape check
+        L.load_schema(os.devnull)
 
 
+#### 测试 CLI 成功退出 0、坏存储库路径退出 2 [@380kkm 2026-06-05] ####
 def test_cli_exit_codes(stores_pair, capsys):
     dsl_db, code_db = stores_pair
     rc = L.main(["--dsl-store", str(dsl_db), "--code-store", str(code_db),
@@ -298,18 +334,17 @@ def test_cli_exit_codes(stores_pair, capsys):
     out = capsys.readouterr().out
     rep = json.loads(out)
     assert rep["summary"]["resolved_ambiguous"] == 1
-    # bad store path -> exit 2
+    # 坏存储库路径 -> 退出 2
     rc2 = L.main(["--dsl-store", "W:/nope/nope", "--code-store", str(code_db),
                   "--schema", SCHEMA])
     assert rc2 == 2
 
 
-# --- definition-preference (v0.8.6) ------------------------------------------
-# A custom store builder that takes EXPLICIT spans, so we can plant a real
-# definition (large span) among forward-declarations (tiny span) — the stub
-# stores above use span 1 and never exercise this path.
+#### 显式 span 的存储库构造器：用于定义优先（v0.8.6） [@380kkm 2026-06-05] ####
+# 接受显式 span，从而能在一堆前向声明（极小 span）中植入一个真实定义（大 span）——
+# 上面的桩存储库 span 均为 1，无法触发此路径。
 def _build_store(tmp: Path, files, syms, lang: str) -> Path:
-    """files: [(fid, path)]; syms: [(sid, fid, name, kind, start_byte, end_byte, attrs)]."""
+    """files: [(fid, path)]；syms: [(sid, fid, name, kind, start_byte, end_byte, attrs)]。"""
     _, mr_db = L.stores.manyread_lib()
     store = tmp / "manyread"
     store.mkdir(parents=True)
@@ -328,30 +363,35 @@ def _build_store(tmp: Path, files, syms, lang: str) -> Path:
     conn.commit()
     conn.close()
     return db_path
+#### /显式 span 存储库构造器 ####
 
 
+#### 测试定义（大 span）优先于多个前向声明并唯一命中 [@380kkm 2026-06-05] ####
 def test_definition_preferred_over_forward_declarations(tmp_path, monkeypatch):
-    """1 definition (large span) + N forward-declarations (tiny span) -> the
-    definition wins, UNIQUE. This is the real-engine pattern: UMaterialExpressionX
-    is forward-declared in many headers; only the definition has a body."""
+    """1 个定义（大 span）+ N 个前向声明（极小 span）-> 定义胜出，唯一命中。这是真实引擎的
+    模式：UMaterialExpressionX 在许多头文件中被前向声明，只有定义带主体。"""
     monkeypatch.setenv("MANYREAD_HOME", str(tmp_path / "hub"))
     code = _build_store(tmp_path / "code",
         [(1, "engine/Mul.h"), (2, "a/A.h"), (3, "b/B.h"), (4, "c/C.h")],
-        [(1, 1, "UMaterialExpressionMultiply", "class", 0, 1070, None),  # DEFINITION
-         (2, 2, "UMaterialExpressionMultiply", "class", 0, 33, None),    # fwd-decl
-         (3, 3, "UMaterialExpressionMultiply", "class", 0, 33, None),    # fwd-decl
-         (4, 4, "UMaterialExpressionMultiply", "class", 0, 33, None)],   # fwd-decl
+        # 定义
+        [(1, 1, "UMaterialExpressionMultiply", "class", 0, 1070, None),
+         # 前向声明
+         (2, 2, "UMaterialExpressionMultiply", "class", 0, 33, None),
+         (3, 3, "UMaterialExpressionMultiply", "class", 0, 33, None),
+         (4, 4, "UMaterialExpressionMultiply", "class", 0, 33, None)],
         "cpp")
     dsl = _build_store(tmp_path / "dsl", [(1, "M.matlang")],
         [(1, 1, "$m", "node", 0, 1, '{"node_type": "multiply"}')], "matlang")
     e = _by_name(L.link(str(dsl), str(code), SCHEMA), "$m")
     assert e["status"] == "resolved-unique"
-    assert e["resolved"]["loc"] == "engine/Mul.h:1"  # the definition, never a fwd-decl
+    # 是定义，绝不会是前向声明
+    assert e["resolved"]["loc"] == "engine/Mul.h:1"
 
 
+#### 测试仅有前向声明时保留全部并维持歧义 [@380kkm 2026-06-05] ####
 def test_only_forward_declarations_stay_ambiguous(tmp_path, monkeypatch):
-    """When ONLY forward-declarations are indexed (no definition under that name —
-    the real UMaterial anomaly), they are kept and surfaced as ambiguous, not hidden."""
+    """当只索引到前向声明（该名下无定义 —— 真实的 UMaterial 反常情形）时，保留它们并以歧义
+    呈现，而非隐藏。"""
     monkeypatch.setenv("MANYREAD_HOME", str(tmp_path / "hub"))
     code = _build_store(tmp_path / "code", [(1, "a/A.h"), (2, "b/B.h")],
         [(1, 1, "UMaterial", "class", 0, 15, None),
