@@ -90,27 +90,29 @@ def referenced_paths(db_path: Path, sql: str) -> list[str]:
     indexed_set = set(indexed)
     found: list[str] = []
     seen: set[str] = set()
+
+    #### 保序登记一个路径,已收过则跳过,返回是否首次收入 [@380kkm 2026-06-05] ####
+    def add_unique(p: str) -> bool:
+        if p in seen:
+            return False
+        found.append(p)
+        seen.add(p)
+        return True
+
     for lit in literals:
         # 剥掉 SQL LIKE 通配符 / glob 字符
         core = lit.strip().strip("%").strip("*")
         if not core:
             continue
         # 1. 与已索引路径精确匹配
-        if lit in indexed_set and lit not in seen:
-            found.append(lit)
-            seen.add(lit)
+        if lit in indexed_set and add_unique(lit):
             continue
-        if core in indexed_set and core not in seen:
-            found.append(core)
-            seen.add(core)
+        if core in indexed_set and add_unique(core):
             continue
         # 2. 子串 / 后缀匹配
         for p in indexed:
-            if p in seen:
-                continue
             if core == p or core in p or p.endswith(core):
-                found.append(p)
-                seen.add(p)
+                add_unique(p)
     return found
 
 

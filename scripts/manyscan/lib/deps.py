@@ -59,7 +59,7 @@ _RE_JS_SPEC = re.compile(
 
 
 #### 由文件扩展名返回 import 规则族，不支持则返回 None [@380kkm 2026-06-05] ####
-def family(ext: str | None) -> str | None:
+def import_family(ext: str | None) -> str | None:
     ext = (ext or "").lower()
     if ext in _PY:
         return "python"
@@ -72,9 +72,13 @@ def family(ext: str | None) -> str | None:
     return None
 
 
+# 跨包消费者（test_deps）仍以旧名调用，保留别名
+family = import_family
+
+
 #### 纯函数：按扩展名从源码 content 提取 import/include 引用 [@380kkm 2026-06-05] ####
 def extract_imports(content: str, ext: str | None) -> list[ImportRef]:
-    fam = family(ext)
+    fam = import_family(ext)
     if fam is None or not content:
         return []
     out: list[ImportRef] = []
@@ -111,37 +115,6 @@ def file_imports(store: "stores.Store", file_id: int) -> list[ImportRef]:
     if row is None or row["content"] is None:
         return []
     return extract_imports(row["content"], row["ext"])
-
-
-#### 返回（斜杠归一化后）路径匹配某候选的 file_id，否则 None [@380kkm 2026-06-05] ####
-def _match_path(store: "stores.Store", candidates: list[str], *,
-                suffix: bool = False, basename: bool = False) -> int | None:
-    # 把 Windows 反斜杠归一化为 '/'
-    norm = "replace(path, char(92), '/')"
-    cands = [c.replace("\\", "/").lstrip("./") for c in candidates if c]
-    # 精确匹配
-    for c in cands:
-        row = store.conn.execute(f"SELECT id FROM files WHERE {norm} = ?", (c,)).fetchone()
-        if row:
-            return row["id"]
-    if suffix:
-        for c in cands:
-            row = store.conn.execute(
-                f"SELECT id FROM files WHERE {norm} LIKE ? ORDER BY length(path) LIMIT 1",
-                ("%/" + c,),
-            ).fetchone()
-            if row:
-                return row["id"]
-    if basename:
-        for c in cands:
-            bn = PurePosixPath(c).name
-            row = store.conn.execute(
-                f"SELECT id FROM files WHERE {norm} LIKE ? ORDER BY length(path) LIMIT 1",
-                ("%/" + bn,),
-            ).fetchone()
-            if row:
-                return row["id"]
-    return None
 
 
 #### 内存中的文件路径索引，用于快速 import 解析 [@380kkm 2026-06-05] ####
@@ -229,14 +202,13 @@ def _candidates_for(ref: ImportRef, from_path: str | None) -> tuple[list[str], b
 #### 尽力而为：把一条 ImportRef 映射为同一存储库内的目标 file_id [@380kkm 2026-06-05] ####
 def resolve_import(store: "stores.Store", ref: ImportRef, from_path: str | None = None,
                    index: "PathIndex | None" = None) -> int | None:
-    """传入 :class:`PathIndex` 走索引匹配，不传则回退到 SQL 匹配；外部依赖 / 无法解析返回 None。"""
+    """走 :class:`PathIndex` 的精确 / 后缀 / 基名匹配（未传时按 Store 取缓存索引）；外部依赖 / 无法解析返回 None。"""
     spec = _candidates_for(ref, from_path)
     if spec is None:
         return None
     cands, suffix, basename = spec
-    if index is not None:
-        return index.match(cands, suffix=suffix, basename=basename)
-    return _match_path(store, cands, suffix=suffix, basename=basename)
+    index = index or PathIndex.for_store(store)
+    return index.match(cands, suffix=suffix, basename=basename)
 
 
 #### 把一条边的 dst_name 全局解析为跨所有文件的候选符号 [@380kkm 2026-06-05] ####

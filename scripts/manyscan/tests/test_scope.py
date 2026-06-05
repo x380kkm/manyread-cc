@@ -9,9 +9,9 @@ from lib import scope, stores
 from lib.graph import Budget
 
 
-#### 取图中全部节点的 label 集合 [@380kkm 2026-06-05] ####
-def _labels(g):
-    return {n.label for n in g.nodes.values()}
+#### 取一组节点的 label 集合 [@380kkm 2026-06-05] ####
+def _labels(nodes):
+    return {n.label for n in nodes}
 #### /取 label 集合 ####
 
 
@@ -32,13 +32,7 @@ def test_resolve_seed_by_file(synth_store):
 #### 测试按符号名解析种子 [@380kkm 2026-06-05] ####
 def test_resolve_seed_by_symbol(synth_store):
     with stores.Store(synth_store) as st:
-        assert _labels_set(scope.resolve_seed(st, "C")) == {"pkg/c.py"}
-
-
-#### 取节点列表的 label 集合 [@380kkm 2026-06-05] ####
-def _labels_set(nodes):
-    return {n.label for n in nodes}
-#### /取节点列表 label 集合 ####
+        assert _labels(scope.resolve_seed(st, "C")) == {"pkg/c.py"}
 
 
 #### 测试无法解析的种子返回空 [@380kkm 2026-06-05] ####
@@ -51,7 +45,7 @@ def test_resolve_seed_unresolved(synth_store):
 def test_expand_forward_imports(synth_store):
     with stores.Store(synth_store) as st:
         g = scope.scan(st, "pkg/a.py", Budget(max_nodes=50, max_depth=3, direction="out"))
-        assert _labels(g) == {"pkg/a.py", "pkg/b.py", "pkg/c.py"}
+        assert _labels(g.nodes.values()) == {"pkg/a.py", "pkg/b.py", "pkg/c.py"}
         assert ("pkg/a.py", "pkg/b.py") in _rels(g)
         assert ("pkg/a.py", "pkg/c.py") in _rels(g)
 
@@ -60,7 +54,7 @@ def test_expand_forward_imports(synth_store):
 def test_expand_reverse_importers(synth_store):
     with stores.Store(synth_store) as st:
         g = scope.scan(st, "pkg/b.py", Budget(max_nodes=50, max_depth=2, direction="in"))
-        assert {"pkg/a.py", "pkg/b.py"} <= _labels(g)
+        assert {"pkg/a.py", "pkg/b.py"} <= _labels(g.nodes.values())
         # a 导入 b -> 反向边 a->b
         assert ("pkg/a.py", "pkg/b.py") in _rels(g)
 

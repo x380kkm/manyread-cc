@@ -2,7 +2,7 @@
 # extensions.ue.tests.test_enrich_query_ue
 """UE 资产 DSL（matlang/bplisp/animlang）声明式查询层的回归测试。
 
-从通用的 test_enrich_query.py 中carve出，因为三种 DSL 的 .scm 与符号契约属于 UE 扩展；
+从通用的 `test_enrich_query.py` 析出，因为三种 DSL 的 .scm 与符号契约属于 UE 扩展；
 本套件经 conftest 主动开启 UE 扩展发现，使 ``E._load_query_specs(None)`` 能返回 UE 的
 .scm 规格。
 """
@@ -27,10 +27,10 @@ pytestmark = pytest.mark.skipif(not _HAVE, reason="tree-sitter not installed")
 #### 用内建 .scm 查询为无遍历器 DSL 跑 _extract_file 的夹具 [@380kkm 2026-06-05] ####
 def _dsl_extract(src: str, lang: str):
     # 三种 DSL 都共用 scheme grammar
-    L = get_language("scheme")
+    ts_lang = get_language("scheme")
     specs = E._load_query_specs(None)
-    q = Query(L, specs[lang])
-    return E._extract_file(1, src, lang, Parser(L), False, q)
+    q = Query(ts_lang, specs[lang])
+    return E._extract_file(1, src, lang, Parser(ts_lang), False, q)
 
 
 _SIMPLE_PBR = (

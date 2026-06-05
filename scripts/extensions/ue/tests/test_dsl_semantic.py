@@ -17,6 +17,8 @@ except Exception:  # noqa: BLE001
 
 pytestmark = pytest.mark.skipif(not _HAVE, reason="tree-sitter not installed")
 
+from dsl_fixtures import GOOD_MATLANG, codes as _codes  # noqa: E402
+
 # schema 在同级扩展目录 scripts/extensions/ue/schemas/ 下
 _SCHEMA_PATH = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "schemas", "matlang.sample.json"))
@@ -27,38 +29,16 @@ def _schema():
     return V.load_schema(_SCHEMA_PATH)
 
 
-#### 带 schema 收集校验结果的错误码（可选按严重度过滤），排序返回 [@380kkm 2026-06-05] ####
-def _codes(text, lang, schema=None, sev=None):
-    return sorted(i.code for i in V.dsl_validate(text, lang, schema)
-                  if sev is None or i.severity == sev)
-
-
-#### 合法 matlang 内联夹具（与结构套件镜像一致） [@380kkm 2026-06-05] ####
-_GOOD_MATLANG = (
-    '(material "M_SimplePBR"\n'
-    "  :domain surface\n"
-    "  (expressions\n"
-    "    (texture-sample $tex1 :uv (connect $uv1))\n"
-    "    (texture-coordinate $uv1 :coordinate-index 0)\n"
-    '    (vector-parameter $vparam1 :name "TintColor")\n'
-    "    (multiply $mul1 :a (connect $tex1 0) :b (connect $vparam1 0))\n"
-    "    (constant $const1 :value 0.0))\n"
-    "  (outputs\n"
-    "    :base-color (connect $mul1 0)\n"
-    "    :metallic (connect $const1 0)))\n"
-)
-
-
 #### 验证无 schema 路径与三参传 None 的结果完全相同 [@380kkm 2026-06-05] ####
 def test_no_schema_byte_identical_to_two_arg():
-    two_arg = V.dsl_validate(_GOOD_MATLANG, "matlang")
-    three_none = V.dsl_validate(_GOOD_MATLANG, "matlang", None)
+    two_arg = V.dsl_validate(GOOD_MATLANG, "matlang")
+    three_none = V.dsl_validate(GOOD_MATLANG, "matlang", None)
     assert two_arg == three_none
 
 
 #### 验证为合法文件加上样例 schema 不引入任何 error [@380kkm 2026-06-05] ####
 def test_schema_adds_no_errors_to_good_inline():
-    assert _codes(_GOOD_MATLANG, "matlang", _schema(), "error") == []
+    assert _codes(GOOD_MATLANG, "matlang", _schema(), "error") == []
 
 
 #### 真实 matlang 示例文件清单（用于零语义错误验证） [@380kkm 2026-06-05] ####
@@ -172,7 +152,7 @@ def test_absent_optional_property_not_flagged():
 
 #### 验证 material 根属性与 outputs 块槽位关键字不被误报 [@380kkm 2026-06-05] ####
 def test_material_root_props_not_flagged():
-    issues = V.dsl_validate(_GOOD_MATLANG, "matlang", _schema())
+    issues = V.dsl_validate(GOOD_MATLANG, "matlang", _schema())
     assert "UNKNOWN_PROP" not in {i.code for i in issues}
     assert "UNKNOWN_NODE_TYPE" not in {i.code for i in issues}
 
@@ -268,6 +248,6 @@ def test_cli_malformed_schema_exits_2(tmp_path, capsys):
 #### 验证 CLI 端到端：合法文件 + 样例 schema -> 退出 0 [@380kkm 2026-06-05] ####
 def test_cli_with_schema_runs_semantic(tmp_path):
     src = tmp_path / "m.matlang"
-    src.write_text(_GOOD_MATLANG, encoding="utf-8")
+    src.write_text(GOOD_MATLANG, encoding="utf-8")
     rc = V.main([str(src), "--schema", _SCHEMA_PATH])
     assert rc == 0

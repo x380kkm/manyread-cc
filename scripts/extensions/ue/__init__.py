@@ -4,7 +4,7 @@
 
 把三种 UE 资产 DSL（matlang / bplisp / animlang）的全部专属能力接到通用核心上：
 语言与文法路由、默认扩展名预设、各自的 .scm 依赖边查询、语义 schema 目录、结构 +
-语义校验 pass，以及 /mr-validate、/mr-link-source 两条命令文档。挂入分两个钩子：
+语义校验 pass，以及 /mr-validate、/mr-equiv、/mr-link-source 三条命令文档。挂入分两个钩子：
 ``register_ingest`` 是纯 stdlib 的摄取面（L1 索引器无 tree-sitter 也能跑），
 ``register_enrich`` 在体内延迟 import 后接入 enrich 世界；通用核心不含任何 UE 字符串。
 

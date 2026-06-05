@@ -21,6 +21,7 @@ from pathlib import PurePosixPath
 from lib import rollup
 from lib.graph import Edge, Graph, Node
 
+from .confidence import DEFAULT_CONFIDENCE, bake_confidence
 from .zoning import DEPENDENCY, TARGET, Zoning
 
 #### 4 层重构 view 的 band 下标（从左到右的阅读序） [@380kkm 2026-06-05] ####
@@ -30,7 +31,7 @@ TARGET_CORE, TARGET_IFACE, DEP_IFACE, DEP_CORE = 0, 1, 2, 3
 #### 把 src 的相关 edge-confidence 拷贝到 dst [@380kkm 2026-06-05] ####
 def _carry_confidence(src: Graph, dst: Graph) -> None:
     base = getattr(src, "edge_confidence", {})
-    dst.edge_confidence = {e.key(): base.get(e.key(), "direct") for e in dst.edges}
+    dst.edge_confidence = bake_confidence(dst.edges, base)
 
 
 #### 取 target 区子图（仅 target→target 边） [@380kkm 2026-06-05] ####
@@ -130,7 +131,7 @@ def assign_modules(g: Graph, z: "Zoning", level: str = "file", store=None,
             else:
                 raw = "(external)"
         else:
-            raw = rollup._module_of(_FakeNode(path), roots) if path else "(external)"
+            raw = rollup._module_of(_PathNodeShim(path), roots) if path else "(external)"
         mid = side + ":" + raw
         module_of[nid] = mid
         members[mid] = members.get(mid, 0) + 1
@@ -172,9 +173,9 @@ def dependency_surface(g: Graph, rollup_modules: bool = False, store=None) -> Gr
         for e in sorted(crossing, key=lambda e: (e.src, e.dst, e.relation)):
             edge = Edge(e.src, e.dst, e.relation, e.evidence, e.weight)
             if out.add_edge(edge):
-                conf[edge.key()] = base_conf.get(e.key(), "direct")
+                conf[edge.key()] = base_conf.get(e.key(), DEFAULT_CONFIDENCE)
             else:
-                conf.setdefault(edge.key(), base_conf.get(e.key(), "direct"))
+                conf.setdefault(edge.key(), base_conf.get(e.key(), DEFAULT_CONFIDENCE))
         out.edge_confidence = conf
         return out
 
@@ -185,7 +186,7 @@ def dependency_surface(g: Graph, rollup_modules: bool = False, store=None) -> Gr
     for nid in sorted(dep_targets):
         node = g.nodes[nid]
         path = node.attrs.get("path") or (node.evidence.path if node.evidence else "") or node.label
-        gid = "dep:" + rollup._module_of(_FakeNode(path), roots)
+        gid = "dep:" + rollup._module_of(_PathNodeShim(path), roots)
         group_of[nid] = gid
     members: dict[str, int] = {}
     for gid in group_of.values():
@@ -201,17 +202,21 @@ def dependency_surface(g: Graph, rollup_modules: bool = False, store=None) -> Gr
             continue
         edge = Edge(e.src, gid, e.relation, None, e.weight)
         if out.add_edge(edge):
-            conf[edge.key()] = base_conf.get(e.key(), "direct")
+            conf[edge.key()] = base_conf.get(e.key(), DEFAULT_CONFIDENCE)
     out.edge_confidence = conf
     return out
     #### /rollup dependency target ####
 
 
-#### 作用于裸路径的最小类节点 shim [@380kkm 2026-06-05] ####
-class _FakeNode:
+#### 把裸路径适配成 rollup._module_of 期望的最小节点形状（仅 .label/.id） [@380kkm 2026-06-05] ####
+class _PathNodeShim:
     def __init__(self, path: str):
         self.label = path or ""
         self.id = self.label
+
+
+# 兼容旧名：boundary/__init__ 仍以 _FakeNode 再导出本 shim
+_FakeNode = _PathNodeShim
 
 
 #### 一次 target→dependency boundary crossing（dependency 制造的缝） [@380kkm 2026-06-05] ####
@@ -237,7 +242,7 @@ def crossings(g: Graph) -> list[Crossing]:
             continue
         out.append(Crossing(
             src=e.src, dst=e.dst, relation=e.relation,
-            confidence=conf.get(e.key(), "direct"),
+            confidence=conf.get(e.key(), DEFAULT_CONFIDENCE),
             evidence=str(e.evidence) if e.evidence else "",
         ))
     out.sort(key=lambda c: (c.src, c.dst, c.relation))

@@ -2,7 +2,7 @@
 # enrich.langreg
 from __future__ import annotations
 
-from tree_sitter import Language, Node, Parser, Query, QueryCursor
+from tree_sitter import Language, Parser, Query, QueryCursor
 from tree_sitter_language_pack import get_language
 
 

@@ -7,34 +7,12 @@
 """
 from __future__ import annotations
 
+from conftest import _make_store as _mk_store
+
 from lib import stores
 from lib.boundary import modulespec as ms
 from lib.boundary import modules_build as mb
 from lib.graph import Budget
-
-
-#### 用 (files, syms, edges) 字面量构建一个微型真实 schema 库 [@380kkm 2026-06-05] ####
-def _mk_store(tmp_path, files, syms, edges):
-    _, mr_db = stores.manyread_lib()
-    store = tmp_path / "manyread"
-    store.mkdir(parents=True)
-    db_path = store / "source.db"
-    conn = mr_db.connect(db_path)
-    mr_db.init_schema(conn)
-    for fid, path, ext, content in files:
-        conn.execute("INSERT INTO files(id,path,ext,size,mtime,content) VALUES(?,?,?,?,0,?)",
-                     (fid, path, ext, len(content), content))
-        conn.execute("INSERT INTO files_fts(rowid,path,content) VALUES(?,?,?)", (fid, path, content))
-    for sid, fid, name, kind, sl, el, parent in syms:
-        conn.execute("INSERT INTO symbols(id,file_id,name,kind,lang,start_line,end_line,"
-                     "start_byte,end_byte,parent_id) VALUES(?,?,?,?, 'cpp',?,?,0,1,?)",
-                     (sid, fid, name, kind, sl, el, parent))
-    for eid, fid, src, dst, dname, rel in edges:
-        conn.execute("INSERT INTO edges(id,file_id,src_symbol_id,dst_symbol_id,dst_name,relation) "
-                     "VALUES(?,?,?,?,?,?)", (eid, fid, src, dst, dname, rel))
-    conn.commit()
-    conn.close()
-    return db_path
 
 
 #### 四模块库：Core / Render / Game / ThirdParty 各一文件，外加一个库外大目录 [@380kkm 2026-06-05] ####

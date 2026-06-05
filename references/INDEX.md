@@ -3,8 +3,7 @@
 Reference docs for the **manyread** Claude Code plugin. These document the
 query-time discipline and the four index/trace/ref layers. They are generic and
 project-agnostic — per-project specifics live in each repo's
-`manyread/manyread.json`. For the full normative design see
-`../docs/specs/2026-05-28-manyread-design.md`.
+`manyread/manyread.json`.
 
 ```text
 references/

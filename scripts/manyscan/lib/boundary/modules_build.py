@@ -17,6 +17,7 @@ from lib import deps
 from lib.graph import Budget, Edge, Evidence, Graph, Node
 
 from .build import _MACRO_RE
+from .confidence import bake_confidence
 from .nodes import _NORM, external_node, qualified_name
 from .modulespec import ModuleSpec, like_prefix, module_of_path
 from .resolve import out_edges
@@ -173,29 +174,19 @@ def build_modules(store, spec: ModuleSpec, budget: Budget, alias: str | None = N
         return node.attrs.get("module") != spec.fallback
     #### /可展开判定 ####
 
-    #### 从一组有序源 id 展开一层有界出边，返回新增的可展开符号 id [@380kkm 2026-06-05] ####
+    #### 从一组有序源 id 展开一层，收新增可展开符号 id [@380kkm 2026-06-05] ####
     def _expand(src_ids: list[str]) -> list[str]:
         nonlocal truncated, elided
         fresh: set[str] = set()
-        for nid in src_ids:
-            sid = int(nid[1:])
-            src_path = g.nodes[nid].attrs.get("path")
-            for er in out_edges(store, sid):
-                dn = er["dst_name"]
-                if dn and _MACRO_RE.match(dn):
-                    continue
-                node, conf = resolve_module_target(store, er, spec, alias)
-                if node.id not in g.nodes:
-                    if len(g.nodes) >= cap:
-                        truncated = True
-                        elided += 1
-                        continue
-                    g.add_node(node)
-                    if _expandable(node):
-                        fresh.add(node.id)
-                edge = Edge(nid, node.id, er["relation"], Evidence(src_path, None), 1)
-                g.add_edge(edge)
-                confidence[edge.key()] = conf
+
+        def collect(node: Node, was_new: bool) -> None:
+            if was_new and _expandable(node):
+                fresh.add(node.id)
+
+        n_el, was_trunc = _expand_layer(g, store, spec, alias, cap, confidence, src_ids, collect)
+        elided += n_el
+        if was_trunc:
+            truncated = True
         return sorted(fresh)
     #### /展开一层 ####
 
@@ -224,7 +215,7 @@ def build_modules(store, spec: ModuleSpec, budget: Budget, alias: str | None = N
             truncated = True
     #### /dep_depth>=2 ####
 
-    g.edge_confidence = {e.key(): confidence.get(e.key(), "direct") for e in g.edges}
+    g.edge_confidence = bake_confidence(g.edges, confidence)
     if truncated:
         g.truncated = True
         g.elided = max(elided, g.elided)
@@ -232,13 +223,17 @@ def build_modules(store, spec: ModuleSpec, budget: Budget, alias: str | None = N
 #### /直接构造 N 路模块分区图 ####
 
 
-#### 从兜底表层符号多展开一层兜底依赖，返回 (id, 是否首次加入) 列表 [@380kkm 2026-06-05] ####
-def _expand_fallback(g: Graph, store, spec: ModuleSpec, alias, surface: list[str], cap: int,
-                     confidence: dict) -> list[tuple[str, bool]]:
-    touched: list[tuple[str, bool]] = []
-    truncated = False
+#### 从一组有序源 id 展开一层有界出边：跳宏、解析、按预算加节点/边、记置信度 [@380kkm 2026-06-05] ####
+def _expand_layer(g: Graph, store, spec: ModuleSpec, alias, cap: int, confidence: dict,
+                  src_ids: list[str], collect) -> tuple[int, bool]:
+    """逐源 id 跟随边界出边：``*_API`` 宏跳过；目标经 ``resolve_module_target`` 解析。目标节点未在
+    图中且未达 ``cap`` 时加入（达 cap 则计 elided 并跳过该边，不加边）；否则加边并记逐边置信度。
+    对每条加边的目标调 ``collect(node, was_new)`` 让调用方决定收集什么。返回 ``(本次 elided 数,
+    是否发生截断)``，计量交由调用方按各自口径汇总。
+    """
     elided = 0
-    for nid in surface:
+    truncated = False
+    for nid in src_ids:
         sid = int(nid[1:])
         src_path = g.nodes[nid].attrs.get("path")
         for er in out_edges(store, sid):
@@ -256,8 +251,20 @@ def _expand_fallback(g: Graph, store, spec: ModuleSpec, alias, surface: list[str
             edge = Edge(nid, node.id, er["relation"], Evidence(src_path, None), 1)
             g.add_edge(edge)
             confidence[edge.key()] = conf
-            if node.id.startswith("s") and node.attrs.get("module") == spec.fallback:
-                touched.append((node.id, was_new))
+            collect(node, was_new)
+    return elided, truncated
+
+
+#### 从兜底表层符号多展开一层兜底依赖，返回 (id, 是否首次加入) 列表 [@380kkm 2026-06-05] ####
+def _expand_fallback(g: Graph, store, spec: ModuleSpec, alias, surface: list[str], cap: int,
+                     confidence: dict) -> list[tuple[str, bool]]:
+    touched: list[tuple[str, bool]] = []
+
+    def collect(node: Node, was_new: bool) -> None:
+        if node.id.startswith("s") and node.attrs.get("module") == spec.fallback:
+            touched.append((node.id, was_new))
+
+    elided, truncated = _expand_layer(g, store, spec, alias, cap, confidence, surface, collect)
     if truncated:
         g.truncated = True
         g.elided = g.elided + elided

@@ -23,6 +23,12 @@ except Exception:  # noqa: BLE001
 
 pytestmark = pytest.mark.skipif(not _HAVE, reason="tree-sitter not installed")
 
+from dsl_fixtures import (  # noqa: E402
+    GOOD_ANIMLANG_SEMANTIC,
+    GOOD_BPLISP,
+    codes as _codes,
+)
+
 _SCHEMA_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "schemas"))
 _BPLISP_SCHEMA = os.path.join(_SCHEMA_DIR, "bplisp.sample.json")
 _ANIMLANG_SCHEMA = os.path.join(_SCHEMA_DIR, "animlang.sample.json")
@@ -40,38 +46,19 @@ def _animlang_schema():
     return V.load_schema(_ANIMLANG_SCHEMA)
 
 
-#### 带 schema 收集语义错误码（可选按严重度过滤），排序返回 [@380kkm 2026-06-05] ####
-def _codes(text, lang, schema=None, sev=None):
-    return sorted(i.code for i in V.dsl_validate(text, lang, schema)
-                  if sev is None or i.severity == sev)
-
-
 #### 收集 bplisp/animlang 的语义错误条目 [@380kkm 2026-06-05] ####
 def _sem(text, lang, schema):
     return [i for i in V.dsl_validate(text, lang, schema) if i.code in _SEMANTIC_CODES]
 
 
-#### 合法 bplisp 内联夹具（villager 示例的镜像） [@380kkm 2026-06-05] ####
-_GOOD_BPLISP = (
-    "(function\n"
-    "  None\n"
-    '  :event-id "8abce957"\n'
-    "  :param (Selected Actor)\n"
-    '  (PrintString :instring "Villager Select called!" :id "5f6936c3")\n'
-    '  (set Selected "K2Node_FunctionEntry" :id "226de0c6")\n'
-    "  (let returnvalue\n"
-    '    (SpawnSystemAttached :location "0, 0, 0" :id "60944b57")))\n'
-)
-
-
 #### 验证无 schema 路径与三参传 None 的结果完全相同（--schema 门控） [@380kkm 2026-06-05] ####
 def test_bplisp_no_schema_byte_identical():
-    assert V.dsl_validate(_GOOD_BPLISP, "bplisp") == V.dsl_validate(_GOOD_BPLISP, "bplisp", None)
+    assert V.dsl_validate(GOOD_BPLISP, "bplisp") == V.dsl_validate(GOOD_BPLISP, "bplisp", None)
 
 
 #### 验证合法 bplisp 加 schema 不引入任何 error [@380kkm 2026-06-05] ####
 def test_bplisp_good_inline_no_errors():
-    assert _codes(_GOOD_BPLISP, "bplisp", _bplisp_schema(), "error") == []
+    assert _codes(GOOD_BPLISP, "bplisp", _bplisp_schema(), "error") == []
 
 
 #### 真实 bplisp 示例（仓库唯一一个）对样例 schema 零语义问题 [@380kkm 2026-06-05] ####
@@ -150,28 +137,15 @@ def test_bplisp_required_pin_connected_is_clean():
     assert "MISSING_REQUIRED_PIN" not in _codes(src, "bplisp", adhoc)
 
 
-#### 合法 animlang 内联夹具（state_machine 示例的镜像） [@380kkm 2026-06-05] ####
-_GOOD_ANIMLANG = (
-    '(anim-blueprint "SimpleStateMachine"\n'
-    "  :variables [(float :speed 0.0 :range [0.0 600.0])]\n"
-    "  :anim-graph\n"
-    "    (state-machine :locomotion :initial :idle\n"
-    "      :states\n"
-    '        [(state :idle (sequence-player "Idle_Rifle" :loop true))\n'
-    '         (state :walk (sequence-player "Walk_Fwd" :loop true))]\n'
-    "      :transitions\n"
-    "        [(transition :idle :walk :condition (> :speed 10.0) :duration 0.2)]))\n"
-)
-
-
 #### 验证无 schema 路径与三参传 None 的结果完全相同（--schema 门控） [@380kkm 2026-06-05] ####
 def test_animlang_no_schema_byte_identical():
-    assert V.dsl_validate(_GOOD_ANIMLANG, "animlang") == V.dsl_validate(_GOOD_ANIMLANG, "animlang", None)
+    assert (V.dsl_validate(GOOD_ANIMLANG_SEMANTIC, "animlang")
+            == V.dsl_validate(GOOD_ANIMLANG_SEMANTIC, "animlang", None))
 
 
 #### 验证合法 animlang 加 schema 不引入任何 error [@380kkm 2026-06-05] ####
 def test_animlang_good_inline_no_errors():
-    assert _codes(_GOOD_ANIMLANG, "animlang", _animlang_schema(), "error") == []
+    assert _codes(GOOD_ANIMLANG_SEMANTIC, "animlang", _animlang_schema(), "error") == []
 
 
 #### 三个真实 animlang 示例对样例 schema 零语义问题（设计稿方言） [@380kkm 2026-06-05] ####
@@ -218,7 +192,7 @@ def test_animlang_unknown_prop_on_strict_leaf_is_warning():
 def test_animlang_positional_state_refs_not_flagged():
     # state-machine / state / transition 用前导位置关键字做标识符（任意状态名），
     # 它们与命名属性形状不可区分 -> 这些 form 不开 strict-props，绝不应误报
-    assert "UNKNOWN_PROP" not in _codes(_GOOD_ANIMLANG, "animlang", _animlang_schema())
+    assert "UNKNOWN_PROP" not in _codes(GOOD_ANIMLANG_SEMANTIC, "animlang", _animlang_schema())
 
 
 #### 验证导出器方言 (B) 节点被识别（external 但 known，不报未知类型） [@380kkm 2026-06-05] ####

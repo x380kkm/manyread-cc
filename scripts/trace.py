@@ -105,6 +105,15 @@ def parse_files_arg(files: str | None) -> list[str]:
     return [f for f in (x.strip() for x in files.split(",")) if f]
 
 
+#### 把单个路径解析并 stat 成一条 {path, mtime, size} 状态项（不存在则 mtime/size 为 None） [@380kkm 2026-06-05] ####
+def _state_entry(path_str: str, cfg: config.ProjectConfig) -> dict:
+    fs = _resolve_for_state(path_str, cfg)
+    if fs.exists():
+        st = fs.stat()
+        return {"path": path_str, "mtime": int(st.st_mtime), "size": int(st.st_size)}
+    return {"path": path_str, "mtime": None, "size": None}
+
+
 #### 为给定路径采集 [{path, mtime, size}] 文件状态 [@380kkm 2026-06-05] ####
 def capture_file_state(paths: list[str], cfg: config.ProjectConfig) -> list[dict]:
     state: list[dict] = []
@@ -112,12 +121,7 @@ def capture_file_state(paths: list[str], cfg: config.ProjectConfig) -> list[dict
         p = raw.strip()
         if not p:
             continue
-        fs = _resolve_for_state(p, cfg)
-        if fs.exists():
-            st = fs.stat()
-            state.append({"path": p, "mtime": int(st.st_mtime), "size": int(st.st_size)})
-        else:
-            state.append({"path": p, "mtime": None, "size": None})
+        state.append(_state_entry(p, cfg))
     return state
 #### /采集文件状态 ####
 
@@ -134,16 +138,6 @@ def _resolve_for_state(path_str: str, cfg: config.ProjectConfig) -> Path:
 #### 判定动态轨迹行是否陈旧并给出原因 [@380kkm 2026-06-05] ####
 def is_stale(row_kind: str, valid_date: str | None, file_state: str | None,
              cfg: config.ProjectConfig, stale_days: int) -> tuple[bool, str]:
-    """参数:
-        row_kind: 轨迹类别（static 或 dynamic）。
-        valid_date: 该行的有效日期（ISO 字符串），用于年龄判定。
-        file_state: 记录的文件状态 json 字符串。
-        cfg: 项目配置，用于解析记录路径。
-        stale_days: 年龄阈值（天）。
-
-    返回:
-        (stale, reason) 二元组；非陈旧时 reason 为空串。
-    """
     if row_kind != "dynamic":
         return (False, "")
     if valid_date:
@@ -177,13 +171,24 @@ def is_stale(row_kind: str, valid_date: str | None, file_state: str | None,
 #### /判定是否陈旧 ####
 
 
-#### 取某条日志最新一条备注的状态 [@380kkm 2026-06-05] ####
-def _status_of(conn, log_id: int) -> str | None:
-    row = conn.execute(
-        "SELECT status FROM query_notes WHERE log_id=? ORDER BY id DESC LIMIT 1",
+#### 取某条日志最新一条备注的 (tag, note, status)（无备注则 None） [@380kkm 2026-06-05] ####
+def _latest_note(conn, log_id: int) -> tuple | None:
+    return conn.execute(
+        "SELECT tag, note, status FROM query_notes WHERE log_id=? ORDER BY id DESC LIMIT 1",
         (log_id,),
     ).fetchone()
-    return row[0] if row else None
+
+
+#### 取某条日志最新一条备注的状态 [@380kkm 2026-06-05] ####
+def _status_of(conn, log_id: int) -> str | None:
+    row = _latest_note(conn, log_id)
+    return row[2] if row else None
+
+
+#### 把检索字段拼成 blob 并判定是否（不分大小写）含全部检索词 [@380kkm 2026-06-05] ####
+def _blob_matches(sql_text, task_tag, tag, note, terms: list[str]) -> bool:
+    blob = " ".join(str(x) for x in (sql_text, task_tag, tag, note) if x)
+    return _matches(blob, terms)
 
 
 #### 把字符串折叠为单行（压缩空白） [@380kkm 2026-06-05] ####
@@ -251,15 +256,11 @@ def cmd_preflight(args: argparse.Namespace) -> int:
     dynamic_rows: list[tuple] = []
     for r in rows:
         log_id, ts, proj, dbp, sql_text, kind, task_tag, valid_date, file_state = r
-        if _status_of(conn, log_id) in ("shelved", "cleared"):
+        nrow = _latest_note(conn, log_id)
+        tag, note, status = nrow if nrow else (None, None, None)
+        if status in ("shelved", "cleared"):
             continue
-        nrow = conn.execute(
-            "SELECT tag, note FROM query_notes WHERE log_id=? ORDER BY id DESC LIMIT 1",
-            (log_id,),
-        ).fetchone()
-        tag, note = (nrow[0], nrow[1]) if nrow else (None, None)
-        blob = " ".join(str(x) for x in (sql_text, task_tag, tag, note) if x)
-        if not _matches(blob, terms):
+        if not _blob_matches(sql_text, task_tag, tag, note, terms):
             continue
         if kind == "static" or note is not None or tag is not None:
             static_rows.append((log_id, kind, task_tag, sql_text, tag, note))
@@ -311,15 +312,9 @@ def cmd_search(args: argparse.Namespace) -> int:
     printed = 0
     for r in rows:
         log_id, ts, proj, kind, task_tag, valid_date, sql_text = r
-        nrow = conn.execute(
-            "SELECT tag, note, status FROM query_notes WHERE log_id=? ORDER BY id DESC LIMIT 1",
-            (log_id,),
-        ).fetchone()
-        tag = note = status = None
-        if nrow:
-            tag, note, status = nrow
-        blob = " ".join(str(x) for x in (sql_text, task_tag, tag, note) if x)
-        if not _matches(blob, terms):
+        nrow = _latest_note(conn, log_id)
+        tag, note, status = nrow if nrow else (None, None, None)
+        if not _blob_matches(sql_text, task_tag, tag, note, terms):
             continue
         when = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
         line = f"[{log_id}] {kind} {when} project={proj}"
@@ -425,17 +420,7 @@ def cmd_keep(args: argparse.Namespace) -> int:
             entries = json.loads(file_state)
         except (json.JSONDecodeError, TypeError):
             entries = []
-        refreshed = []
-        for ent in entries:
-            path_str = ent.get("path")
-            if not path_str:
-                continue
-            fs = _resolve_for_state(path_str, cfg)
-            if fs.exists():
-                st = fs.stat()
-                refreshed.append({"path": path_str, "mtime": int(st.st_mtime), "size": int(st.st_size)})
-            else:
-                refreshed.append({"path": path_str, "mtime": None, "size": None})
+        refreshed = [_state_entry(ent["path"], cfg) for ent in entries if ent.get("path")]
         new_state_json = json.dumps(refreshed)
     conn.execute("UPDATE query_log SET valid_date=?, file_state=? WHERE id=?",
                  (new_valid, new_state_json, log_id))

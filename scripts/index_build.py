@@ -131,7 +131,7 @@ def read_text(path: Path) -> str | None:
 
 
 #### 执行完整 DROP+CREATE 重建，返回用于汇报的统计字典 [@380kkm 2026-06-05] ####
-def build(cfg: config.ProjectConfig, rebuild: bool) -> dict:
+def build(cfg: config.ProjectConfig) -> dict:
     # 计算回退扩展名之前先跑摄取级扩展发现，使 LANG_EXTS 反映已启用扩展（幂等、纯 stdlib）
     run_discovery_ingest(cfg)
     root = Path(cfg.root).resolve()
@@ -327,7 +327,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     #### /--copy-from ####
 
-    stats = build(cfg, rebuild=args.rebuild)
+    stats = build(cfg)
     config.register_store(cfg.store, cfg.alias, cfg.root)
 
     print(f"project   : {cfg.alias}")

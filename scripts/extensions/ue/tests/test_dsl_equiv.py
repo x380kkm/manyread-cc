@@ -222,3 +222,22 @@ def test_block_comment_skipped():
     a = '(material "M" (expressions (constant $c :value 0.0)))'
     b = '(material "M" #| 块注释 |# (expressions #| inline |# (constant $c :value 0.0)))'
     assert _equiv(a, b, "matlang")
+
+
+#### 下钻触顶：差异条数封顶于 _DIFF_CAP [@380kkm 2026-06-05] ####
+def test_diff_cap_bounds_output():
+    a = "\n".join(f"(f{i} {i})" for i in range(60))
+    b = "\n".join(f"(f{i} x{i})" for i in range(60))
+    diffs, ok = EQ.compare(a, b, "matlang")
+    assert not ok
+    assert len(diffs) == EQ._DIFF_CAP
+
+
+#### cap 边界：arity 追加不设守卫，恰在顶点可溢出一条 [@380kkm 2026-06-05] ####
+def test_diff_cap_arity_overshoot_by_one():
+    # 49 个原子差异 + 第 50 个 form 的 head 差异恰好填到顶点，随后的 arity 差异无守卫追加
+    a_forms = [f"(f{i} {i})" for i in range(49)] + ["(ga 1 2)"]
+    b_forms = [f"(f{i} x{i})" for i in range(49)] + ["(gb 1)"]
+    diffs, ok = EQ.compare("\n".join(a_forms), "\n".join(b_forms), "matlang")
+    assert not ok
+    assert len(diffs) == EQ._DIFF_CAP + 1

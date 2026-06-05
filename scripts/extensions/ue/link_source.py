@@ -40,24 +40,15 @@ CLI::
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
 import sys
 from pathlib import Path
 
-
-#### 按文件路径在私有别名下加载模块 [@380kkm 2026-06-05] ####
-def _load_module(name: str, path: str):
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:  # pragma: no cover
-        raise ImportError(f"cannot load {name} from {path}")
-    mod = importlib.util.module_from_spec(spec)
-    # exec 前先注册
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
-#### /按文件路径在私有别名下加载模块 ####
+# 同目录在 sys.path 上（独立运行时为 sys.path[0]，测试里由 test 插入）；取同包的纯
+# stdlib 按路径加载器（不拖入 tree-sitter、不反向 import manyscan 的规范实现）
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _modload import load_module as _load_module  # noqa: E402
 
 
 # 本模块在 scripts/extensions/ue/ 下；manyscan 在 scripts/manyscan/（上溯三级）

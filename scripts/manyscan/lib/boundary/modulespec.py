@@ -104,20 +104,29 @@ def _excluded(p: str, zone: ModuleZone) -> bool:
     return False
 
 
-#### 把定义文件路径分类为某个 zone 名或兜底名（最长匹配 + exclude） [@380kkm 2026-06-05] ####
-def module_of_path(path: str | None, spec: ModuleSpec) -> str:
-    """缺失路径归兜底。逐 ``_matchers``（最长优先）检查 ``p == prefix`` 或
-    ``p.startswith(prefix + '/')``；命中且未被该 zone exclude 即返回 zone 名；空前缀匹配一切。
-    无任何命中归 ``spec.fallback``。逐前缀语义与 ``zone_of_path`` 完全一致。
+#### 取归一化路径命中的 winning matcher（最长匹配 + 未被 exclude），无则 None [@380kkm 2026-06-05] ####
+def match_path(path: str | None, spec: ModuleSpec) -> tuple[str, str] | None:
+    """返回 ``(include_prefix, zone_name)``：逐 ``_matchers``（最长优先）检查
+    ``prefix == ""``（匹配一切）或 ``p == prefix`` 或 ``p.startswith(prefix + '/')``，命中且未被
+    该 zone exclude 即返回该对。``path`` 为 None 或无任何命中时返回 None。逐前缀语义与
+    ``zone_of_path`` 完全一致，是 ``module_of_path``（取 name）与 ``winning_prefix``（取 prefix）的
+    唯一裁决点。
     """
     if path is None:
-        return spec.fallback
+        return None
     p = _NORM(path)
     for prefix, name in spec._matchers:
         if prefix == "" or p == prefix or p.startswith(prefix + "/"):
             if not _excluded(p, spec._by_name[name]):
-                return name
-    return spec.fallback
+                return prefix, name
+    return None
+
+
+#### 把定义文件路径分类为某个 zone 名或兜底名（最长匹配 + exclude） [@380kkm 2026-06-05] ####
+def module_of_path(path: str | None, spec: ModuleSpec) -> str:
+    """缺失路径或无任何命中归 ``spec.fallback``，否则返回 winning matcher 的 zone 名。"""
+    m = match_path(path, spec)
+    return m[1] if m is not None else spec.fallback
 
 
 #### 把一条 ``--module NAME=PREFIX[,PREFIX...]`` 字面量解析为 (name, prefixes) [@380kkm 2026-06-05] ####

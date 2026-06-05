@@ -16,9 +16,9 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from lib import graph as graphmod
-from lib.graph import Graph
+from lib.graph import Edge, Graph, Node
 
-from .modulespec import ModuleSpec
+from .modulespec import ModuleSpec, match_path
 
 
 #### 取节点的模块名（即 attrs['zone']，由构建烘焙） [@380kkm 2026-06-05] ####
@@ -87,24 +87,13 @@ class Need:
 
 #### 取某路径在规格下命中的 winning include 前缀（最长匹配，供调试重叠） [@380kkm 2026-06-05] ####
 def winning_prefix(path: str | None, spec: ModuleSpec) -> str:
-    if path is None:
-        return ""
-    from .modulespec import _NORM, _excluded
-    p = _NORM(path)
-    for prefix, name in spec._matchers:
-        if prefix == "" or p == prefix or p.startswith(prefix + "/"):
-            if not _excluded(p, spec._by_name[name]):
-                return prefix
-    return ""
+    m = match_path(path, spec)
+    return m[0] if m is not None else ""
 
 
-#### 按有序模块对 (A,B) 列出 A 从 B 需要的符号（带证据 + 引用计数） [@380kkm 2026-06-05] ####
-def needed_symbols(g: Graph, spec: ModuleSpec) -> dict[tuple[str, str], list[Need]]:
-    """泛化 ``crossings``：键为 ``(src_module, dst_module)``（A≠B），值为去重的 :class:`Need`
-    列表（按 dst 排序）。``ref_count`` 记多少个 A 侧符号引用该 dst（切割代价权重）。
-    """
-    conf = getattr(g, "edge_confidence", {})  # noqa: F841  (保留接口对齐，证据足够)
-    # (A,B,dst) -> {relations:set, refs:set(src), label, path}
+#### 按 (A,B,dst) 累积跨模块边证据：relations / 引用源 / label / path / winning [@380kkm 2026-06-05] ####
+def _accumulate_needs(g: Graph, spec: ModuleSpec) -> dict[tuple[str, str, str], dict]:
+    # (A,B,dst) -> {relations:set, refs:set(src), label, path, winning}
     acc: dict[tuple[str, str, str], dict] = {}
     for e in g.edges:
         sm = _module_of_node(g, e.src)
@@ -122,7 +111,11 @@ def needed_symbols(g: Graph, spec: ModuleSpec) -> dict[tuple[str, str], list[Nee
             acc[key] = rec
         rec["relations"].add(e.relation)
         rec["refs"].add(e.src)
+    return acc
 
+
+#### 把累积证据装配成按对 (A,B) 的 Need 列表（每对按 dst 排序） [@380kkm 2026-06-05] ####
+def _build_needs(acc: dict[tuple[str, str, str], dict]) -> dict[tuple[str, str], list[Need]]:
     out: dict[tuple[str, str], list[Need]] = {}
     for (sm, dm, dst), rec in acc.items():
         out.setdefault((sm, dm), []).append(Need(
@@ -134,13 +127,20 @@ def needed_symbols(g: Graph, spec: ModuleSpec) -> dict[tuple[str, str], list[Nee
     return out
 
 
+#### 按有序模块对 (A,B) 列出 A 从 B 需要的符号（带证据 + 引用计数） [@380kkm 2026-06-05] ####
+def needed_symbols(g: Graph, spec: ModuleSpec) -> dict[tuple[str, str], list[Need]]:
+    """泛化 ``crossings``：键为 ``(src_module, dst_module)``（A≠B），值为去重的 :class:`Need`
+    列表（按 dst 排序）。``ref_count`` 记多少个 A 侧符号引用该 dst（切割代价权重）。
+    """
+    return _build_needs(_accumulate_needs(g, spec))
+
+
 #### 在模块级商图上检测环：返回参与环的模块组列表（每组 >1） [@380kkm 2026-06-05] ####
 def module_cycles(g: Graph) -> list[list[str]]:
     """构造 N 节点商图（每声明/兜底模块一节点，A->B 当且仅当存在跨模块边 A->B），复用迭代
     Tarjan。任何 size>1 的 SCC 即一个模块环。N 是模块数（非符号数），平凡有界。
     """
     quo = Graph()
-    from lib.graph import Edge, Node
     mods = sorted({m for nid in g.nodes if (m := _module_of_node(g, nid)) is not None})
     for m in mods:
         quo.add_node(Node(id=m, kind="module", label=m))

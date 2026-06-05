@@ -16,58 +16,22 @@ except Exception:  # noqa: BLE001
 
 pytestmark = pytest.mark.skipif(not _HAVE, reason="tree-sitter not installed")
 
-
-#### GOOD 夹具：真实 reference/* 的内联镜像，期望零错误 [@380kkm 2026-06-05] ####
-_GOOD_MATLANG = (
-    '(material "M_SimplePBR"\n'
-    "  :domain surface\n"
-    "  (expressions\n"
-    "    (texture-sample $tex1 :uv (connect $uv1))\n"
-    "    (texture-coordinate $uv1 :coordinate-index 0)\n"
-    '    (vector-parameter $vparam1 :name "TintColor")\n'
-    "    (multiply $mul1 :a (connect $tex1 0) :b (connect $vparam1 0))\n"
-    "    (constant $const1 :value 0.0))\n"
-    "  (outputs\n"
-    "    :base-color (connect $mul1 0)\n"
-    "    :metallic (connect $const1 0)))\n"
+from dsl_fixtures import (  # noqa: E402
+    GOOD_ANIMLANG_STRUCT,
+    GOOD_BPLISP,
+    GOOD_MATLANG,
+    codes as _codes,
 )
-
-_GOOD_BPLISP = (
-    "(function\n"
-    "  None\n"
-    '  :event-id "8abce957"\n'
-    "  :param (Selected Actor)\n"
-    '  (PrintString :instring "Villager Select called!" :id "5f6936c3")\n'
-    '  (set Selected "K2Node_FunctionEntry" :id "226de0c6")\n'
-    "  (let returnvalue\n"
-    '    (SpawnSystemAttached :location "0, 0, 0" :id "60944b57")))\n'
-)
-
-_GOOD_ANIMLANG = (
-    '(anim-blueprint "SimpleStateMachine"\n'
-    "  :variables [(float :speed 0.0 :range [0.0 600.0])]\n"
-    "  :anim-graph\n"
-    "    (state-machine :locomotion :initial :idle\n"
-    "      :states\n"
-    '        [(state :idle (sequence-player "Idle_Rifle" :loop true))\n'
-    '         (state :walk (sequence-player "Walk_Fwd" :loop true))]))\n'
-)
-
-
-#### 收集校验结果的错误码（可选按严重度过滤），排序返回 [@380kkm 2026-06-05] ####
-def _codes(text, lang, sev=None):
-    return sorted(i.code for i in V.dsl_validate(text, lang)
-                  if sev is None or i.severity == sev)
 
 
 #### 验证合法 matlang 产生零 error [@380kkm 2026-06-05] ####
 def test_good_matlang_zero_errors():
-    assert _codes(_GOOD_MATLANG, "matlang", "error") == []
+    assert _codes(GOOD_MATLANG, "matlang", sev="error") == []
 
 
 #### 验证合法 bplisp 零 error，仅产生 warning [@380kkm 2026-06-05] ####
 def test_good_bplisp_zero_errors_warns_only():
-    issues = V.dsl_validate(_GOOD_BPLISP, "bplisp")
+    issues = V.dsl_validate(GOOD_BPLISP, "bplisp")
     assert [i for i in issues if i.severity == "error"] == []
     # 未解析的绑定（Selected/returnvalue）是 warning，绝非 error
     assert any(i.code == "UNRESOLVED_REF" and i.severity == "warning" for i in issues)
@@ -75,21 +39,21 @@ def test_good_bplisp_zero_errors_warns_only():
 
 #### 验证合法 animlang 产生零 error [@380kkm 2026-06-05] ####
 def test_good_animlang_zero_errors():
-    assert _codes(_GOOD_ANIMLANG, "animlang", "error") == []
+    assert _codes(GOOD_ANIMLANG_STRUCT, "animlang", sev="error") == []
 
 
 #### 验证悬空连线（连到不存在节点）被判为 DANGLING_WIRE 错误 [@380kkm 2026-06-05] ####
 def test_dangling_wire():
     bad = ('(material "M" (expressions (multiply $m1 :a (connect $missing 0)))'
            " (outputs :base-color (connect $m1 0)))")
-    assert "DANGLING_WIRE" in _codes(bad, "matlang", "error")
+    assert "DANGLING_WIRE" in _codes(bad, "matlang", sev="error")
 
 
 #### 验证重复 id 报 DUP_ID，且自连线时不误报幻象 CYCLE [@380kkm 2026-06-05] ####
 def test_duplicate_id():
     bad = ('(material "M" (expressions (constant $c1 :value 1.0)'
            " (multiply $c1 :a (connect $c1 0))) (outputs :base-color (connect $c1 0)))")
-    codes = _codes(bad, "matlang", "error")
+    codes = _codes(bad, "matlang", sev="error")
     assert "DUP_ID" in codes
     assert "CYCLE" not in codes
 
@@ -98,7 +62,7 @@ def test_duplicate_id():
 def test_cycle():
     bad = ('(material "M" (expressions (multiply $a :x (connect $b 0))'
            " (multiply $b :x (connect $a 0))) (outputs :base-color (connect $a 0)))")
-    codes = _codes(bad, "matlang", "error")
+    codes = _codes(bad, "matlang", sev="error")
     assert "CYCLE" in codes
 
 
@@ -112,31 +76,31 @@ def test_cycle_three_node_and_self_loop():
     assert len(cycles) == 1
     loop = ('(material "M" (expressions (multiply $a :x (connect $a 0)))'
             " (outputs :base-color (connect $a 0)))")
-    assert "CYCLE" in _codes(loop, "matlang", "error")
+    assert "CYCLE" in _codes(loop, "matlang", sev="error")
 
 
 #### 验证缺少 material 根被判为 MATLANG_NO_MATERIAL 错误 [@380kkm 2026-06-05] ####
 def test_no_material_root():
     assert "MATLANG_NO_MATERIAL" in _codes("(expressions (constant $c1 :value 1.0))",
-                                           "matlang", "error")
+                                           "matlang", sev="error")
 
 
 #### 验证缺少 (outputs ...) 块被判为 MATLANG_NO_OUTPUTS 错误 [@380kkm 2026-06-05] ####
 def test_no_outputs_block():
     assert "MATLANG_NO_OUTPUTS" in _codes('(material "M" (expressions (constant $c1 :value 1.0)))',
-                                          "matlang", "error")
+                                          "matlang", sev="error")
 
 
 #### 验证括号不配对（语法被拒）报 PARSE_ERROR [@380kkm 2026-06-05] ####
 def test_parse_error():
-    assert "PARSE_ERROR" in _codes('(material "M" (expressions (multiply $m1', "matlang", "error")
+    assert "PARSE_ERROR" in _codes('(material "M" (expressions (multiply $m1', "matlang", sev="error")
 
 
 #### 验证 bplisp 缺少图根（顶层只有非图 form）报错 [@380kkm 2026-06-05] ####
 def test_bplisp_no_graph_root():
-    assert "BPLISP_NO_GRAPH" in _codes('(PrintString :instring "x" :id "1")', "bplisp", "error")
+    assert "BPLISP_NO_GRAPH" in _codes('(PrintString :instring "x" :id "1")', "bplisp", sev="error")
     # var 是合法顶层 form 但不是图（导入器白名单含 var，图根 pass 仍应报缺图）
-    assert "BPLISP_NO_GRAPH" in _codes('(var Speed float :default 0.0)', "bplisp", "error")
+    assert "BPLISP_NO_GRAPH" in _codes('(var Speed float :default 0.0)', "bplisp", sev="error")
 
 
 #### 验证导入器白名单中的事件类/转移条件图根不再误报缺图 [@380kkm 2026-06-05] ####
@@ -149,7 +113,7 @@ def test_bplisp_event_like_graph_roots_accepted():
              '(actor-bound-event Door OnDestroyed (exit))',
              '(transition-cond (> Speed 100.0))')
     for text in roots:
-        assert _codes(text, "bplisp", "error") == [], text
+        assert _codes(text, "bplisp", sev="error") == [], text
 
 
 #### 验证未知语言仅报 UNKNOWN_LANG 且严重度为 error [@380kkm 2026-06-05] ####
@@ -161,8 +125,8 @@ def test_unknown_lang():
 
 #### 验证同一输入两次校验结果一致（确定性） [@380kkm 2026-06-05] ####
 def test_deterministic():
-    a = V.dsl_validate(_GOOD_MATLANG, "matlang")
-    b = V.dsl_validate(_GOOD_MATLANG, "matlang")
+    a = V.dsl_validate(GOOD_MATLANG, "matlang")
+    b = V.dsl_validate(GOOD_MATLANG, "matlang")
     assert a == b
 
 

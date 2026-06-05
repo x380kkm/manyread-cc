@@ -19,6 +19,9 @@ from .html import _importance, to_html
 from .jsonfmt import graph_to_dict, metrics_to_dict, modules_to_dict, to_json
 from .textfmt import metrics_text, to_text
 
+#### 节点重要性计算的公共名（包内 _importance 为其实现） [@380kkm 2026-06-05] ####
+importance = _importance
+
 #### 格式名到 emitter 的注册表 [@380kkm 2026-06-05] ####
 FORMATS = {"json": to_json, "mermaid": to_mermaid, "dot": to_dot, "text": to_text, "html": to_html}
 
@@ -34,5 +37,5 @@ def render(g: Graph, fmt: str) -> str:
 __all__ = [
     "render", "FORMATS",
     "to_json", "to_html", "to_mermaid", "to_dot", "to_text",
-    "graph_to_dict", "metrics_to_dict", "modules_to_dict", "metrics_text", "_importance",
+    "graph_to_dict", "metrics_to_dict", "modules_to_dict", "metrics_text", "importance",
 ]

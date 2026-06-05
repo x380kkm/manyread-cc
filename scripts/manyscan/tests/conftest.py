@@ -1,13 +1,17 @@
 # audience: internal
 # manyscan.tests.conftest
-"""manyscan 的 pytest 夹具。
+"""manyscan 的 pytest 夹具与跨测试文件共享的建库/建图/渲染 helper。
 
 用 manyread 自己的 ``db.init_schema`` 建一个极小的存储库（让测试运行真实 schema），再插入一个
 三文件的 Python 包，含一条 import 边与一条 ``extends`` 边 —— 足以驱动 stores / deps / scope /
 graph 各项测试。
+
+拆分后的 test_boundary_* 与 test_render_* 子文件从本模块 ``from conftest import`` 取共享 helper
+（``_make_store`` / ``_build`` / ``_data_payload`` / ``_zoned_hub_graph`` 等），让各子文件可独立收集运行。
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -16,7 +20,8 @@ import pytest
 # 把 manyscan 目录加入路径
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from lib import stores  # noqa: E402
+from lib import boundary, render, stores  # noqa: E402
+from lib.graph import Budget, Edge, Graph, Node  # noqa: E402
 
 
 #### 三文件 Python 包的文件行：(id, 路径, 扩展名, 内容) [@380kkm 2026-06-05] ####
@@ -204,3 +209,109 @@ def module_store(tmp_path) -> Path:
     conn.commit()
     conn.close()
     return db_path
+
+
+#### 用 (files, syms, edges) 字面量构建一个微型真实 schema 库 [@380kkm 2026-06-05] ####
+def _make_store(tmp_path, files, syms, edges):
+    _, mr_db = stores.manyread_lib()
+    store = tmp_path / "manyread"
+    store.mkdir(parents=True)
+    db_path = store / "source.db"
+    conn = mr_db.connect(db_path)
+    mr_db.init_schema(conn)
+    for fid, path, ext, content in files:
+        conn.execute("INSERT INTO files(id,path,ext,size,mtime,content) VALUES(?,?,?,?,0,?)",
+                     (fid, path, ext, len(content), content))
+        conn.execute("INSERT INTO files_fts(rowid,path,content) VALUES(?,?,?)", (fid, path, content))
+    for sid, fid, name, kind, sl, el, parent in syms:
+        conn.execute("INSERT INTO symbols(id,file_id,name,kind,lang,start_line,end_line,"
+                     "start_byte,end_byte,parent_id) VALUES(?,?,?,?, 'cpp',?,?,0,1,?)",
+                     (sid, fid, name, kind, sl, el, parent))
+    for eid, fid, src, dst, dname, rel in edges:
+        conn.execute("INSERT INTO edges(id,file_id,src_symbol_id,dst_symbol_id,dst_name,relation) "
+                     "VALUES(?,?,?,?,?,?)", (eid, fid, src, dst, dname, rel))
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+#### 用默认预算在 out 方向构建边界图，返回 (zoning, graph) [@380kkm 2026-06-05] ####
+def _build(st):
+    z = boundary.make_zoning(st, None, None)
+    budget = Budget(max_nodes=400, max_depth=2, direction="out")
+    return z, boundary.build(st, z, budget, alias="t")
+
+
+#### 从 html 中抽出注入的 const DATA={...} JSON 对象（不含内联库） [@380kkm 2026-06-05] ####
+def _data_payload(html: str) -> str:
+    marker = "const DATA="
+    start = html.index(marker) + len(marker)
+    end = html.index(";\n", start)
+    return html[start:end]
+
+
+#### 截取裸 consts <script> 段（从 const DATA= 到 boot 标签），HIDDEN 行的唯一栖身处 [@380kkm 2026-06-05] ####
+def _consts_block(html: str) -> str:
+    start = html.index("const DATA=")
+    end = html.index('<script id="ms-boot">')
+    return html[start:end]
+
+
+#### 把 keys 排序后转成 JSON 串（与烘焙出的 HIDDEN 常量对齐） [@380kkm 2026-06-05] ####
+def _json_dumps_sorted(keys):
+    return json.dumps(sorted(keys))
+
+
+#### 构造一个被截断的微型切片图（两文件 + 一条 import 边 + frontier 元数据） [@380kkm 2026-06-05] ####
+def _slice():
+    g = Graph()
+    g.add_node(Node("file:1", "file", label="a.py"))
+    g.add_node(Node("file:2", "file", label="b.py"))
+    g.add_edge(Edge("file:1", "file:2", "imports"))
+    g.truncated = True
+    g.frontier_depth = 1
+    g.elided = 7
+    g.frontier["file:2"] = 7
+    return g
+
+
+#### 构造一个带清晰 hub + bridge 边的微型分区图 [@380kkm 2026-06-05] ####
+def _zoned_hub_graph():
+    g = Graph()
+    for nid in ("p1", "p2", "p3"):
+        g.add_node(Node(nid, "class", label=nid, attrs={"zone": "target", "cluster": "target"}))
+    g.add_node(Node("h", "class", label="Hub", attrs={"zone": "dependency", "cluster": "dependency"}))
+    g.add_node(Node("l", "class", label="Leaf", attrs={"zone": "dependency", "cluster": "dependency"}))
+    # target 3-环：p1->p2->p3->p1
+    g.add_edge(Edge("p1", "p2", "uses_type"))
+    g.add_edge(Edge("p2", "p3", "uses_type"))
+    g.add_edge(Edge("p3", "p1", "uses_type"))
+    for nid in ("p1", "p2", "p3"):
+        g.add_edge(Edge(nid, "h", "uses_type"))
+    g.add_edge(Edge("h", "l", "uses_type"))
+    return g
+
+
+#### 构造节点带文件路径的分区 hub 图 [@380kkm 2026-06-05] ####
+def _zoned_paths_graph():
+    g = _zoned_hub_graph()
+    g.nodes["p1"].attrs["path"] = "plugin/P1.cpp"
+    g.nodes["p2"].attrs["path"] = "plugin/P2.cpp"
+    g.nodes["p3"].attrs["path"] = "plugin/P3.cpp"
+    g.nodes["h"].attrs["path"] = "engine/Core.h"
+    g.nodes["l"].attrs["path"] = "engine/Leaf.h"
+    return g
+
+
+#### 按 scan.py 的接线方式算出 (band_of, bands_meta) 供渲染测试用 [@380kkm 2026-06-05] ####
+def _bands_for(g, layers):
+    return boundary.assign_bands(g, layers)
+
+
+#### 按 scan.py --collapse file 的接线方式渲染商图，返回 (html, module_of, modules_meta) [@380kkm 2026-06-05] ####
+def _collapse_render(g, layers="four"):
+    from lib.boundary import Zoning
+    z = Zoning(target_root="plugin", dep_roots=("engine",))
+    bo, bm = boundary.assign_bands(g, layers)
+    mo, mm = boundary.assign_modules(g, z, "file", None, bo)
+    return render.to_html(g, band_of=bo, bands_meta=bm, module_of=mo, modules_meta=mm), mo, mm

@@ -8,7 +8,7 @@ from tree_sitter import Node
 #### 待写入的符号行：遍历时收集，parent_id 在该文件符号入库后回填 [@380kkm 2026-06-05] ####
 class SymRow:
     __slots__ = ("name", "kind", "start_line", "end_line",
-                 "start_byte", "end_byte", "parent_local", "node", "db_id")
+                 "start_byte", "end_byte", "parent_local", "node")
 
     def __init__(self, name, kind, node: Node, parent_local: int | None):
         self.name = name
@@ -21,7 +21,6 @@ class SymRow:
         # 指向本地 rows 列表的下标
         self.parent_local = parent_local
         self.node = node
-        self.db_id: int | None = None
 #### /待写入的符号行 ####
 
 

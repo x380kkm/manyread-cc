@@ -4,20 +4,20 @@
 
 这些 pass 是 UE 扩展专属的；通用核心（scripts/dsl_validate.py）只提供 pass 协议、
 不可变的 Context、通用的 pass_parse 与 schema 加载。本模块从 dsl_validate 原样移出
-UE 特有的检查逻辑，并经 ue/__init__.register 把它们按 v0.8.16 的确定顺序注册回去。
+UE 特有的检查逻辑，并经 ue/__init__.register_enrich 把它们按 v0.8.16 的确定顺序注册回去。
 
 每个 pass 是 `(Context) -> Iterable[Issue]` 的纯函数，复用 dsl_validate 的 Issue/Context。
 """
 from __future__ import annotations
 
-import importlib.util
 import os
-import sys
 from collections import Counter
 from typing import Iterable
 
 # scripts/ 已在 sys.path 上（由入口脚本插入）；从通用核心取 Issue/Context
 from dsl_validate import Context, Issue
+# 同包的纯 stdlib 按路径加载器（不拖入 tree-sitter、不反向 import manyscan 的规范实现）
+from extensions.ue._modload import load_module as _load_module
 
 # scripts/ 目录（用于按路径加载 manyscan 的 graph 模块）
 _SCRIPTS_DIR = os.path.normpath(
@@ -27,12 +27,7 @@ _SCRIPTS_DIR = os.path.normpath(
 #### 按文件路径加载 manyscan 的 graph 模块 [@380kkm 2026-06-05] ####
 def _load_ms_graph():
     p = os.path.join(_SCRIPTS_DIR, "manyscan", "lib", "graph.py")
-    spec = importlib.util.spec_from_file_location("_dsl_ms_graph", p)
-    m = importlib.util.module_from_spec(spec)
-    # 在 exec_module 之前注册进 sys.modules
-    sys.modules["_dsl_ms_graph"] = m
-    spec.loader.exec_module(m)
-    return m
+    return _load_module("_dsl_ms_graph", p)
 
 
 _G = _load_ms_graph()
@@ -152,8 +147,11 @@ def _find_node_list(node, sb, eb):
     return None
 
 
-#### 返回某 node/material 行的 (connected_pins, present_props) [@380kkm 2026-06-05] ####
-def _matlang_node_fields(ctx: Context, row: dict) -> tuple[set[str], set[str]]:
+#### 返回某 list 行的 (connected_pins, present_props)；classify 定 pin 判据 [@380kkm 2026-06-05] ####
+def _node_fields(ctx: Context, row: dict, classify) -> tuple[set[str], set[str]]:
+    """走查 (head :k v :k v ...) 的 :key 配对：classify(val, src) 返回 'flag'（无值关键字，
+    只消费 key）/ 'pin' / 'prop'。matlang 以「值是含 connect 的 list」判 pin、且把关键字值
+    的 key 视为 flag；bplisp/animlang 以「值是 list」判 pin、关键字值按 prop 消费两位。"""
     pins: set[str] = set()
     props: set[str] = set()
     n = _find_node_list(ctx.tree.root_node, row["start_byte"], row["end_byte"])
@@ -162,113 +160,84 @@ def _matlang_node_fields(ctx: Context, row: dict) -> tuple[set[str], set[str]]:
     src = ctx.text.encode("utf-8", "replace")
     kids = [c for c in n.children if c.type not in ("(", ")", "comment")]
 
-    #### 判定子节点是否为 ':'-关键字 symbol [@380kkm 2026-06-05] ####
-    def _is_keyword(c) -> bool:
-        return c.type == "symbol" and src[c.start_byte:c.end_byte].startswith(b":")
-
     i = 0
     while i < len(kids):
         k = kids[i]
-        if _is_keyword(k):
+        if _is_keyword(k, src):
             # 去掉一个 ':'
             name = src[k.start_byte:k.end_byte].decode("utf-8", "replace")[1:]
             val = kids[i + 1] if i + 1 < len(kids) else None
-            if val is None or _is_keyword(val):
+            cls = classify(val, src)
+            if cls == "flag":
                 # 无值关键字记为 property，只消费它自身
                 props.add(name)
                 i += 1
                 continue
-            is_connect = (val.type == "list" and any(
-                c.type == "symbol" and src[c.start_byte:c.end_byte] == b"connect"
-                for c in val.children))
-            (pins if is_connect else props).add(name)
+            (pins if cls == "pin" else props).add(name)
             i += 2
         else:
             i += 1
     return pins, props
+
+
+#### 判定子节点是否为 ':'-关键字 symbol [@380kkm 2026-06-05] ####
+def _is_keyword(c, src: bytes) -> bool:
+    return c is not None and c.type == "symbol" \
+        and src[c.start_byte:c.end_byte].startswith(b":")
+
+
+#### matlang pin 判据：关键字值=flag、含 connect 的 list=pin、余=prop [@380kkm 2026-06-05] ####
+def _matlang_classify(val, src: bytes) -> str:
+    if val is None or _is_keyword(val, src):
+        return "flag"
+    is_connect = (val.type == "list" and any(
+        c.type == "symbol" and src[c.start_byte:c.end_byte] == b"connect"
+        for c in val.children))
+    return "pin" if is_connect else "prop"
+
+
+#### 返回某 node/material 行的 (connected_pins, present_props) [@380kkm 2026-06-05] ####
+def _matlang_node_fields(ctx: Context, row: dict) -> tuple[set[str], set[str]]:
+    return _node_fields(ctx, row, _matlang_classify)
+
+
+#### 取 matlang 行的 schema 类型键：node 用 attrs.node_type、material 行用 'material' [@380kkm 2026-06-05] ####
+def _matlang_key(r) -> str | None:
+    if r["kind"] == "node":
+        return (r.get("attrs") or {}).get("node_type")
+    if r["kind"] == "material":
+        return "material"
+    return None
 
 
 #### SEMANTIC 类型字典检查（matlang）；无 schema 时不发任何东西 [@380kkm 2026-06-05] ####
 def pass_semantic_schema(ctx: Context) -> Iterable[Issue]:
-    if not ctx.schema:
-        return
-    lang_schema = ctx.schema.get(ctx.lang)
-    # 该语言无字典 -> 不发任何东西
-    if not lang_schema:
-        return
-    for r in sorted(ctx.rows, key=lambda r: (r["start_byte"], r["end_byte"])):
-        if r["kind"] == "node":
-            nt = (r.get("attrs") or {}).get("node_type")
-        elif r["kind"] == "material":
-            nt = "material"
-        else:
-            continue
-        if not nt:
-            continue
-        spec = lang_schema.get(nt)
-        if spec is None:
-            yield Issue("warning", "UNKNOWN_NODE_TYPE",
-                        f"node type {nt!r} not in schema (dictionary is partial)",
-                        r["start_line"], r["start_byte"])
-            continue
-        connected, props = _matlang_node_fields(ctx, r)
-        known_props = set((spec.get("properties") or {}).keys())
-        known_pins = set((spec.get("pins") or {}).keys())
-        for p in sorted(props):
-            if p not in known_props and p not in known_pins:
-                yield Issue("warning", "UNKNOWN_PROP",
-                            f"{nt}: unknown property :{p}",
-                            r["start_line"], r["start_byte"])
-        for pin, pspec in sorted((spec.get("pins") or {}).items()):
-            if pspec.get("required") and pin not in connected:
-                yield Issue("error", "MISSING_REQUIRED_PIN",
-                            f"{nt} (id {r['name']}): required pin :{pin} not connected",
-                            r["start_line"], r["start_byte"])
+    # matlang 命名属性与位置标识符可区分，恒判未知属性（strict_props=True）
+    yield from _semantic_node_check(ctx, _matlang_key, _matlang_node_fields,
+                                    strict_props=True)
+
+
+#### bplisp/animlang pin 判据：无值=flag、list 值=pin（pose 子节点）、余=prop [@380kkm 2026-06-05] ####
+def _sexpr_classify(val, src: bytes) -> str:
+    # 列表末尾的无值关键字 -> flag；值是 list（pose 子节点）-> pin；
+    # 字面量 / 关键字 param-ref / 表达式 -> prop（关键字值按 prop 消费两位）
+    if val is None:
+        return "flag"
+    return "pin" if val.type == "list" else "prop"
 
 
 #### 返回某 S 表达式节点行的 (connected_pose_pins, present_props) [@380kkm 2026-06-05] ####
 def _sexpr_node_fields(ctx: Context, row: dict) -> tuple[set[str], set[str]]:
-    """bplisp/animlang 无 (connect ..) 形式：一个 ':' 关键字若其值是子节点 list（pose
-    输入），记为 pin；否则（字面量/表达式/无值）记为 prop。镜像 _matlang_node_fields 的
-    配对推进，但以「值是 list」而非「值含 connect」判定 pin —— 与 matlang 提取器互不影响。
-    """
-    pins: set[str] = set()
-    props: set[str] = set()
-    n = _find_node_list(ctx.tree.root_node, row["start_byte"], row["end_byte"])
-    if n is None:
-        return pins, props
-    src = ctx.text.encode("utf-8", "replace")
-    kids = [c for c in n.children if c.type not in ("(", ")", "comment")]
-
-    #### 判定子节点是否为 ':'-关键字 symbol [@380kkm 2026-06-05] ####
-    def _is_keyword(c) -> bool:
-        return c.type == "symbol" and src[c.start_byte:c.end_byte].startswith(b":")
-
-    i = 0
-    while i < len(kids):
-        k = kids[i]
-        if _is_keyword(k):
-            # 去掉一个 ':'
-            name = src[k.start_byte:k.end_byte].decode("utf-8", "replace")[1:]
-            val = kids[i + 1] if i + 1 < len(kids) else None
-            if val is None:
-                # 列表末尾的无值关键字记为 property
-                props.add(name)
-                i += 1
-                continue
-            # 值是 list（pose 子节点）-> pin；字面量 / 关键字 param-ref / 表达式 -> prop
-            (pins if val.type == "list" else props).add(name)
-            i += 2
-        else:
-            i += 1
-    return pins, props
+    return _node_fields(ctx, row, _sexpr_classify)
 
 
 #### 复用 schema 字典检查走查（按 key_fn 取类型、按 fields_fn 取字段） [@380kkm 2026-06-05] ####
-def _semantic_node_check(ctx: Context, key_fn, fields_fn) -> Iterable[Issue]:
+def _semantic_node_check(ctx: Context, key_fn, fields_fn,
+                         strict_props: bool = False) -> Iterable[Issue]:
     """key_fn(row) -> 该行的 schema 类型键，None 表示跳过该行（未知类型不发 warning 时返回
     None；要发 UNKNOWN_NODE_TYPE 则返回键并由本函数处理）。fields_fn(ctx,row) ->
-    (connected_pins, present_props)。无 schema / 该语言无字典时不发任何东西（--schema 门控）。
+    (connected_pins, present_props)。strict_props=True 时对所有 form 恒判未知属性（matlang）。
+    无 schema / 该语言无字典时不发任何东西（--schema 门控）。
     """
     if not ctx.schema:
         return
@@ -288,9 +257,9 @@ def _semantic_node_check(ctx: Context, key_fn, fields_fn) -> Iterable[Issue]:
         connected, props = fields_fn(ctx, r)
         known_props = set((spec.get("properties") or {}).keys())
         known_pins = set((spec.get("pins") or {}).keys())
-        # UNKNOWN_PROP 仅对声明 strict-props 的 form 启用：设计稿 animlang 用前导位置
-        # 关键字（状态名 / from-to 引用）做标识符，与命名属性形状不可区分，默认不判未知属性
-        if spec.get("strict-props"):
+        # UNKNOWN_PROP 对 strict_props 或声明 strict-props 的 form 启用：设计稿 animlang
+        # 用前导位置关键字（状态名 / from-to 引用）做标识符，与命名属性形状不可区分，默认不判
+        if strict_props or spec.get("strict-props"):
             for p in sorted(props):
                 if p not in known_props and p not in known_pins:
                     yield Issue("warning", "UNKNOWN_PROP",

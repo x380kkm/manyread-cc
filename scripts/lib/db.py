@@ -6,7 +6,7 @@
 # lib.db
 """manyread 数据库 schema DDL 与 sqlite 辅助函数（仅依赖标准库）。
 
-项目数据库位于 <root>/.manyread/source.db。下面的 schema 是规范性的
+项目数据库位于 <store>/source.db。下面的 schema 是规范性的
 （spec 第 6 节）：L1 填充 files+files_fts+meta；L2 填充 symbols+edges。
 保持导入安全：导入时无任何副作用。
 """

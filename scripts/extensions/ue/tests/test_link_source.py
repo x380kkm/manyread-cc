@@ -56,55 +56,42 @@ _DSL_SYMS = [
 #### /DSL 存储库 ####
 
 
-#### 构建桩 CODE 存储库并返回其 source.db 路径 [@380kkm 2026-06-05] ####
-def _build_code_store(tmp: Path) -> Path:
+#### 显式 span 的存储库构造器：插 files + symbols，返回 source.db 路径 [@380kkm 2026-06-05] ####
+def _build_store(tmp: Path, files, syms, lang: str) -> Path:
     _, mr_db = L.stores.manyread_lib()
     store = tmp / "manyread"
     store.mkdir(parents=True)
     db_path = store / "source.db"
     conn = mr_db.connect(db_path)
     mr_db.init_schema(conn)
-    for fid, path, ext, content in _CODE_FILES:
-        conn.execute(
-            "INSERT INTO files(id,path,ext,size,mtime,content) VALUES(?,?,?,?,0,?)",
-            (fid, path, ext, len(content), content),
-        )
-        conn.execute("INSERT INTO files_fts(rowid,path,content) VALUES(?,?,?)", (fid, path, content))
-    for sid, fid, name, kind in _CODE_SYMS:
+    for fid, path in files:
+        conn.execute("INSERT INTO files(id,path,ext,size,mtime,content) VALUES(?,?,'.x',0,0,'')", (fid, path))
+        conn.execute("INSERT INTO files_fts(rowid,path,content) VALUES(?,?,'')", (fid, path))
+    for sid, fid, name, kind, sb, eb, attrs in syms:
         conn.execute(
             "INSERT INTO symbols(id,file_id,name,kind,lang,start_line,end_line,"
-            "start_byte,end_byte,parent_id) VALUES(?,?,?,?, 'cpp',1,1,0,1,NULL)",
-            (sid, fid, name, kind),
+            "start_byte,end_byte,parent_id,attrs) VALUES(?,?,?,?,?,1,1,?,?,NULL,?)",
+            (sid, fid, name, kind, lang, sb, eb, attrs),
         )
     conn.commit()
     conn.close()
     return db_path
+#### /显式 span 存储库构造器 ####
+
+
+#### 构建桩 CODE 存储库并返回其 source.db 路径（span=0..1 一律视前向声明） [@380kkm 2026-06-05] ####
+def _build_code_store(tmp: Path) -> Path:
+    files = [(fid, path) for fid, path, _ext, _content in _CODE_FILES]
+    syms = [(sid, fid, name, kind, 0, 1, None) for sid, fid, name, kind in _CODE_SYMS]
+    return _build_store(tmp, files, syms, "cpp")
 #### /构建桩 CODE 存储库 ####
 
 
-#### 构建桩 DSL 存储库并返回其 source.db 路径 [@380kkm 2026-06-05] ####
+#### 构建桩 DSL 存储库并返回其 source.db 路径（start_byte=sid 保序） [@380kkm 2026-06-05] ####
 def _build_dsl_store(tmp: Path) -> Path:
-    _, mr_db = L.stores.manyread_lib()
-    store = tmp / "manyread"
-    store.mkdir(parents=True)
-    db_path = store / "source.db"
-    conn = mr_db.connect(db_path)
-    mr_db.init_schema(conn)
-    for fid, path, ext, content in _DSL_FILES:
-        conn.execute(
-            "INSERT INTO files(id,path,ext,size,mtime,content) VALUES(?,?,?,?,0,?)",
-            (fid, path, ext, len(content), content),
-        )
-        conn.execute("INSERT INTO files_fts(rowid,path,content) VALUES(?,?,?)", (fid, path, content))
-    for sid, fid, name, kind, attrs in _DSL_SYMS:
-        conn.execute(
-            "INSERT INTO symbols(id,file_id,name,kind,lang,start_line,end_line,"
-            "start_byte,end_byte,parent_id,attrs) VALUES(?,?,?,?, 'matlang',?,?,?,?,NULL,?)",
-            (sid, fid, name, kind, sid, sid, sid, sid + 1, attrs),
-        )
-    conn.commit()
-    conn.close()
-    return db_path
+    files = [(fid, path) for fid, path, _ext, _content in _DSL_FILES]
+    syms = [(sid, fid, name, kind, sid, sid + 1, attrs) for sid, fid, name, kind, attrs in _DSL_SYMS]
+    return _build_store(tmp, files, syms, "matlang")
 #### /构建桩 DSL 存储库 ####
 
 
@@ -316,29 +303,6 @@ def test_cli_exit_codes(stores_pair, capsys):
     rc2 = L.main(["--dsl-store", "W:/nope/nope", "--code-store", str(code_db),
                   "--schema", SCHEMA])
     assert rc2 == 2
-
-
-#### 显式 span 的存储库构造器：用于定义优先 [@380kkm 2026-06-05] ####
-def _build_store(tmp: Path, files, syms, lang: str) -> Path:
-    _, mr_db = L.stores.manyread_lib()
-    store = tmp / "manyread"
-    store.mkdir(parents=True)
-    db_path = store / "source.db"
-    conn = mr_db.connect(db_path)
-    mr_db.init_schema(conn)
-    for fid, path in files:
-        conn.execute("INSERT INTO files(id,path,ext,size,mtime,content) VALUES(?,?,'.x',0,0,'')", (fid, path))
-        conn.execute("INSERT INTO files_fts(rowid,path,content) VALUES(?,?,'')", (fid, path))
-    for sid, fid, name, kind, sb, eb, attrs in syms:
-        conn.execute(
-            "INSERT INTO symbols(id,file_id,name,kind,lang,start_line,end_line,"
-            "start_byte,end_byte,parent_id,attrs) VALUES(?,?,?,?,?,1,1,?,?,NULL,?)",
-            (sid, fid, name, kind, lang, sb, eb, attrs),
-        )
-    conn.commit()
-    conn.close()
-    return db_path
-#### /显式 span 存储库构造器 ####
 
 
 #### 测试定义（大 span）优先于多个前向声明并唯一命中 [@380kkm 2026-06-05] ####

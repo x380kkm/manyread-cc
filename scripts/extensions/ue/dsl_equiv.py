@@ -252,31 +252,36 @@ def _diff_list(a: Canon, b: Canon, path: str, out: list[Diff]) -> None:
     #### head 对比 [@380kkm 2026-06-05] ####
     _diff(a.head, b.head, base, out)
 
-    #### 位置项逐位对比（数目不等先记 arity） [@380kkm 2026-06-05] ####
-    if len(a.positional) != len(b.positional):
-        out.append(Diff(base, "arity", str(len(a.positional)), str(len(b.positional)),
-                        a.start_line, b.start_line))
-    for idx in range(max(len(a.positional), len(b.positional))):
-        la = a.positional[idx] if idx < len(a.positional) else None
-        lb = b.positional[idx] if idx < len(b.positional) else None
-        _diff(la, lb, f"{base}[{idx}]", out)
-        if len(out) >= _DIFF_CAP:
-            return
-    #### /位置项对比 ####
+    #### 位置项逐位对比（数目不等先记 arity；arity 标签裸数；下钻触顶则 keyword 段不再跑） [@380kkm 2026-06-05] ####
+    if _diff_aligned(a.positional, b.positional, base, out, a.start_line, b.start_line,
+                     arity=str,
+                     step=lambda idx, la, lb: _diff(la, lb, f"{base}[{idx}]", out)):
+        return
 
-    #### keyword 对逐位对比（两侧均已按 key 稳定排序） [@380kkm 2026-06-05] ####
-    if len(a.keywords) != len(b.keywords):
-        out.append(Diff(base, "arity",
-                        f"{len(a.keywords)} kw", f"{len(b.keywords)} kw",
-                        a.start_line, b.start_line))
-    for idx in range(max(len(a.keywords), len(b.keywords))):
-        ka = a.keywords[idx] if idx < len(a.keywords) else None
-        kb = b.keywords[idx] if idx < len(b.keywords) else None
-        _diff_keyword(ka, kb, base, out)
-        if len(out) >= _DIFF_CAP:
-            return
-    #### /keyword 对比 ####
+    #### keyword 对逐位对比（两侧均已按 key 稳定排序；arity 标签带 ' kw'） [@380kkm 2026-06-05] ####
+    _diff_aligned(a.keywords, b.keywords, base, out, a.start_line, b.start_line,
+                  arity=lambda n: f"{n} kw",
+                  step=lambda idx, ka, kb: _diff_keyword(ka, kb, base, out))
 #### /对比 list ####
+
+
+#### 对齐对比两列同长序列：先记 arity 差异、再逐位下钻；下钻触顶返回 True [@380kkm 2026-06-05] ####
+def _diff_aligned(items_a: list, items_b: list, base: str, out: list[Diff],
+                  line_a: int, line_b: int, arity, step) -> bool:
+    """arity(n) 把数目渲染为 arity 差异文本（位置项裸数、keyword 带 ' kw'）；step(idx, ea, eb)
+    对第 idx 位的对齐元素（缺位为 None）下钻。两个调用方仅这两点不同。
+    arity 追加不设守卫；唯一的触顶检查在每次下钻之后。"""
+    if len(items_a) != len(items_b):
+        out.append(Diff(base, "arity", arity(len(items_a)), arity(len(items_b)),
+                        line_a, line_b))
+    for idx in range(max(len(items_a), len(items_b))):
+        ea = items_a[idx] if idx < len(items_a) else None
+        eb = items_b[idx] if idx < len(items_b) else None
+        step(idx, ea, eb)
+        if len(out) >= _DIFF_CAP:
+            return True
+    return False
+#### /对齐对比序列 ####
 
 
 #### 对比一对位置对齐的 keyword 项 (key, value) [@380kkm 2026-06-05] ####

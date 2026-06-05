@@ -51,6 +51,21 @@ def _emit(text: str) -> None:
     sys.stdout.write(text if text.endswith("\n") else text + "\n")
 
 
+#### seed 未解析出任何节点时向 stderr 告警 [@380kkm 2026-06-05] ####
+def _warn_if_empty(seed: str, nodes) -> None:
+    if not nodes:
+        print(f"warning: seed {seed!r} resolved to no nodes", file=sys.stderr)
+
+
+#### 扫描 seed 切片、空图告警、按需 rollup，返回最终图 [@380kkm 2026-06-05] ####
+def _scanned_rolled(st: "stores.Store", args, info: "stores.StoreInfo", budget: "Budget"):
+    g = scope.scan(st, args.seed, budget, alias=info.alias)
+    _warn_if_empty(args.seed, g.nodes)
+    if args.level != "file":
+        g = rollup.rollup(g, args.level, store=st)
+    return g
+
+
 #### list-stores 子命令：列出 hub 注册的存储库 [@380kkm 2026-06-05] ####
 def cmd_list(args) -> int:
     for si in stores.list_stores():
@@ -66,15 +81,10 @@ def cmd_scan(args) -> int:
         if args.format == "json" and args.level == "file":
             data, _hit = cache.cached_scan(st, args.seed, budget, alias=info.alias,
                                            use_cache=not args.no_cache)
-            if not data["nodes"]:
-                print(f"warning: seed {args.seed!r} resolved to no nodes", file=sys.stderr)
+            _warn_if_empty(args.seed, data["nodes"])
             _emit(json.dumps(data, ensure_ascii=False, indent=2))
         else:
-            g = scope.scan(st, args.seed, budget, alias=info.alias)
-            if not g.nodes:
-                print(f"warning: seed {args.seed!r} resolved to no nodes", file=sys.stderr)
-            if args.level != "file":
-                g = rollup.rollup(g, args.level, store=st)
+            g = _scanned_rolled(st, args, info, budget)
             _emit(render.render(g, args.format))
     return 0
 #### /cmd_scan ####
@@ -85,11 +95,7 @@ def cmd_analyze(args) -> int:
     info = _store_info(args)
     budget = _budget(args)
     with stores.Store(info.db_path) as st:
-        g = scope.scan(st, args.seed, budget, alias=info.alias)
-        if not g.nodes:
-            print(f"warning: seed {args.seed!r} resolved to no nodes", file=sys.stderr)
-        if args.level != "file":
-            g = rollup.rollup(g, args.level, store=st)
+        g = _scanned_rolled(st, args, info, budget)
         m = analyze.metrics(g)
         _emit(render.to_json(m) if args.format == "json" else render.metrics_text(m))
     return 0
@@ -102,7 +108,7 @@ def _default_hidden_keys(g, vh: dict) -> list[str]:
     pats = list(vh.get("patterns") or [])
     mfi = vh.get("min_fan_in")
     # 每节点的 fan_in 度量字典
-    imp = render._importance(g)
+    imp = render.importance(g)
     zoned = any(g.nodes[n].attrs.get("zone") in ("target", "dependency") for n in g.nodes)
     hit: set[str] = set()
     for nid in g.nodes:
@@ -236,12 +242,17 @@ def _module_bands(g, spec):
 #### /模块 band 分配 ####
 
 
-#### 为 scan/analyze/export 子命令注册公共参数 [@380kkm 2026-06-05] ####
-def _add_common(p: argparse.ArgumentParser) -> None:
-    p.add_argument("seed", help="symbol / file path / dir / keyword to scan from")
+#### 为任一子命令注册存储库发现参数（--store/--alias/--root） [@380kkm 2026-06-05] ####
+def _add_store_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--store", default=None, help="store dir, source.db path, or hub alias")
     p.add_argument("--alias", default=None, help="hub alias (synonym for --store)")
     p.add_argument("--root", default=None, help="source root to discover the store from")
+
+
+#### 为 scan/analyze/export 子命令注册公共参数 [@380kkm 2026-06-05] ####
+def _add_common(p: argparse.ArgumentParser) -> None:
+    p.add_argument("seed", help="symbol / file path / dir / keyword to scan from")
+    _add_store_args(p)
     p.add_argument("--max-nodes", dest="max_nodes", type=int, default=200)
     p.add_argument("--depth", type=int, default=3)
     p.add_argument("--dir", choices=["out", "in", "both"], default="out")
@@ -276,9 +287,7 @@ def main(argv: list[str] | None = None) -> int:
 
     pb = sub.add_parser("boundary", aliases=["plugin-boundary"],
                         help="symbol-level target↔dependency boundary")
-    pb.add_argument("--store", default=None, help="store dir, source.db path, or hub alias")
-    pb.add_argument("--alias", default=None, help="hub alias (synonym for --store)")
-    pb.add_argument("--root", default=None, help="source root to discover the store from")
+    _add_store_args(pb)
     pb.add_argument("--target-root", "--plugin-root", dest="target_root", default=None,
                     help="target root prefix (default: autodetect nearest *.uplugin/*.Build.cs)")
     pb.add_argument("--dep-root", "--engine-root", dest="dep_root", action="append", default=[],
@@ -307,9 +316,7 @@ def main(argv: list[str] | None = None) -> int:
     pb.set_defaults(func=cmd_boundary)
 
     md = sub.add_parser("modules", help="symbol-level N-way module zoning (decoupling views)")
-    md.add_argument("--store", default=None, help="store dir, source.db path, or hub alias")
-    md.add_argument("--alias", default=None, help="hub alias (synonym for --store)")
-    md.add_argument("--root", default=None, help="source root to discover the store from")
+    _add_store_args(md)
     md.add_argument("--modules", default=None,
                     help="module spec file ({version,fallback,zones} or a {modules:{...}} "
                          "wrapper). Default: auto-discover manyread.json['modules'].")

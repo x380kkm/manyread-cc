@@ -30,11 +30,36 @@
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+#### 按文件路径加载同目录的 config_docs，并把其公共名再导出到本模块 [@380kkm 2026-06-05] ####
+def _load_config_docs():
+    """config.py 可被作为 ``lib.config``（包成员）或经文件路径作 ``manyread_config``（manyscan
+    的隔离加载）两种方式载入。两种方式下相对/绝对 import 都不可靠，故按 ``__file__`` 旁路文件
+    路径加载 config_docs，再把其 ``load_view_hide`` 等名（含 ``_read_json``）绑入本模块命名空间，
+    使外部一律以 ``config.X`` 调用、且 ``_read_json`` 为全模块唯一来源。
+    """
+    path = Path(__file__).resolve().parent / "config_docs.py"
+    spec = importlib.util.spec_from_file_location("manyread_config_docs", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    names = ("_read_json", "_load_section",
+             "_VIEW_HIDE_KEYS", "validate_view_hide", "load_view_hide",
+             "_MODULES_KEYS", "_MODULE_ZONE_KEYS", "validate_modules", "load_modules",
+             "_MACRO_STRIP_KEYS", "validate_macro_strip", "load_macro_strip")
+    g = globals()
+    for n in names:
+        g[n] = getattr(mod, n)
+
+
+_load_config_docs()
+
 
 #### 项目本地存储库目录名 [@380kkm 2026-06-05] ####
 STORE_DIRNAME = "manyread"
@@ -163,10 +188,6 @@ def _has_uproject(root: Path, store: Path) -> bool:
 
 #### 解析一个项目实际启用的扩展名单：显式名单 > profile=='ue' 别名 > .uproject 自动探测 [@380kkm 2026-06-05] ####
 def active_extensions(cfg: "ProjectConfig") -> list[str]:
-    """优先级：显式 manyread.json `extensions`（user>shared，显式 [] 硬禁用）> `profile=='ue'`
-    别名为 ['ue'] > 在 cfg.root..cfg.store 范围内探测到 *.uproject 则推断 ['ue']（推断时向
-    stderr 输出一行说明）。返回扩展名列表（可能为空）。
-    """
     import sys
 
     shared = load_shared(cfg.store)
@@ -180,23 +201,12 @@ def active_extensions(cfg: "ProjectConfig") -> list[str]:
         return ["ue"]
 
     if _has_uproject(Path(cfg.root), Path(cfg.store)):
+        # 探测到 *.uproject 推断为 ['ue'] 时，向 stderr 输出一行说明
         print("manyread: inferred UE extension from a *.uproject near the source root "
               "(set \"extensions\": [] in manyread.json to disable)", file=sys.stderr)
         return ["ue"]
 
     return []
-
-
-#### 读取一个 JSON 文件为 dict，缺失/损坏则返回空 dict [@380kkm 2026-06-05] ####
-def _read_json(path: Path) -> dict:
-    if not path.is_file():
-        return {}
-    try:
-        # utf-8-sig：容忍 UTF-8 BOM
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-        return data if isinstance(data, dict) else {}
-    except (json.JSONDecodeError, OSError):
-        return {}
 
 
 #### 读取已提交的共享配置 <store>/manyread.json [@380kkm 2026-06-05] ####
@@ -207,237 +217,6 @@ def load_shared(store: Path) -> dict:
 #### 读取每用户的 gitignore 配置 <store>/user/config.json [@380kkm 2026-06-05] ####
 def load_user(store: Path) -> dict:
     return _read_json(store / "user" / "config.json")
-
-
-#### view-hide 配置的合法键集合（已提交、共享、视图级、可恢复） [@380kkm 2026-06-05] ####
-_VIEW_HIDE_KEYS = {"version", "names", "patterns", "min_fan_in"}
-
-
-#### 校验一份 view_hide 文档，返回人类可读的错误列表 [@380kkm 2026-06-05] ####
-def validate_view_hide(vh: dict) -> list[str]:
-    """空列表 == 合法。"""
-    if not isinstance(vh, dict):
-        return ["view_hide must be an object"]
-    errs: list[str] = []
-    if vh.get("version", 1) != 1:
-        errs.append("view_hide.version must be 1")
-    for k in ("names", "patterns"):
-        v = vh.get(k)
-        if v is not None and not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
-            errs.append(f"view_hide.{k} must be a list of strings")
-    mfi = vh.get("min_fan_in")
-    if mfi is not None and (not isinstance(mfi, int) or isinstance(mfi, bool) or mfi < 0):
-        errs.append("view_hide.min_fan_in must be an int >= 0")
-    return errs
-
-
-#### 解析已提交的符号 view-hide 配置（优先 --ignore 文件） [@380kkm 2026-06-05] ####
-def load_view_hide(store: Path, override_path: Path | None = None) -> dict | None:
-    """优先级：``override_path``（--ignore 文件）> ``manyread.json['view_hide']`` > None。
-
-    一个 --ignore 文件既可以是 ``{view_hide:{...}}`` 包装形式，也可以是裸的
-    ``{names,patterns,min_fan_in}``。结构损坏 => 向 stderr 告警并返回 None。
-    """
-    import sys
-
-    if override_path is not None:
-        p = Path(override_path)
-        if not p.is_file():
-            print(f"manyread: --ignore file not found: {p}", file=sys.stderr)
-            return None
-        try:
-            doc = json.loads(p.read_text(encoding="utf-8-sig"))
-        except (json.JSONDecodeError, OSError) as exc:
-            print(f"manyread: --ignore file is not valid JSON ({p}): {exc}", file=sys.stderr)
-            return None
-        if not isinstance(doc, dict):
-            print(f"manyread: --ignore file must be a JSON object: {p}", file=sys.stderr)
-            return None
-        # 接受包装形式或裸形式
-        vh = doc.get("view_hide", doc)
-    else:
-        mr_json = store / "manyread.json"
-        if mr_json.is_file():
-            # 存在但不可读/为空时告警
-            shared = _read_json(mr_json)
-            if not shared:
-                print(f"manyread: {mr_json} present but unreadable/empty — "
-                      "shared config (incl. view_hide) ignored", file=sys.stderr)
-                return None
-            vh = shared.get("view_hide")
-        else:
-            vh = None
-    if not vh or not isinstance(vh, dict):
-        return None
-    errs = validate_view_hide(vh)
-    if errs:
-        print("manyread: ignoring malformed view_hide config: " + "; ".join(errs), file=sys.stderr)
-        return None
-    unknown = sorted(set(vh) - _VIEW_HIDE_KEYS)
-    if unknown:
-        print("manyread: view_hide has unknown key(s) " + ", ".join(unknown)
-              + " (known: version/names/patterns/min_fan_in) — proceeding", file=sys.stderr)
-    return vh
-
-
-#### modules 配置的合法顶层键集合（已提交、共享、N 路模块分区声明） [@380kkm 2026-06-05] ####
-_MODULES_KEYS = {"version", "fallback", "zones"}
-#### 单个 zone 的合法键集合 [@380kkm 2026-06-05] ####
-_MODULE_ZONE_KEYS = {"name", "include", "exclude", "glob"}
-
-
-#### 校验一份 modules 文档，返回人类可读的错误列表 [@380kkm 2026-06-05] ####
-def validate_modules(doc: dict) -> list[str]:
-    """空列表 == 合法。要求 ``version==1``、``zones`` 为列表，每个 zone 名唯一非空、
-    ``include``/``exclude`` 为字符串列表。``fallback`` 可选（字符串）。"""
-    if not isinstance(doc, dict):
-        return ["modules must be an object"]
-    errs: list[str] = []
-    if doc.get("version", 1) != 1:
-        errs.append("modules.version must be 1")
-    fb = doc.get("fallback")
-    if fb is not None and not isinstance(fb, str):
-        errs.append("modules.fallback must be a string")
-    zones = doc.get("zones")
-    if not isinstance(zones, list) or not zones:
-        errs.append("modules.zones must be a non-empty list")
-        return errs
-    seen: set[str] = set()
-    for i, z in enumerate(zones):
-        if not isinstance(z, dict):
-            errs.append(f"modules.zones[{i}] must be an object")
-            continue
-        name = z.get("name")
-        if not isinstance(name, str) or not name:
-            errs.append(f"modules.zones[{i}].name must be a non-empty string")
-        elif name in seen:
-            errs.append(f"modules.zones[{i}].name {name!r} is duplicated")
-        else:
-            seen.add(name)
-        inc = z.get("include")
-        if not (isinstance(inc, list) and inc and all(isinstance(x, str) for x in inc)):
-            errs.append(f"modules.zones[{i}].include must be a non-empty list of strings")
-        for k in ("exclude", "glob"):
-            v = z.get(k)
-            if v is not None and not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
-                errs.append(f"modules.zones[{i}].{k} must be a list of strings")
-    return errs
-
-
-#### 解析已提交的 N 路 modules 配置（优先 --modules 文件） [@380kkm 2026-06-05] ####
-def load_modules(store: Path, override_path: Path | None = None) -> dict | None:
-    """优先级：``override_path``（--modules 文件）> ``manyread.json['modules']`` > None。
-
-    一个 --modules 文件既可以是 ``{modules:{...}}`` 包装形式，也可以是裸的
-    ``{version,fallback,zones}``。结构损坏 => 向 stderr 告警并返回 None。
-    """
-    import sys
-
-    if override_path is not None:
-        p = Path(override_path)
-        if not p.is_file():
-            print(f"manyread: --modules file not found: {p}", file=sys.stderr)
-            return None
-        try:
-            doc = json.loads(p.read_text(encoding="utf-8-sig"))
-        except (json.JSONDecodeError, OSError) as exc:
-            print(f"manyread: --modules file is not valid JSON ({p}): {exc}", file=sys.stderr)
-            return None
-        if not isinstance(doc, dict):
-            print(f"manyread: --modules file must be a JSON object: {p}", file=sys.stderr)
-            return None
-        # 接受包装形式或裸形式
-        md = doc.get("modules", doc)
-    else:
-        mr_json = store / "manyread.json"
-        if mr_json.is_file():
-            # 存在但不可读/为空时告警
-            shared = _read_json(mr_json)
-            if not shared:
-                print(f"manyread: {mr_json} present but unreadable/empty — "
-                      "shared config (incl. modules) ignored", file=sys.stderr)
-                return None
-            md = shared.get("modules")
-        else:
-            md = None
-    if not md or not isinstance(md, dict):
-        return None
-    errs = validate_modules(md)
-    if errs:
-        print("manyread: ignoring malformed modules config: " + "; ".join(errs), file=sys.stderr)
-        return None
-    unknown = sorted(set(md) - _MODULES_KEYS)
-    if unknown:
-        print("manyread: modules has unknown key(s) " + ", ".join(unknown)
-              + " (known: version/fallback/zones) — proceeding", file=sys.stderr)
-    return md
-
-
-#### macro_strip 配置的合法键集合（已提交、共享、解析输入变换） [@380kkm 2026-06-05] ####
-_MACRO_STRIP_KEYS = {"enabled", "extra_names", "extra_patterns"}
-
-
-#### 校验一份 macro_strip 文档，返回人类可读的错误列表 [@380kkm 2026-06-05] ####
-def validate_macro_strip(ms: dict) -> list[str]:
-    """空列表 == 合法。"""
-    if not isinstance(ms, dict):
-        return ["macro_strip must be an object"]
-    errs: list[str] = []
-    en = ms.get("enabled", True)
-    if not isinstance(en, bool):
-        errs.append("macro_strip.enabled must be a bool")
-    for k in ("extra_names", "extra_patterns"):
-        v = ms.get(k)
-        if v is not None and not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
-            errs.append(f"macro_strip.{k} must be a list of strings")
-    import re as _re
-    for pat in (ms.get("extra_patterns") or []):
-        if isinstance(pat, str):
-            try:
-                _re.compile(pat)
-            except _re.error as exc:
-                errs.append(f"macro_strip.extra_patterns bad regex {pat!r}: {exc}")
-    return errs
-
-
-#### 解析已提交的 c 系 macro-strip 配置（缺失键时默认启用） [@380kkm 2026-06-05] ####
-def load_macro_strip(store: Path) -> dict:
-    """键缺失 => {"enabled": True, "extra_names": [], "extra_patterns": []}。
-
-    结构损坏 / 正则错误 => 默认 + 向 stderr 告警。未知键 => 告警 + 继续。manyread.json
-    存在但不可读 => 默认 + 告警。总是返回一个 dict（绝不为 None）。
-    """
-    import sys
-
-    DEFAULT = {"enabled": True, "extra_names": [], "extra_patterns": []}
-    mr_json = store / "manyread.json"
-    if not mr_json.is_file():
-        return dict(DEFAULT)
-    shared = _read_json(mr_json)
-    if not shared:
-        # 存在但不可读/为空时按默认处理并告警
-        if mr_json.stat().st_size > 0:
-            print(f"manyread: {mr_json} present but unreadable/empty — "
-                  "shared config (incl. macro_strip) ignored, using defaults", file=sys.stderr)
-        return dict(DEFAULT)
-    ms = shared.get("macro_strip")
-    if ms is None:
-        return dict(DEFAULT)
-    if not isinstance(ms, dict):
-        print("manyread: macro_strip must be an object — using defaults", file=sys.stderr)
-        return dict(DEFAULT)
-    errs = validate_macro_strip(ms)
-    if errs:
-        print("manyread: ignoring malformed macro_strip config: " + "; ".join(errs)
-              + " — using defaults", file=sys.stderr)
-        return dict(DEFAULT)
-    unknown = sorted(set(ms) - _MACRO_STRIP_KEYS)
-    if unknown:
-        print("manyread: macro_strip has unknown key(s) " + ", ".join(unknown)
-              + " (known: enabled/extra_names/extra_patterns) — ignoring them", file=sys.stderr)
-    out = dict(DEFAULT)
-    out.update({k: v for k, v in ms.items() if k in _MACRO_STRIP_KEYS})
-    return out
 
 
 #### 在 location 下创建一个全新的 manyread/ 存储库 [@380kkm 2026-06-05] ####
@@ -608,7 +387,6 @@ def unregister_store(store: Path) -> bool:
 #### 判断 path 是否为不宜就地放置存储库/索引的系统位置 [@380kkm 2026-06-05] ####
 def is_system_location(path: Path) -> bool:
     """覆盖盘符根（C:\\、W:\\、/）、用户家目录，以及家目录正下方的常见外壳文件夹
-
     （Desktop/Documents/Downloads/OneDrive）。
     """
     p = Path(path).resolve()

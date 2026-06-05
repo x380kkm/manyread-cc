@@ -16,6 +16,7 @@ import sqlite3
 
 from lib.graph import Budget, Edge, Evidence, Graph
 
+from .confidence import bake_confidence
 from .nodes import symbol_node
 from .resolve import out_edges, resolve_target
 from .zoning import DEPENDENCY, TARGET, Zoning, zone_of_path
@@ -99,7 +100,7 @@ def build(store, z: Zoning, budget: Budget, alias: str | None = None,
             g.nodes[nid].attrs["dep_core"] = 1
             g.nodes[nid].attrs["dep_depth"] = 2
 
-    g.edge_confidence = {e.key(): confidence.get(e.key(), "direct") for e in g.edges}
+    g.edge_confidence = bake_confidence(g.edges, confidence)
     if truncated:
         g.truncated = True
         g.elided = elided
