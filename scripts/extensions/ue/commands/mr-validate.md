@@ -21,7 +21,7 @@ There are **two layers**, both running on the same parse + the same `Context`:
   harvest-ready node-type dictionary): is the node a known expression class, are its
   properties known, are its **required input pins** connected. It runs **only** when you
   pass `--schema PATH`; with no flag the validator is structural-only and **byte-identical**
-  to before. The bundled `scripts/schemas/matlang.sample.json` is **PARTIAL + matlang-only +
+  to before. The bundled `scripts/extensions/ue/schemas/matlang.sample.json` is **PARTIAL + matlang-only +
   inferred from the two bundled examples** — see the honest boundary at the bottom.
 
 ## What it checks
@@ -48,7 +48,7 @@ There are **two layers**, both running on the same parse + the same `Context`:
 - `(ref "Title")` cross-graph refs that don't resolve in-file → **UNRESOLVED_REF warning**.
 
 ### SEMANTIC layer (`--schema`) — a node-type dictionary (matlang)
-Pass `--schema scripts/schemas/matlang.sample.json` to additionally run the schema-driven
+Pass `--schema scripts/extensions/ue/schemas/matlang.sample.json` to additionally run the schema-driven
 semantic pass. Per node it looks up the expression type in the dictionary and reports:
 - **UNKNOWN_NODE_TYPE** *(warning)* — the node's type is not in the dictionary. The sample
   schema is **partial**, so an unlisted type is "not yet harvested", **not** invalid — this
@@ -95,7 +95,7 @@ To also run the SEMANTIC layer, point `--schema` at the bundled matlang dictiona
 ```
 uv run --python 3.12 --with "tree-sitter>=0.23" --with tree-sitter-language-pack \
   ${CLAUDE_PLUGIN_ROOT}/scripts/dsl_validate.py <file.matlang> \
-    --schema ${CLAUDE_PLUGIN_ROOT}/scripts/schemas/matlang.sample.json
+    --schema ${CLAUDE_PLUGIN_ROOT}/scripts/extensions/ue/schemas/matlang.sample.json
 ```
 
 This script declares its tree-sitter dependencies in PEP 723 metadata, so the first
@@ -160,7 +160,7 @@ claim stays honest.
 
 What ships **now** is the **FORMAT + the SEAM + a PROOF**, not a complete dictionary:
 
-- `scripts/schemas/matlang.sample.json` is **SAMPLE / PARTIAL / INFERRED**. It is hand-authored
+- `scripts/extensions/ue/schemas/matlang.sample.json` is **SAMPLE / PARTIAL / INFERRED**. It is hand-authored
   to cover the **9 expression types observed in the two bundled examples**
   (`material`, `multiply`, `constant`, `constant3-vector`, `scalar-parameter`,
   `vector-parameter`, `fresnel`, `texture-coordinate`, `texture-sample`) with real CDO

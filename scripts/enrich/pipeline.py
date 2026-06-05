@@ -9,8 +9,8 @@ from pathlib import Path
 from lib import config, db
 import rules
 
-from enrich.langreg import (LANG_FOR_EXT, SUPPORTED_LANGS, Parser, Query,
-                            _load_language)
+from enrich import langreg
+from enrich.langreg import Parser, Query, _load_language
 from enrich.query import _load_query_specs
 from enrich.extract import _extract_file
 from enrich.dbwrite import _insert_file
@@ -22,6 +22,9 @@ def enrich(cfg: config.ProjectConfig, langs: list[str], do_refs: bool,
            rules_path: str | None = None, no_rules: bool = False,
            preview: bool = False) -> dict:
     """preview=True 时只计算变换并收集 before/after 差异，不写入数据库。"""
+    # 读取任何 LANG_FOR_EXT / query_specs 之前先跑扩展发现（幂等；延迟 import 以避免环）
+    from extensions import run_discovery
+    run_discovery(cfg)
     db_path = Path(cfg.db_path)
     if not db_path.exists():
         raise SystemError(f"no index db at {db_path} — run index_build.py first")
@@ -59,7 +62,7 @@ def enrich(cfg: config.ProjectConfig, langs: list[str], do_refs: bool,
         #### 逐文件提取符号与边，施加规则后写入或预览 [@380kkm 2026-06-05] ####
         rows = conn.execute("SELECT id, path, ext, content FROM files").fetchall()
         for file_id, path, ext, content in rows:
-            lang = LANG_FOR_EXT.get((ext or "").lower())
+            lang = langreg.LANG_FOR_EXT.get((ext or "").lower())
             if lang is None or lang not in langs:
                 continue
             if content is None:
@@ -168,17 +171,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
+    # 消费语言注册表之前先跑扩展发现（幂等；延迟 import 以避免环）
+    from extensions import run_discovery
+    run_discovery(cfg)
+
     # 选定语言：显式 --langs 优先；否则配置中的语言；否则全部
     if args.langs:
         requested = [s.strip().lower() for s in args.langs.split(",") if s.strip()]
     elif cfg.languages:
         requested = [s.lower() for s in cfg.languages]
     else:
-        requested = list(SUPPORTED_LANGS)
+        requested = list(langreg.SUPPORTED_LANGS)
     # 只保留 v1 实际可解析的语言
-    langs = [l for l in requested if l in SUPPORTED_LANGS]
+    langs = [l for l in requested if l in langreg.SUPPORTED_LANGS]
     if not langs:
-        langs = list(SUPPORTED_LANGS)
+        langs = list(langreg.SUPPORTED_LANGS)
     # typescript 与 tsx 成对：请求其一就一并拉入另一个
     if "typescript" in langs and "tsx" not in langs:
         langs.append("tsx")

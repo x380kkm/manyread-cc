@@ -29,9 +29,9 @@ enrich_treesitter.py / dsl_validate.py 中**没有任何东西**被改动；``lo
 
 CLI::
 
-    uv run --python 3.12 scripts/link_source.py \
+    uv run --python 3.12 scripts/extensions/ue/link_source.py \
         --dsl-store <asset store> --code-store <c++ store> \
-        --schema scripts/schemas/matlang.sample.json [--lang matlang] [--json]
+        --schema scripts/extensions/ue/schemas/matlang.sample.json [--lang matlang] [--json]
 
 成功退出 0；存储库路径错误或 schema 畸形时退出 2。
 """
@@ -58,7 +58,9 @@ def _load_module(name: str, path: str):
 #### /按路径加载模块 ####
 
 
-_MANYSCAN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manyscan")
+# 本模块在 scripts/extensions/ue/ 下；manyscan 在 scripts/manyscan/（上溯三级）
+_MANYSCAN_DIR = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "manyscan"))
 stores = _load_module("manyscan_stores", os.path.join(_MANYSCAN_DIR, "lib", "stores.py"))
 
 # class/struct 视为可解析的类符号 kind

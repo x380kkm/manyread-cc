@@ -43,15 +43,15 @@ For each DSL node symbol:
   (`/mr-enrich` emits `node` symbols with `attrs.node_type`).
 - A **code store** that actually indexes the engine classes (`/mr-init` +
   `/mr-enrich` over the C++; the cpp walker emits `kind='class'`/`'struct'`).
-- A **schema** (the type dictionary): `scripts/schemas/matlang.sample.json` ships one.
+- A **schema** (the type dictionary): `scripts/extensions/ue/schemas/matlang.sample.json` ships one.
 
 ## Call
 ```bash
 MR="${CLAUDE_PLUGIN_ROOT:-$(ls -d ~/.claude/plugins/cache/*/manyread/*/ 2>/dev/null | sort | tail -1)}"
-uv run --python 3.12 "$MR/scripts/link_source.py" \
+uv run --python 3.12 "$MR/scripts/extensions/ue/link_source.py" \
     --dsl-store  <dsl store dir | source.db | hub alias> \
     --code-store <code store dir | source.db | hub alias> \
-    --schema     "$MR/scripts/schemas/matlang.sample.json" \
+    --schema     "$MR/scripts/extensions/ue/schemas/matlang.sample.json" \
     [--lang matlang] [--code-lang cpp] [--json]
 ```
 - `--dsl-store` / `--code-store` each accept a store **dir**, a `source.db` path, OR
@@ -76,10 +76,10 @@ Point `--code-store` at the real engine store to resolve nodes against the real
 `UMaterialExpression*` classes (opened `mode=ro` — the 7.6 GB store is never
 modified):
 ```bash
-uv run --python 3.12 "$MR/scripts/link_source.py" \
+uv run --python 3.12 "$MR/scripts/extensions/ue/link_source.py" \
     --dsl-store  <a real matlang store> \
     --code-store W:/3dgs/NS_UE_5_6_1/manyread \
-    --schema     "$MR/scripts/schemas/matlang.sample.json"
+    --schema     "$MR/scripts/extensions/ue/schemas/matlang.sample.json"
 ```
 Verified against the real `NS_UE_5_6_1` index: **15/17** matlang nodes across the two
 bundled materials resolve **unique** to their real `UMaterialExpression*` definitions

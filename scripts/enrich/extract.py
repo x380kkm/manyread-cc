@@ -69,7 +69,7 @@ def _extract_file(file_id: int, content: str, lang: str, parser: Parser,
         if do_refs:
             edges.extend(_reference_edges(file_id, tree, src, pend))
     else:
-        # 无遍历器的 DSL（matlang/bplisp/animlang）：由查询拥有符号
+        # 无遍历器的语言（如扩展提供的 DSL）：符号完全来自 .scm 查询
         rows = _query_symbols(file_id, tree, src, query, lang) if query is not None else []
         edges = []
         # 从 parent_local 合成 contains 边（与遍历器产出的形态一致）

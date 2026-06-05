@@ -114,26 +114,32 @@ def _query_symbols(file_id: int, tree, src: bytes, query, lang: str) -> list[dic
 # 内置声明式依赖边查询 .scm 的预设目录
 _QUERY_DIR = Path(__file__).resolve().parent.parent / "queries"
 
+# 扩展贡献的额外 .scm 目录（由 Registry.add_scm_dir 就地追加）
+EXTRA_SCM_DIRS: list[Path] = []
 
-#### 加载 lang -> .scm 文本：内置预设，再叠加项目覆盖（覆盖优先） [@380kkm 2026-06-05] ####
+
+#### 从一个目录加载 *.scm（按 stem 覆盖入 specs；读失败静默跳过） [@380kkm 2026-06-05] ####
+def _load_scm_dir(specs: dict[str, str], directory: Path) -> None:
+    if not directory.is_dir():
+        return
+    for p in sorted(directory.glob("*.scm")):
+        try:
+            specs[p.stem] = p.read_text(encoding="utf-8")
+        except OSError:
+            pass
+
+
+#### 三层加载 lang -> .scm 文本：内置预设 -> 扩展目录 -> 项目覆盖（后者依次更优先） [@380kkm 2026-06-05] ####
 def _load_query_specs(root) -> dict[str, str]:
     specs: dict[str, str] = {}
-    if _QUERY_DIR.is_dir():
-        for p in sorted(_QUERY_DIR.glob("*.scm")):
-            try:
-                specs[p.stem] = p.read_text(encoding="utf-8")
-            except OSError:
-                pass
+    _load_scm_dir(specs, _QUERY_DIR)
+    for d in EXTRA_SCM_DIRS:
+        _load_scm_dir(specs, Path(d))
     if root is not None:
-        odir = Path(root) / ".manyread" / "queries"
-        if odir.is_dir():
-            for p in sorted(odir.glob("*.scm")):
-                try:
-                    specs[p.stem] = p.read_text(encoding="utf-8")
-                except OSError:
-                    pass
+        # 项目覆盖最后加载，确保始终胜出
+        _load_scm_dir(specs, Path(root) / ".manyread" / "queries")
     return specs
-#### /加载 lang -> .scm 文本 ####
+#### /三层加载 lang -> .scm 文本 ####
 
 
 #### 把捕获的类型/名字化简为裸标识符，供按名 resolve [@380kkm 2026-06-05] ####

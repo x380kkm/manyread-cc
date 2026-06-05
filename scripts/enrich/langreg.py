@@ -27,16 +27,14 @@ LANG_FOR_EXT: dict[str, str] = {
     ".java": "java",
     # gdscript（Godot）
     ".gd": "gdscript",
-    # UE 资产 DSL（S 表达式文本，无 walker，符号与边来自各自的 .scm 查询）
-    ".matlang": "matlang", ".bplisp": "bplisp", ".animlang": "animlang",
 }
 #### /语言注册表 ####
 
-#### 我们实际能解析的语言集合 [@380kkm 2026-06-05] ####
-SUPPORTED_LANGS: tuple[str, ...] = (
+#### 我们实际能解析的语言集合（list：扩展须就地改动，from-import 消费者才能看见） [@380kkm 2026-06-05] ####
+SUPPORTED_LANGS: list[str] = [
     "cpp", "python", "javascript", "typescript", "tsx", "csharp", "glsl",
-    "java", "gdscript", "matlang", "bplisp", "animlang",
-)
+    "java", "gdscript",
+]
 
 
 #### manyread 语言名 -> tree-sitter-language-pack 文法名 [@380kkm 2026-06-05] ####
@@ -50,12 +48,20 @@ _PACK_NAME: dict[str, str] = {
     "glsl": "glsl",
     "java": "java",
     "gdscript": "gdscript",
-    # UE 资产 DSL 全部用 `scheme` 文法
-    "matlang": "scheme",
-    "bplisp": "scheme",
-    "animlang": "scheme",
 }
 #### /语言名到文法名映射 ####
+
+
+#### 扩展注册一种语言：写入文法名并把 lang 并入 SUPPORTED_LANGS（就地改动） [@380kkm 2026-06-05] ####
+def register_lang(lang: str, grammar: str) -> None:
+    _PACK_NAME[lang] = grammar
+    if lang not in SUPPORTED_LANGS:
+        SUPPORTED_LANGS.append(lang)
+
+
+#### 扩展注册一个 扩展名->语言 的路由（就地改动 LANG_FOR_EXT） [@380kkm 2026-06-05] ####
+def register_ext(ext: str, lang: str) -> None:
+    LANG_FOR_EXT[ext] = lang
 
 
 #### 经 language-pack 取受支持文法对应的 tree-sitter Language [@380kkm 2026-06-05] ####

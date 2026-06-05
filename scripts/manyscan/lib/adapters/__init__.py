@@ -207,3 +207,12 @@ class SymbolAdapter:
 
 # 默认适配器：代码 imports/includes
 DEFAULT_ADAPTER: SourceAdapter = CodeAdapter()
+
+# 扩展贡献的附加来源适配器（ADD，绝不替换 DEFAULT_ADAPTER）
+ADAPTERS: list[SourceAdapter] = []
+
+
+#### 把一个来源适配器加入扩展适配器注册表（去重） [@380kkm 2026-06-05] ####
+def register_adapter(adapter: SourceAdapter) -> None:
+    if adapter not in ADAPTERS:
+        ADAPTERS.append(adapter)

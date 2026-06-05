@@ -47,10 +47,6 @@ LANG_EXTS: dict[str, list[str]] = {
     "gdscript": [".gd"],
     "shader": [".hlsl", ".usf", ".ush"],
     "glsl": [".glsl", ".vert", ".frag", ".comp", ".geom", ".tesc", ".tese"],
-    # UE 资产 DSL 的 S 表达式文本扩展名
-    "matlang": [".matlang"],
-    "bplisp": [".bplisp"],
-    "animlang": [".animlang"],
     "docs": [".md", ".json", ".ini"],
 }
 
@@ -93,6 +89,8 @@ class ProjectConfig:
     exts: list[str]
     profile: str | None
     ignore_globs: list[str] = field(default_factory=list)
+    # 已启用的可选扩展名单（如 ["ue"]）；空 == 仅通用核心
+    extensions: list[str] = field(default_factory=list)
 #### /项目解析后配置 ####
 
 
@@ -136,6 +134,54 @@ def default_exts_for(languages: list[str]) -> list[str]:
             if ext not in exts:
                 exts.append(ext)
     return exts
+
+
+#### 向上从 root 走到 store 范围内探测是否存在 *.uproject 标记 [@380kkm 2026-06-05] ####
+def _has_uproject(root: Path, store: Path) -> bool:
+    """有界扫描：仅看 root 直属目录、以及 root..store 这条祖先链上的各目录，绝不递归整盘。"""
+    seen: set[Path] = set()
+    cur = root.resolve()
+    stop = store.resolve().parent
+    # 沿祖先链上行直到 store 的父目录（含），避免无界遍历
+    chain = [cur, *cur.parents]
+    for d in chain:
+        if d in seen:
+            continue
+        seen.add(d)
+        try:
+            if any(d.glob("*.uproject")):
+                return True
+        except OSError:
+            pass
+        if d == stop:
+            break
+    return False
+
+
+#### 解析一个项目实际启用的扩展名单：显式名单 > profile=='ue' 别名 > .uproject 自动探测 [@380kkm 2026-06-05] ####
+def active_extensions(cfg: "ProjectConfig") -> list[str]:
+    """优先级：显式 manyread.json `extensions`（user>shared，显式 [] 硬禁用）> `profile=='ue'`
+    别名为 ['ue'] > 在 cfg.root..cfg.store 范围内探测到 *.uproject 则推断 ['ue']（推断时向
+    stderr 输出一行说明）。返回扩展名列表（可能为空）。
+    """
+    import sys
+
+    shared = load_shared(cfg.store)
+    user = load_user(cfg.store)
+    # 显式名单：user 覆盖 shared；显式 [] 也是一个确定的「硬禁用」信号
+    explicit = user.get("extensions", shared.get("extensions"))
+    if isinstance(explicit, list):
+        return [str(x) for x in explicit]
+
+    if cfg.profile == "ue":
+        return ["ue"]
+
+    if _has_uproject(Path(cfg.root), Path(cfg.store)):
+        print("manyread: inferred UE extension from a *.uproject near the source root "
+              "(set \"extensions\": [] in manyread.json to disable)", file=sys.stderr)
+        return ["ue"]
+
+    return []
 
 
 #### 读取一个 JSON 文件为 dict，缺失/损坏则返回空 dict [@380kkm 2026-06-05] ####
@@ -323,6 +369,7 @@ def init_store(location: Path, alias: str | None = None,
             "profile": None,
             "ignore_globs": ignore_globs if ignore_globs is not None else list(DEFAULT_IGNORE_GLOBS),
         }
+        # extensions 键有意缺席：缺席 = 运行时经 active_extensions 推断；显式 [] 才是硬禁用
         # 仅当显式作为共享默认提供时才记录源码根
         if root is not None:
             payload["root"] = str(root)
@@ -386,6 +433,13 @@ def resolve_project(root: str | None = None, store: str | None = None) -> Projec
     if ignore_globs is None:
         ignore_globs = list(DEFAULT_IGNORE_GLOBS)
 
+    # 已启用扩展：user 覆盖 shared，缺省为 []（仅通用核心）
+    extensions = user.get("extensions")
+    if extensions is None:
+        extensions = shared.get("extensions")
+    if extensions is None:
+        extensions = []
+
     return ProjectConfig(
         alias=alias,
         store=store_path,
@@ -402,6 +456,7 @@ def resolve_project(root: str | None = None, store: str | None = None) -> Projec
         exts=list(exts),
         profile=profile,
         ignore_globs=list(ignore_globs),
+        extensions=list(extensions),
     )
 
 

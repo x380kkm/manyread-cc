@@ -45,8 +45,29 @@ in the gitignored `<store>/user/`.
 |-------|---------|
 | `languages` | enabled languages; drive default ext presets + tree-sitter enrichment |
 | `exts` | explicit extension allowlist; if omitted, derived from `languages` |
-| `profile` | reserved named profile (forward-compat; `null` disables) |
+| `profile` | reserved named profile (forward-compat; `null` disables); `"ue"` aliases to `extensions: ["ue"]` |
+| `extensions` | opt-in domain extensions to load (e.g. `["ue"]`); omit the key to allow runtime inference (§ below); an explicit `[]` hard-disables |
 | `ignore_globs` | glob patterns (relative to root) excluded during the `os.walk` fallback |
+
+### Domain extensions (opt-in, default OFF)
+
+The generic core indexes/enriches/validates only language-agnostic source. Optional
+domain extensions (under `scripts/extensions/<name>/`) add their own languages, `.scm`
+queries, schemas, validation passes, and commands — but only when explicitly enabled.
+`config.active_extensions(cfg)` resolves the active list, in priority order:
+
+1. an explicit `extensions` list in `manyread.json` (per-user `user/config.json` overrides
+   the shared file). An explicit `[]` **hard-disables** all extensions, even if a
+   `.uproject` is present.
+2. else `profile == "ue"` aliases to `["ue"]`.
+3. else a bounded scan for a `*.uproject` near the source root (root up to the store's
+   parent) infers `["ue"]` and prints a one-line stderr note.
+
+With no extension active, the DSL extensions (`.matlang`/`.bplisp`/`.animlang`) are absent
+from `LANG_FOR_EXT`, the default-ext fallback, and the validator pass registry — a bare
+`--root` index of a non-UE tree never ingests a stray `.matlang`. The UE asset DSL
+extension lives at `scripts/extensions/ue/` (its `.scm`, schema, link-source linker,
+`/mr-validate` + `/mr-link-source` commands, and skill addendum travel with it).
 
 The DB and ref/prune workspaces are fixed locations inside the store
 (`<store>/source.db`, `<store>/refs/`), so they need no config entries. A starter

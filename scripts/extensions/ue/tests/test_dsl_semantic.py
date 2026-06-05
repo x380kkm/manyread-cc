@@ -5,8 +5,8 @@ import sys
 
 import pytest
 
-# 把 scripts/ 加入路径
-sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), "..")))
+# 把 scripts/ 加入路径（本文件在 scripts/extensions/ue/tests/ 下，上溯三级）
+sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
 try:
     import dsl_validate as V
     _HAVE = True
@@ -15,6 +15,7 @@ except Exception:  # noqa: BLE001
 
 pytestmark = pytest.mark.skipif(not _HAVE, reason="tree-sitter not installed")
 
+# schema 在同级扩展目录 scripts/extensions/ue/schemas/ 下
 _SCHEMA_PATH = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "schemas", "matlang.sample.json"))
 

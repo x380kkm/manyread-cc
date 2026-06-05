@@ -165,7 +165,7 @@ SELECT DISTINCT relation, COUNT(*) FROM edges GROUP BY relation;
 | `contains` | parent symbol → child symbol | structure/outline, not call flow |
 | `extends` / `implements` | type hierarchy | OOP inheritance analysis |
 | `calls` / `imports` / `uses_type` | dependency edges from a per-language `.scm` query — cpp via the walker; python/javascript/typescript/csharp/… via `scripts/queries/<lang>.scm`, overridable per project at `<root>/.manyread/queries/<lang>.scm` | dependency / impact analysis (feeds manyscan) |
-| `binds` / `casts` / `ref` | UE asset DSL graph edges (bplisp/animlang); matlang wires use `uses_type` | asset node-graph ("连连看") analysis |
+| extension-provided edges | optional domain extensions can add their own DSL graph edges (e.g. the UE asset DSL extension) | see the extension's skill addendum |
 | `references` | best-effort name match (`--refs`) | weak dependency hints only |
 
 Inspect edges out of a symbol (resolved by `dst_symbol_id`, else by `dst_name`):
@@ -334,9 +334,10 @@ rules above are the only path you use. See `references/enrich-overrides.md` and 
 | Reference index | `references/INDEX.md` |
 
 Commands — build/read: `/mr-init`, `/mr-index`, `/mr-enrich`, `/mr-query`, `/mr-trace`,
-`/mr-ref`, `/mr-rules`. UE asset DSL: `/mr-validate` (pre-flight structural + schema check of a
-matlang/bplisp/animlang file), `/mr-link-source` (asset node → the C++ class that implements it).
-Dependency / refactoring analysis (the **manyscan** skill): `/mr-deps`, `/mr-boundary`.
+`/mr-ref`, `/mr-rules`. Dependency / refactoring analysis (the **manyscan** skill):
+`/mr-deps`, `/mr-boundary`. Optional domain extensions add their own commands when enabled
+(e.g. the UE asset DSL extension's `/mr-validate` + `/mr-link-source` — see
+`scripts/extensions/ue/skill_addendum.md`).
 
 ## Common Pitfalls
 

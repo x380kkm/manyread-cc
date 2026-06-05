@@ -30,6 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib import config, db
+from extensions import run_discovery_ingest
 
 #### os.walk 回退时绝不进入的目录 [@380kkm 2026-06-05] ####
 SKIP_DIRS: set[str] = {
@@ -43,11 +44,11 @@ SKIP_DIRS: set[str] = {
     "manyread",
 }
 
-#### 项目配置未提供扩展名（裸 --root）时的回退扩展名 [@380kkm 2026-06-05] ####
-# 所有内置语言预设的并集，外加常见文档扩展名。
-DEFAULT_EXTS: list[str] = sorted(
-    {ext for exts in config.LANG_EXTS.values() for ext in exts} | {".md"}
-)
+#### 项目配置未提供扩展名（裸 --root）时的回退扩展名（按调用时的 LIVE 预设计算） [@380kkm 2026-06-05] ####
+# 所有当前已注册语言预设的并集，外加常见文档扩展名。在 build() 内、扩展发现之后才计算，
+# 使扩展 OFF 时绝不泄漏 DSL 扩展名、ON 时又能纳入扩展贡献的扩展名。
+def _default_exts() -> list[str]:
+    return sorted({ext for exts in config.LANG_EXTS.values() for ext in exts} | {".md"})
 
 #### 单文件内容字节上限 [@380kkm 2026-06-05] ####
 # 4 MiB
@@ -129,11 +130,13 @@ def read_text(path: Path) -> str | None:
 
 #### 执行完整 DROP+CREATE 重建，返回用于汇报的统计字典 [@380kkm 2026-06-05] ####
 def build(cfg: config.ProjectConfig, rebuild: bool) -> dict:
+    # 计算回退扩展名之前先跑摄取级扩展发现，使 LANG_EXTS 反映已启用扩展（幂等、纯 stdlib）
+    run_discovery_ingest(cfg)
     root = Path(cfg.root).resolve()
     db_path = Path(cfg.db_path)
 
-    # 扩展名为配置驱动；为空时回退到内置默认。
-    exts = [e.lower() for e in cfg.exts] if cfg.exts else list(DEFAULT_EXTS)
+    # 扩展名为配置驱动；为空时回退到 LIVE 默认（发现之后计算）。
+    exts = [e.lower() for e in cfg.exts] if cfg.exts else _default_exts()
     ext_set = set(exts)
 
     #### 枚举候选文件 [@380kkm 2026-06-05] ####

@@ -4,8 +4,8 @@ import sys
 
 import pytest
 
-# 把 scripts/ 加入路径
-sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), "..")))
+# 把 scripts/ 加入路径（本文件在 scripts/extensions/ue/tests/ 下，上溯三级）
+sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
 try:
     import dsl_validate as V
     _HAVE = True

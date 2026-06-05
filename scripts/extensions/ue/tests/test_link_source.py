@@ -1,14 +1,15 @@
-"""ASSET->SOURCE 跨层链接器（scripts/link_source.py）的回归测试。"""
+"""ASSET->SOURCE 跨层链接器（scripts/extensions/ue/link_source.py）的回归测试。"""
 import json
 import os
 import sys
 from pathlib import Path
 
-# 把 scripts/ 加入路径
+# 把扩展目录 scripts/extensions/ue/ 加入路径（link_source 已随扩展迁至此处）
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), "..")))
 
 import link_source as L  # noqa: E402
 
+# schema 在同级扩展目录 scripts/extensions/ue/schemas/ 下
 SCHEMA = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "schemas", "matlang.sample.json")
 )
