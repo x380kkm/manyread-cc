@@ -34,7 +34,9 @@ def register_enrich(reg) -> None:
     # 体内延迟 import：这两个模块（经 enrich）依赖 tree-sitter
     from dsl_validate import pass_parse
     from extensions.ue.validate_passes import (pass_animlang_required,
+                                               pass_animlang_semantic,
                                                pass_bplisp_required,
+                                               pass_bplisp_semantic,
                                                pass_external_warn,
                                                pass_matlang_cycle,
                                                pass_matlang_dangling,
@@ -60,10 +62,10 @@ def register_enrich(reg) -> None:
     reg.register_passes(
         "bplisp",
         structural=[pass_parse, pass_bplisp_required, pass_external_warn],
-        semantic=[],
+        semantic=[pass_bplisp_semantic],
     )
     reg.register_passes(
         "animlang",
         structural=[pass_parse, pass_animlang_required, pass_external_warn],
-        semantic=[],
+        semantic=[pass_animlang_semantic],
     )

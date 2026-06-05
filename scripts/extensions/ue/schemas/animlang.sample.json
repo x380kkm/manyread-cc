@@ -1,0 +1,353 @@
+{
+  "$schema_note": "SAMPLE / PARTIAL / DUAL-DIALECT. Hand-authored from the AnimBP2FP exporter's OWN evidence. Format identical to matlang.sample.json: lang -> nodeType -> {classPath?, properties:{name:{type,default?}}, pins:{name:{required:bool}}}. KEY-RESOLUTION DIFFERS from matlang: animlang node heads ARE their own name (head==name), so enrich never promotes attrs.node_type; the animlang semantic pass keys the schema on r['name'] for kind=='node', NOT attrs.node_type.",
+  "$dialect_caveat": "TWO DISTINCT DIALECTS share the .animlang extension. (A) DESIGN-SKETCH form = the in-repo DSL/Examples/*.animlang + Extras/Tools/animlang-lint.rkt + Docs/README.md (node names blendspace-1d/-2d, aimoffset-2d, two-bone-ik, layered-blend-per-bone, reference-pose; positional pose operands for blend; (state ..)/(transition ..) list forms). (B) REAL EXPORTER form = AnimBPExporter.cpp + Extras/Tools/animlang-nodes.rkt (blendspace-player, two-bone-i-k via CamelToKebab, aim-offset, layered-bone-blend; transitions serialized as a STRING property). The enrich .scm + the existing example-zero-error tests are calibrated to dialect (A), so this dict is GROUNDED IN DIALECT (A) (its node names carry no 'external' flag) and ADDITIVELY includes dialect-(B) node names + the few divergent ones marked 'external': true. The two dialects disagree on transition/rule-graph representation, so transition-as-string and rule-graph handling are NOT modeled — flagged external.",
+  "$pin_model_note": "animlang pose inputs are NOT (connect ...) (that is matlang-only). In dialect (A) pose operands are sometimes POSITIONAL (blend's two children) and sometimes :keyword-named (layered-blend-per-bone :base, slot :default, blend-layer :source). Because the form is inconsistent and the matlang precedent reserves required:true only for no-fallback pins, ALL pose-input pins here are required:false (the animlang semantic pass treats a :keyword whose value is a child node-list as a connected pin, but never errors on a missing one). Required-ness is hand-curated and intentionally absent. Prefer UNKNOWN_NODE_TYPE warnings over false MISSING_REQUIRED_PIN errors.",
+  "$strict_props_note": "UNKNOWN_PROP is OFF by default and fires ONLY for forms that declare \"strict-props\": true. The design-sketch dialect uses LEADING POSITIONAL KEYWORD IDENTIFIERS — a state-machine's name (state-machine :locomotion ..), a state's name (state :idle ..), a transition's from/to (transition :idle :walk ..) — which are structurally indistinguishable from :key value props, so prop-checking those forms would false-warn on every user-chosen state name. strict-props is therefore set ONLY on forms whose entire keyword surface is a CLOSED, fully-enumerated set with NO positional keyword args (sequence-player, blend, blendspace-1d, blendspace-2d, aimoffset-2d, blend-layer, notify). state-machine / state / transition deliberately omit it. This keeps UNKNOWN_PROP a true signal (typo'd prop on a closed-vocab leaf) instead of noise.",
+  "$source_evidence": {
+    "dialect_A_grammar": "AnimationBP2FP-N/Extras/Tools/animlang-lint.rkt (check-anim-graph, check-state-machine, check-variables) + Docs/README.md",
+    "dialect_A_examples": ["DSL/Examples/simple_blend.animlang", "DSL/Examples/state_machine.animlang", "DSL/Examples/third_person_char.animlang"],
+    "dialect_B_nodes": "AnimationBP2FP-N/Extras/Tools/animlang-nodes.rkt (23-node stub library) + AnimBPExporter.cpp hardcoded types",
+    "expr_vocabulary": "Extras/Tools/animlang-types.rkt (Expr) + animlang-lint.rkt check-expression"
+  },
+  "animlang": {
+    "anim-blueprint": {
+      "$node_note": "Root form (anim-blueprint \"Name\" :variables [..] :anim-graph <node> :layers [..] :anim-notifies [..]). lint.rkt check-blueprint-body. :variables/:layers/:anim-notifies values are vectors handled by the .scm head-filter, not nodes; :anim-graph holds the pose-tree root.",
+      "classPath": "/Script/Engine.AnimBlueprint",
+      "properties": {
+        "variables": {"type": "list"},
+        "anim-graph": {"type": "pose"},
+        "layers": {"type": "list"},
+        "anim-notifies": {"type": "list"},
+        "skeleton": {"type": "asset"},
+        "implements": {"type": "list"}
+      },
+      "pins": {}
+    },
+    "sequence-player": {
+      "$node_note": "(sequence-player \"Anim\" :loop true :play-rate ..). Leaf node, closed keyword surface -> strict-props. lint.rkt + nodes.rkt UAnimGraphNode_SequencePlayer. :name is the exporter-form key; the design-sketch positions the anim name positionally.",
+      "classPath": "/Script/Engine.AnimGraphNode_SequencePlayer",
+      "strict-props": true,
+      "properties": {
+        "name": {"type": "string"},
+        "loop": {"type": "bool", "default": false},
+        "play-rate": {"type": "float", "default": 1.0}
+      },
+      "pins": {}
+    },
+    "blend": {
+      "$node_note": "(blend <alpha> <pose1> <pose2>) design-sketch positional OR (blend :alpha .. :a <pose> :b <pose>) exporter. UAnimGraphNode_TwoWayBlend. Pose operands required:false (positional in dialect A). strict-props: keyword surface is closed (:alpha/:alpha-curve-name + :a/:b pins); positional poses carry no keyword so they never trip prop-check.",
+      "classPath": "/Script/Engine.AnimGraphNode_TwoWayBlend",
+      "strict-props": true,
+      "properties": {
+        "alpha": {"type": "float"},
+        "alpha-curve-name": {"type": "string"}
+      },
+      "pins": {
+        "a": {"required": false},
+        "b": {"required": false}
+      }
+    },
+    "blendspace-1d": {
+      "$node_note": "(blendspace-1d \"Name\" :axis :param :loop true). Dialect-(A) lint.rkt. Exporter emits blendspace-player instead. strict-props: :axis/:loop/:play-rate closed surface (the :axis value is a keyword param-ref, consumed as the value of :axis).",
+      "strict-props": true,
+      "properties": {
+        "name": {"type": "string"},
+        "axis": {"type": "param"},
+        "loop": {"type": "bool", "default": false},
+        "play-rate": {"type": "param"}
+      },
+      "pins": {}
+    },
+    "blendspace-2d": {
+      "$node_note": "(blendspace-2d \"Name\" :x :param :y :param :loop true :play-rate ..). Dialect-(A) lint.rkt + third_person_char.animlang. strict-props: closed :x/:y/:loop/:play-rate surface.",
+      "strict-props": true,
+      "properties": {
+        "name": {"type": "string"},
+        "x": {"type": "param"},
+        "y": {"type": "param"},
+        "loop": {"type": "bool", "default": false},
+        "play-rate": {"type": "param"}
+      },
+      "pins": {}
+    },
+    "state-machine": {
+      "$node_note": "Dialect (A): (state-machine :name-kw :initial :state :states [(state ..)] :transitions [(transition ..)]). Exporter (B) emits :name/:initial + :transitions as a serialized STRING — that representation is NOT modeled (external split). Dialect-(A) keys listed.",
+      "classPath": "/Script/Engine.AnimGraphNode_StateMachine",
+      "properties": {
+        "name": {"type": "string"},
+        "initial": {"type": "state-ref"},
+        "states": {"type": "list"},
+        "transitions": {"type": "list"}
+      },
+      "pins": {}
+    },
+    "state": {
+      "$node_note": "(state :name <anim> [:transition-to :other :on-finish true]). lint.rkt check-state + third_person_char.animlang. The state animation is a positional child pose.",
+      "properties": {
+        "transition-to": {"type": "state-ref"},
+        "on-finish": {"type": "bool", "default": false}
+      },
+      "pins": {}
+    },
+    "transition": {
+      "$node_note": "(transition :from :to :condition <expr> :duration .. :priority .. :from-states [..]). Dialect-(A) lint.rkt check-transition. :from/:to are leading state-ref keywords; :condition is an expression (handled by the .scm, not a node). external: exporter (B) serializes transitions as a string, so this list-form is dialect-(A)-only.",
+      "external": true,
+      "properties": {
+        "from": {"type": "state-ref"},
+        "to": {"type": "state-ref"},
+        "condition": {"type": "expr"},
+        "duration": {"type": "float", "default": 0.0},
+        "priority": {"type": "priority"},
+        "from-states": {"type": "list"}
+      },
+      "pins": {}
+    },
+    "layered-blend-per-bone": {
+      "$node_note": "(layered-blend-per-bone :base <pose> :layers [(blend-layer ..)]). Dialect-(A) lint.rkt + third_person_char.animlang. :base is a named pose input.",
+      "properties": {
+        "layers": {"type": "list"}
+      },
+      "pins": {
+        "base": {"required": false}
+      }
+    },
+    "layered-blend": {
+      "$node_note": "(layered-blend :base <pose> :additive <pose>). Dialect-(A) third_person_char.animlang (nested under a blend-layer :source). Both poses named, optional.",
+      "external": true,
+      "properties": {},
+      "pins": {
+        "base": {"required": false},
+        "additive": {"required": false}
+      }
+    },
+    "blend-layer": {
+      "$node_note": "(blend-layer :name .. :weight <expr> :blend-mode :blend|:replace :bone-filter \"bone\" :blend-depth N :source <pose>). Dialect-(A) third_person_char.animlang + types.rkt BlendLayer. strict-props: closed surface; :blend-mode's keyword value (:blend/:replace) is consumed as the value of :blend-mode.",
+      "strict-props": true,
+      "properties": {
+        "name": {"type": "string"},
+        "weight": {"type": "expr"},
+        "blend-mode": {"type": "enum", "default": "blend"},
+        "bone-filter": {"type": "string"},
+        "blend-depth": {"type": "int", "default": 0}
+      },
+      "pins": {
+        "source": {"required": false}
+      }
+    },
+    "aimoffset-2d": {
+      "$node_note": "(aimoffset-2d \"Name\" :x :param :y :param). Dialect-(A) third_person_char.animlang. Exporter (B) emits aim-offset. strict-props: closed :x/:y surface.",
+      "strict-props": true,
+      "properties": {
+        "name": {"type": "string"},
+        "x": {"type": "param"},
+        "y": {"type": "param"}
+      },
+      "pins": {}
+    },
+    "slot": {
+      "$node_note": "(slot \"SlotName\" :default <pose>) design-sketch OR (slot :slot-name .. :source <pose>) exporter. UAnimGraphNode_Slot. third_person_char.animlang uses :default.",
+      "classPath": "/Script/Engine.AnimGraphNode_Slot",
+      "properties": {
+        "slot-name": {"type": "string"}
+      },
+      "pins": {
+        "default": {"required": false},
+        "source": {"required": false}
+      }
+    },
+    "reference-pose": {
+      "$node_note": "(reference-pose) — T-pose leaf. Dialect-(A) third_person_char.animlang. Exporter (B) emits identity-pose.",
+      "properties": {},
+      "pins": {}
+    },
+    "two-bone-ik": {
+      "$node_note": "(two-bone-ik :effector-location <expr> :joint-target <expr>). Dialect-(A) third_person_char.animlang. Exporter (B) emits two-bone-i-k (CamelToKebab splits I/K).",
+      "properties": {
+        "effector-location": {"type": "expr"},
+        "joint-target": {"type": "expr"},
+        "alpha": {"type": "param"}
+      },
+      "pins": {
+        "component-pose": {"required": false}
+      }
+    },
+    "get-socket-location": {
+      "$node_note": "(get-socket-location \"Target\" \"Socket\") — value helper used inside two-bone-ik args. Dialect-(A) third_person_char.animlang.",
+      "external": true,
+      "properties": {},
+      "pins": {}
+    },
+    "notify": {
+      "$node_note": "(notify \"Name\" :callback handler). Dialect-(A) lint.rkt check-anim-notify + third_person_char.animlang :anim-notifies. strict-props: only :callback.",
+      "strict-props": true,
+      "properties": {
+        "callback": {"type": "symbol"}
+      },
+      "pins": {}
+    },
+    "sequence-evaluator": {
+      "$node_note": "Exporter-form (B). (sequence-evaluator :explicit-time <param>). UAnimGraphNode_SequenceEvaluator. nodes.rkt.",
+      "external": true,
+      "properties": {
+        "explicit-time": {"type": "param"}
+      },
+      "pins": {}
+    },
+    "blendspace-player": {
+      "$node_note": "Exporter-form (B). (blendspace-player :name .. :loop .. :x <param> :y <param>). UAnimGraphNode_BlendSpacePlayer. nodes.rkt.",
+      "external": true,
+      "properties": {
+        "name": {"type": "string"},
+        "loop": {"type": "bool", "default": false},
+        "play-rate": {"type": "param"},
+        "x": {"type": "param"},
+        "y": {"type": "param"}
+      },
+      "pins": {}
+    },
+    "blend-list": {
+      "$node_note": "Exporter-form (B). (blend-list :class \"AnimGraphNode_BlendListBy..\" :active-* <param> :blend-time_N .. :blend-pose_N <pose>). Dynamic pose pins (blend-pose_N) not enumerable -> none declared. nodes.rkt.",
+      "external": true,
+      "properties": {
+        "class": {"type": "string"},
+        "active-enum-value": {"type": "param"},
+        "active-child-index": {"type": "param"},
+        "b-active-value": {"type": "param"},
+        "bound-enum": {"type": "string"}
+      },
+      "pins": {}
+    },
+    "apply-additive": {
+      "$node_note": "Exporter-form (B). (apply-additive :alpha <param> :base <pose> :additive <pose>). UAnimGraphNode_ApplyAdditive. nodes.rkt.",
+      "external": true,
+      "properties": {
+        "alpha": {"type": "param"},
+        "lod-threshold": {"type": "int"}
+      },
+      "pins": {
+        "base": {"required": false},
+        "additive": {"required": false}
+      }
+    },
+    "apply-mesh-space-additive": {
+      "$node_note": "Exporter-form (B). UAnimGraphNode_ApplyMeshSpaceAdditive. Same shape as apply-additive. nodes.rkt.",
+      "external": true,
+      "properties": {
+        "alpha": {"type": "param"}
+      },
+      "pins": {
+        "base": {"required": false},
+        "additive": {"required": false}
+      }
+    },
+    "layered-bone-blend": {
+      "$node_note": "Exporter-form (B). (layered-bone-blend :blend-weights_N .. :base-pose <pose> :blend-poses_N <pose>). Dynamic blend-poses_N not enumerable. nodes.rkt.",
+      "external": true,
+      "properties": {},
+      "pins": {
+        "base-pose": {"required": false}
+      }
+    },
+    "two-bone-i-k": {
+      "$node_note": "Exporter-form (B), CamelToKebab of UAnimGraphNode_TwoBoneIK splits I/K. (two-bone-i-k :alpha <param> :component-pose <pose>). nodes.rkt.",
+      "external": true,
+      "properties": {
+        "alpha": {"type": "param"},
+        "effector-location": {"type": "param"},
+        "joint-target": {"type": "param"}
+      },
+      "pins": {
+        "component-pose": {"required": false}
+      }
+    },
+    "modify-bone": {
+      "$node_note": "Exporter-form (B). (modify-bone :translation .. :rotation .. :scale .. :component-pose <pose>). nodes.rkt.",
+      "external": true,
+      "properties": {
+        "translation": {"type": "param"},
+        "rotation": {"type": "param"},
+        "scale": {"type": "param"}
+      },
+      "pins": {
+        "component-pose": {"required": false}
+      }
+    },
+    "modify-curve": {
+      "$node_note": "Exporter-form (B). (modify-curve :curve-values_N .. :source-pose <pose>). Dynamic curve-values_N. nodes.rkt.",
+      "external": true,
+      "properties": {},
+      "pins": {
+        "source-pose": {"required": false}
+      }
+    },
+    "constraint": {
+      "$node_note": "Exporter-form (B). (constraint :component-pose <pose>). UAnimGraphNode_Constraint. nodes.rkt.",
+      "external": true,
+      "properties": {},
+      "pins": {
+        "component-pose": {"required": false}
+      }
+    },
+    "component-to-local-space": {
+      "$node_note": "Exporter-form (B). (component-to-local-space :component-pose <pose>). nodes.rkt.",
+      "external": true,
+      "properties": {},
+      "pins": {
+        "component-pose": {"required": false}
+      }
+    },
+    "local-to-component-space": {
+      "$node_note": "Exporter-form (B). (local-to-component-space :local-pose <pose>). nodes.rkt.",
+      "external": true,
+      "properties": {},
+      "pins": {
+        "local-pose": {"required": false}
+      }
+    },
+    "linked-anim-layer": {
+      "$node_note": "Exporter-form (B). (linked-anim-layer [:in-pose <pose>]). UAnimGraphNode_LinkedAnimLayer. in-pose optional. nodes.rkt.",
+      "external": true,
+      "properties": {
+        "layer": {"type": "string"},
+        "interface": {"type": "string"}
+      },
+      "pins": {
+        "in-pose": {"required": false}
+      }
+    },
+    "linked-input-pose": {
+      "$node_note": "Exporter-form (B). (linked-input-pose) — placeholder leaf. nodes.rkt.",
+      "external": true,
+      "properties": {},
+      "pins": {}
+    },
+    "look-at": {
+      "$node_note": "Exporter-form (B). (look-at :component-pose <pose>). Generic fallback. nodes.rkt.",
+      "external": true,
+      "properties": {},
+      "pins": {
+        "component-pose": {"required": false}
+      }
+    },
+    "aim-offset": {
+      "$node_note": "Exporter-form (B), CamelToKebab. (aim-offset :base-pose <pose>). Dialect (A) calls this aimoffset-2d. nodes.rkt.",
+      "external": true,
+      "properties": {},
+      "pins": {
+        "base-pose": {"required": false}
+      }
+    },
+    "identity-pose": {
+      "$node_note": "Exporter-form (B). (identity-pose) — T-pose/identity leaf. Dialect (A) calls this reference-pose. nodes.rkt.",
+      "external": true,
+      "properties": {},
+      "pins": {}
+    },
+    "root": {
+      "$node_note": "Exporter-form (B). AnimGraphNode result root. AnimBPExporter.cpp hardcoded type.",
+      "external": true,
+      "properties": {},
+      "pins": {}
+    }
+  }
+}

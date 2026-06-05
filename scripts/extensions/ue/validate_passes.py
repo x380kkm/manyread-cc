@@ -221,3 +221,99 @@ def pass_semantic_schema(ctx: Context) -> Iterable[Issue]:
                 yield Issue("error", "MISSING_REQUIRED_PIN",
                             f"{nt} (id {r['name']}): required pin :{pin} not connected",
                             r["start_line"], r["start_byte"])
+
+
+#### 返回某 S 表达式节点行的 (connected_pose_pins, present_props) [@380kkm 2026-06-05] ####
+def _sexpr_node_fields(ctx: Context, row: dict) -> tuple[set[str], set[str]]:
+    """bplisp/animlang 无 (connect ..) 形式：一个 ':' 关键字若其值是子节点 list（pose
+    输入），记为 pin；否则（字面量/表达式/无值）记为 prop。镜像 _matlang_node_fields 的
+    配对推进，但以「值是 list」而非「值含 connect」判定 pin —— 与 matlang 提取器互不影响。
+    """
+    pins: set[str] = set()
+    props: set[str] = set()
+    n = _find_node_list(ctx.tree.root_node, row["start_byte"], row["end_byte"])
+    if n is None:
+        return pins, props
+    src = ctx.text.encode("utf-8", "replace")
+    kids = [c for c in n.children if c.type not in ("(", ")", "comment")]
+
+    #### 判定子节点是否为 ':'-关键字 symbol [@380kkm 2026-06-05] ####
+    def _is_keyword(c) -> bool:
+        return c.type == "symbol" and src[c.start_byte:c.end_byte].startswith(b":")
+
+    i = 0
+    while i < len(kids):
+        k = kids[i]
+        if _is_keyword(k):
+            # 去掉一个 ':'
+            name = src[k.start_byte:k.end_byte].decode("utf-8", "replace")[1:]
+            val = kids[i + 1] if i + 1 < len(kids) else None
+            if val is None:
+                # 列表末尾的无值关键字记为 property
+                props.add(name)
+                i += 1
+                continue
+            # 值是 list（pose 子节点）-> pin；字面量 / 关键字 param-ref / 表达式 -> prop
+            (pins if val.type == "list" else props).add(name)
+            i += 2
+        else:
+            i += 1
+    return pins, props
+
+
+#### 复用 schema 字典检查走查（按 key_fn 取类型、按 fields_fn 取字段） [@380kkm 2026-06-05] ####
+def _semantic_node_check(ctx: Context, key_fn, fields_fn) -> Iterable[Issue]:
+    """key_fn(row) -> 该行的 schema 类型键，None 表示跳过该行（未知类型不发 warning 时返回
+    None；要发 UNKNOWN_NODE_TYPE 则返回键并由本函数处理）。fields_fn(ctx,row) ->
+    (connected_pins, present_props)。无 schema / 该语言无字典时不发任何东西（--schema 门控）。
+    """
+    if not ctx.schema:
+        return
+    lang_schema = ctx.schema.get(ctx.lang)
+    if not lang_schema:
+        return
+    for r in sorted(ctx.rows, key=lambda r: (r["start_byte"], r["end_byte"])):
+        nt = key_fn(r)
+        if not nt:
+            continue
+        spec = lang_schema.get(nt)
+        if spec is None:
+            yield Issue("warning", "UNKNOWN_NODE_TYPE",
+                        f"node type {nt!r} not in schema (dictionary is partial)",
+                        r["start_line"], r["start_byte"])
+            continue
+        connected, props = fields_fn(ctx, r)
+        known_props = set((spec.get("properties") or {}).keys())
+        known_pins = set((spec.get("pins") or {}).keys())
+        # UNKNOWN_PROP 仅对声明 strict-props 的 form 启用：设计稿 animlang 用前导位置
+        # 关键字（状态名 / from-to 引用）做标识符，与命名属性形状不可区分，默认不判未知属性
+        if spec.get("strict-props"):
+            for p in sorted(props):
+                if p not in known_props and p not in known_pins:
+                    yield Issue("warning", "UNKNOWN_PROP",
+                                f"{nt}: unknown property :{p}",
+                                r["start_line"], r["start_byte"])
+        for pin, pspec in sorted((spec.get("pins") or {}).items()):
+            if pspec.get("required") and pin not in connected:
+                yield Issue("error", "MISSING_REQUIRED_PIN",
+                            f"{nt} (id {r['name']}): required pin :{pin} not connected",
+                            r["start_line"], r["start_byte"])
+
+
+#### SEMANTIC 类型字典检查（bplisp）；类型键=name，CALL 节点开放词表不检查 [@380kkm 2026-06-05] ####
+def pass_bplisp_semantic(ctx: Context) -> Iterable[Issue]:
+    #### 取 bplisp 行的 schema 类型键：仅 kind=='node' 用 name，其余跳过 [@380kkm 2026-06-05] ####
+    def _key(r) -> str | None:
+        # CALL = 任意 UFunction（开放词表），不判未知；graph 由结构 pass 检查
+        return r["name"] if r["kind"] == "node" else None
+
+    yield from _semantic_node_check(ctx, _key, _sexpr_node_fields)
+
+
+#### SEMANTIC 类型字典检查（animlang）；类型键=name [@380kkm 2026-06-05] ####
+def pass_animlang_semantic(ctx: Context) -> Iterable[Issue]:
+    #### 取 animlang 行的 schema 类型键：仅 kind=='node' 用 name，其余跳过 [@380kkm 2026-06-05] ####
+    def _key(r) -> str | None:
+        return r["name"] if r["kind"] == "node" else None
+
+    yield from _semantic_node_check(ctx, _key, _sexpr_node_fields)

@@ -37,8 +37,10 @@ def _assert_ue_on():
                                 "pass_matlang_cycle"]
     assert names["bplisp"] == ["pass_parse", "pass_bplisp_required", "pass_external_warn"]
     assert names["animlang"] == ["pass_parse", "pass_animlang_required", "pass_external_warn"]
+    # SEMANTIC pass 仅在 --schema 时运行，故注册它们对无 schema 输出仍逐字节不变
     assert [f.__name__ for f in V.SEMANTIC_PASSES["matlang"]] == ["pass_semantic_schema"]
-    assert V.SEMANTIC_PASSES["bplisp"] == [] and V.SEMANTIC_PASSES["animlang"] == []
+    assert [f.__name__ for f in V.SEMANTIC_PASSES["bplisp"]] == ["pass_bplisp_semantic"]
+    assert [f.__name__ for f in V.SEMANTIC_PASSES["animlang"]] == ["pass_animlang_semantic"]
 #### /断言 UE-ON 态 ####
 
 

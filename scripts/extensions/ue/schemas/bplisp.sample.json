@@ -1,0 +1,141 @@
+{
+  "$schema_note": "SAMPLE / PARTIAL / GROUNDED. Hand-authored from the BlueprintLisp exporter's OWN evidence: the importer's authoritative top-level whitelist (BlueprintLispConverter.cpp::Validate, ValidForms set), the AST.h 'Core forms' doc (BlueprintLispAST.h:15-31), the enrich .scm structural-node list (queries/bplisp.scm:12), and the single bundled example (Tests/Regression/villager_select_before_print.bplisp). Format identical to matlang.sample.json: lang -> formName -> {classPath?, properties:{name:{type,default?}}, pins:{name:{required:bool}}}. KEY-RESOLUTION DIFFERS from matlang: bplisp node heads ARE their own name (head==name), so enrich never promotes attrs.node_type; the bplisp semantic pass keys the schema on r['name'] for kind=='node', NOT attrs.node_type. CALL nodes (UFunction invocations) are an OPEN vocabulary (any K2Node_*/UFunction kebab/PascalCase name) and are NOT schema-able by reflection, so they are NOT in this dict and the pass leaves kind=='call' entirely unchecked. This dict therefore covers ONLY the closed STRUCTURAL forms.",
+  "$pin_model_note": "BlueprintLisp has NO (connect ...) form. Exec/data flow is byte-range CONTAINS (a node's operands are its child sub-lists). Required-ness here is HAND-CURATED and DELIBERATELY EMPTY for almost every form: the matlang $required_pin_caveat applies even more strongly (zero required-pin examples in fixtures, the exporter omits defaulted pins, UE carries no connection-required bit). The one place a form is provably meaningless without an operand is (branch <cond> ...) — a Branch with no condition is degenerate — yet even that is marked 'external': true rather than required:true, because the exporter's emission of the condition operand has not been confirmed against a real dump. Prefer UNKNOWN_FORM warnings over false MISSING_REQUIRED_PIN errors.",
+  "$top_level_form_caveat": "AUTHORITATIVE top-level whitelist (BlueprintLispConverter.cpp:7933-7939): event, input-action, input-key, component-bound-event, actor-bound-event, func, function, macro, exit, call-macro, var, comment, transition-cond. NOTE the structural pass pass_bplisp_required currently only accepts event|func|function|macro as a graph root — a file rooted on input-action would get a false BPLISP_NO_GRAPH error. That is a STRUCTURAL-pass concern (out of scope here) and is reported, not fixed. This semantic dict lists the structural-node vocabulary (let/set/branch/...) keyed by name; graph roots themselves carry no semantic spec (their identity is checked structurally).",
+  "$source_evidence": {
+    "top_level_forms": "BlueprintLispConverter.cpp:7933-7939 (Validate ValidForms)",
+    "core_forms": "BlueprintLispAST.h:15-31 (Core forms doc)",
+    "structural_nodes": "scripts/extensions/ue/queries/bplisp.scm:12",
+    "var_form": "Tests/Regression/blueprintlisp_regression_manifest.json:257-264 (import_var_declaration probe)",
+    "example": "Blueprint2DSL/Tests/Regression/villager_select_before_print.bplisp"
+  },
+  "bplisp": {
+    "let": {
+      "$form_note": "(let var expr) — local variable / reusable value alias (AST.h:22). 2nd symbol is the bound name (enrich emits a 'binds' edge). No keyword props in the example.",
+      "properties": {},
+      "pins": {}
+    },
+    "set": {
+      "$form_note": "(set var expr :id ..) — set variable (AST.h:23). Example carries :id only (var/expr are positional). Closed keyword surface (:id) -> strict-props: a stray keyword like :idd is a real typo signal.",
+      "strict-props": true,
+      "properties": {
+        "id": {"type": "string"}
+      },
+      "pins": {}
+    },
+    "seq": {
+      "$form_note": "(seq ...) — execution sequence (AST.h:24); children are statements via contains.",
+      "properties": {},
+      "pins": {}
+    },
+    "branch": {
+      "$form_note": "(branch cond :true :false) — Branch node (AST.h:25). :true/:false are exec-output keyword slots, NOT data pins. The condition is the first operand (positional), so no named required pin is declared; marked external since exporter emission of an empty branch is unconfirmed.",
+      "external": true,
+      "properties": {
+        "true": {"type": "exec"},
+        "false": {"type": "exec"}
+      },
+      "pins": {}
+    },
+    "foreach": {
+      "$form_note": "(foreach item coll ...) — ForEach loop (AST.h:26); item + coll are positional operands.",
+      "properties": {},
+      "pins": {}
+    },
+    "call": {
+      "$form_note": "(call target func args...) — call method on object (AST.h:27); target/func/args are positional. Distinct from a bare UFunction CALL node (which enrich classifies kind=='call' and the pass never checks).",
+      "properties": {},
+      "pins": {}
+    },
+    "delay": {
+      "$form_note": "(delay seconds) — Delay node (AST.h:28); seconds is positional.",
+      "properties": {},
+      "pins": {}
+    },
+    "cast": {
+      "$form_note": "(cast Type var body) — Cast with success exec (AST.h:29); Type/var/body positional.",
+      "properties": {},
+      "pins": {}
+    },
+    "return": {
+      "$form_note": "(return ...) — function return (.scm structural list). external: not in AST.h Core-forms doc, taken from the enrich .scm node list only.",
+      "external": true,
+      "properties": {},
+      "pins": {}
+    },
+    "exit": {
+      "$form_note": "(exit ...) — early exit; ALSO a valid top-level form (Validate whitelist) and a .scm structural node. external: shape per-context unconfirmed.",
+      "external": true,
+      "properties": {},
+      "pins": {}
+    },
+    "switch": {
+      "$form_note": "(switch ...) — generic switch; .scm node. external: pin/case shape unconfirmed.",
+      "external": true,
+      "properties": {},
+      "pins": {}
+    },
+    "switch-int": {
+      "$form_note": "(switch-int ...) — switch on int; .scm node. external: case shape unconfirmed.",
+      "external": true,
+      "properties": {},
+      "pins": {}
+    },
+    "switch-enum": {
+      "$form_note": "(switch-enum ...) — switch on enum; .scm node. external: case shape unconfirmed.",
+      "external": true,
+      "properties": {},
+      "pins": {}
+    },
+    "switch-string": {
+      "$form_note": "(switch-string ...) — switch on string; .scm node. external: case shape unconfirmed.",
+      "external": true,
+      "properties": {},
+      "pins": {}
+    },
+    "call-parent": {
+      "$form_note": "(call-parent Name [:pin value]) — parent override call (AST.h:20). enrich emits a 'calls' edge to Name. :pin args are per-UFunction (open), so no props enumerated.",
+      "external": true,
+      "properties": {},
+      "pins": {}
+    },
+    "call-macro": {
+      "$form_note": "(call-macro Name [:pin value]) — macro instance call (AST.h:21); ALSO a top-level form. :pin args per-macro (open).",
+      "external": true,
+      "properties": {},
+      "pins": {}
+    },
+    "vec": {
+      "$form_note": "(vec x y z) — Vector literal (AST.h:30); x/y/z positional.",
+      "properties": {},
+      "pins": {}
+    },
+    "rot": {
+      "$form_note": "(rot r p y) — Rotator literal (AST.h:31); r/p/y positional.",
+      "properties": {},
+      "pins": {}
+    },
+    "make-array": {
+      "$form_note": "(make-array ...) — array literal; .scm node. external: element shape unconfirmed.",
+      "external": true,
+      "properties": {},
+      "pins": {}
+    },
+    "get-array-item": {
+      "$form_note": "(get-array-item ...) — array index; .scm node. external: pin shape unconfirmed.",
+      "external": true,
+      "properties": {},
+      "pins": {}
+    },
+    "break-struct": {
+      "$form_note": "(break-struct :struct .. :value .. :field ..) — struct field break; .scm node. external: confirmed only from the .scm capture comment, not a real dump.",
+      "external": true,
+      "properties": {
+        "struct": {"type": "string"},
+        "value": {"type": "string"},
+        "field": {"type": "string"}
+      },
+      "pins": {}
+    }
+  }
+}
