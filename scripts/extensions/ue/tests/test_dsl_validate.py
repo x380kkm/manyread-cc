@@ -130,9 +130,24 @@ def test_parse_error():
     assert "PARSE_ERROR" in _codes('(material "M" (expressions (multiply $m1', "matlang", "error")
 
 
-#### 验证 bplisp 缺少图根（无 event|func|function|macro 头）报错 [@380kkm 2026-06-05] ####
+#### 验证 bplisp 缺少图根（顶层只有非图 form）报错 [@380kkm 2026-06-05] ####
 def test_bplisp_no_graph_root():
     assert "BPLISP_NO_GRAPH" in _codes('(PrintString :instring "x" :id "1")', "bplisp", "error")
+    # var 是合法顶层 form 但不是图（导入器白名单含 var，图根 pass 仍应报缺图）
+    assert "BPLISP_NO_GRAPH" in _codes('(var Speed float :default 0.0)', "bplisp", "error")
+
+
+#### 验证导入器白名单中的事件类/转移条件图根不再误报缺图 [@380kkm 2026-06-05] ####
+def test_bplisp_event_like_graph_roots_accepted():
+    # BlueprintLispConverter.cpp:7933-7939 的图根子集，逐一应零 error
+    roots = ('(event BeginPlay (PrintString :instring "x" :id "1"))',
+             '(input-action Jump (PrintString :instring "x" :id "1"))',
+             '(input-key SpaceBar (PrintString :instring "x" :id "1"))',
+             '(component-bound-event Box OnComponentBeginOverlap (exit))',
+             '(actor-bound-event Door OnDestroyed (exit))',
+             '(transition-cond (> Speed 100.0))')
+    for text in roots:
+        assert _codes(text, "bplisp", "error") == [], text
 
 
 #### 验证未知语言仅报 UNKNOWN_LANG 且严重度为 error [@380kkm 2026-06-05] ####

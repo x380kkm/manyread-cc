@@ -104,11 +104,12 @@ def pass_matlang_cycle(ctx: Context) -> Iterable[Issue]:
                     "wire cycle: " + " -> ".join(members), loc[0], loc[1])
 
 
-#### bplisp 必需形式：至少一个 (event|func|function|macro ...) 图 root [@380kkm 2026-06-05] ####
+#### bplisp 必需形式：至少一个图 root（事件类/函数类/transition-cond） [@380kkm 2026-06-05] ####
 def pass_bplisp_required(ctx: Context) -> Iterable[Issue]:
     if not any(r["kind"] == "graph" for r in ctx.rows):
         yield Issue("error", "BPLISP_NO_GRAPH",
-                    "no (event|func|function|macro ...) graph root", 1, 0)
+                    "no graph root (event|input-action|input-key|component-bound-event"
+                    "|actor-bound-event|func|function|macro|transition-cond)", 1, 0)
 
 
 #### animlang 必需形式：一个顶层图 root [@380kkm 2026-06-05] ####

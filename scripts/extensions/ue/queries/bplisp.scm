@@ -5,8 +5,12 @@
 ;; (PrintString/SpawnSystemAttached/K2_SetTimer — the `:param` type is NOT a call),
 ;; dep.binds=4 (Selected, returnvalue, NS_Path, returnvalue).
 
-;; graph roots -> kind=graph
-(list . (symbol) @def.graph (#match? @def.graph "^(event|func|function|macro)$"))
+;; graph roots -> kind=graph; the vocabulary is the graph-creating subset of the
+;; importer's authoritative top-level whitelist (BlueprintLispConverter.cpp:7933-7939):
+;; event-likes (event/input-action/input-key/component-bound-event/actor-bound-event),
+;; function-likes (func/function/macro), and transition-cond (AnimationTransitionGraph
+;; function-graph mode). var/comment/exit/call-macro are top-level-legal but not graphs.
+(list . (symbol) @def.graph (#match? @def.graph "^(event|input-action|input-key|component-bound-event|actor-bound-event|func|function|macro|transition-cond)$"))
 
 ;; control / statement nodes -> kind=node
 (list . (symbol) @def.node (#match? @def.node "^(let|set|seq|branch|foreach|call|delay|cast|return|exit|switch|switch-int|switch-enum|switch-string|call-parent|call-macro|vec|rot|make-array|get-array-item|break-struct)$"))
