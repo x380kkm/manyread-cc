@@ -1,16 +1,4 @@
-"""预检结构 DSL 校验器（scripts/dsl_validate.py）的测试。
-
-与 test_enrich_query.py 并置（而非放在 scripts/manyscan/tests）出于相同的 sys.path 原因：
-dsl_validate 导入 enrich_treesitter，后者使用 manyread 的 `lib` 包，若放在那个测试套件的
-sys.path 下，manyread 的 `lib` 会被 manyscan 自己的 `lib` 遮蔽。
-
-带 tree-sitter 依赖、从 scripts/ 目录运行，例如：
-    cd scripts && uv run --python 3.12 --with pytest --with "tree-sitter>=0.23" \
-        --with tree-sitter-language-pack -m pytest tests/test_dsl_validate.py -q
-
-GOOD 夹具是真实参考文件的内联镜像（与 test_enrich_query.py 使用的同一组常量），使套件自包含
-且与路径无关；另有一趟可选测试仅在 W:/cc/reference 真实文件存在时读取它们（缺失则跳过）。
-"""
+"""预检结构 DSL 校验器（scripts/dsl_validate.py）的测试。"""
 import os
 import sys
 
@@ -21,7 +9,7 @@ sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), ".."
 try:
     import dsl_validate as V
     _HAVE = True
-except Exception:  # noqa: BLE001 - tree-sitter 未安装时干净跳过
+except Exception:  # noqa: BLE001
     _HAVE = False
 
 pytestmark = pytest.mark.skipif(not _HAVE, reason="tree-sitter not installed")
@@ -101,8 +89,6 @@ def test_duplicate_id():
            " (multiply $c1 :a (connect $c1 0))) (outputs :base-color (connect $c1 0)))")
     codes = _codes(bad, "matlang", "error")
     assert "DUP_ID" in codes
-    # 回归：既重复 id 又自连线时不得发出幻象 CYCLE。环图按名字坍缩，在重复 id 下存在歧义，
-    # 故任一 id 重复时 pass_matlang_cycle 直接跳过（DUP_ID 已标出该问题）
     assert "CYCLE" not in codes
 
 
@@ -116,16 +102,12 @@ def test_cycle():
 
 #### 验证三节点环恰报一个 CYCLE，自环亦被捕获 [@380kkm 2026-06-05] ####
 def test_cycle_three_node_and_self_loop():
-    # 三节点环 $a->$b->$c->$a -> 恰好一个 CYCLE（在两节点之外锁定 graph.scc 行为）。
-    # 所有 id 唯一，故环检测趟不被跳过
     three = ('(material "M" (expressions (multiply $a :x (connect $b 0))'
              " (multiply $b :x (connect $c 0)) (multiply $c :x (connect $a 0)))"
              " (outputs :base-color (connect $a 0)))")
     issues = V.dsl_validate(three, "matlang")
     cycles = [i for i in issues if i.code == "CYCLE"]
     assert len(cycles) == 1
-    # $a 内部的自连线（connect $a）是单节点环，被自环过滤器捕获（graph.scc 返回单元素集，
-    # 只有自连的才是真环）
     loop = ('(material "M" (expressions (multiply $a :x (connect $a 0)))'
             " (outputs :base-color (connect $a 0)))")
     assert "CYCLE" in _codes(loop, "matlang", "error")
@@ -169,12 +151,10 @@ def test_deterministic():
 
 #### 验证存在 PARSE_ERROR 时不短路、其余校验趟仍运行且结果有序 [@380kkm 2026-06-05] ####
 def test_parse_error_runs_other_passes():
-    # 既有语法错误又缺少 material -> PARSE_ERROR 出现，且流水线不短路（其余趟仍运行）
     bad = "(expressions (multiply $m1 :a (connect $x"
     issues = V.dsl_validate(bad, "matlang")
     codes = {i.code for i in issues}
     assert "PARSE_ERROR" in codes
-    # 所有 issue 按 (字节, code, message) 排序 -> 确定性顺序
     assert issues == sorted(issues, key=lambda i: i.sort_key())
 
 

@@ -69,15 +69,13 @@ import sys
 import time
 from pathlib import Path
 
-# 把 scripts/ 放到 sys.path 最前（先于 import enrich.*），使做
-# from lib import config, db / import rules 的包模块能解析，且使 enrich 可作为顶层
-# 包被导入。机制与拆分前的模块完全一致（它在 from lib import config, db 之前插入此行）。
+# 把 scripts/ 放到 sys.path 最前
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib import config, db
-# 同级模块：纯 override-rules 引擎 + 加载器（spec 第 16 节）
+# 同级模块：纯 override-rules 引擎 + 加载器
 import rules
 
-# 重新导出第三方 tree-sitter 表面（langreg 是 wrapper 边界）
+# 重新导出第三方 tree-sitter 表面
 from tree_sitter import Language, Node, Parser, Query, QueryCursor
 from tree_sitter_language_pack import get_language
 

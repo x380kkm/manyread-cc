@@ -22,10 +22,5 @@ WALKERS = {
     "gdscript": _walk_gdscript,
 }
 
-#### 拥有遍历器的语言集合，作为「查询驱动 vs 遍历器驱动」的分流闸 [@380kkm 2026-06-05] ####
-# 有遍历器的语言（cpp/python/...）自己产出符号：遍历器产出符号行，
-# .scm 查询只补充 EDGE-only 的 `@dep` 捕获（与 DSL 之前的行为逐字节一致）。
-# 没有遍历器但有 .scm 的语言（UE 资产 DSL：matlang/bplisp/animlang）完全由查询驱动：
-# `@def.<kind>` 捕获成为符号，`@dep.<relation>` 捕获成为边。
-# 不在 WALKERS 中即为闸门 —— 见 _extract_file 中的无遍历器分支。
+#### 拥有遍历器的语言集合，作为查询驱动与遍历器驱动的分流闸 [@380kkm 2026-06-05] ####
 HAS_WALKER = frozenset(WALKERS)

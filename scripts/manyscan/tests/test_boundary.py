@@ -20,7 +20,6 @@ def _build(st):
     return z, boundary.build(st, z, budget, alias="t")
 
 
-#### 分类器 ####
 #### 从带标记的库自动探测出目标根，并确认存在模块标记 [@380kkm 2026-06-05] ####
 def test_detect_target_root(boundary_store):
     with stores.Store(boundary_store) as st:
@@ -30,14 +29,10 @@ def test_detect_target_root(boundary_store):
 
 #### 无标记时自动探测不可靠，guard 须报 False 让 CLI 拒绝 [@380kkm 2026-06-05] ####
 def test_no_markers_autodetect_unsound(cpp_no_marker_store):
-    """真实索引场景：cpp 索引的 files 里没有 *.uplugin/*.Build.cs，
-    自动探测得到 ""（整个仓库都算目标）—— 这是不可靠的。has_module_markers
-    必须报 False，使 CLI 得以拒绝，而非错误地分类依赖。"""
     with stores.Store(cpp_no_marker_store) as st:
         assert boundary.has_module_markers(st) is False
         assert boundary.detect_target_root(st) == ""
-        # guard 所防范的不可靠后果：若放任自动探测，依赖符号 AActor
-        # 会被分类为 TARGET（整仓库即一个分区）。
+        # 放任自动探测时依赖符号 AActor 会被分类为 TARGET
         z = boundary.make_zoning(st, None, None)
         assert boundary.zone_of_path("Engine/Source/Actor.h", z) == boundary.TARGET
 
@@ -92,12 +87,8 @@ def test_qualified_name_nested(tmp_path):
         assert boundary.qualified_name(st, 2) == "Outer::Inner"
 
 
-#### 解析置信度 ####
 #### 两个目标文件都定义的类型：歧义但确属内部，停在目标分区不污染依赖面 [@380kkm 2026-06-05] ####
 def test_resolve_ambiguous_all_target_stays_internal(tmp_path):
-    """一个在两个目标文件里都定义的类型（头文件定义 + 前向声明）是歧义的，
-    但确定属于内部 -> 在目标分区记为 amb:<name>，而非 dep: 依赖
-    （从而绝不污染依赖 API 面）。"""
     _, mr_db = stores.manyread_lib()
     store = tmp_path / "manyread"
     store.mkdir(parents=True)
@@ -159,7 +150,6 @@ def test_external_node():
     assert n2.attrs["ambiguity"] == 2
 
 
-#### 深度 1 依赖汇点 ####
 #### 依赖节点作为汇点出现：在图中可见但绝不被展开 [@380kkm 2026-06-05] ####
 def test_build_depth1_sink(boundary_store):
     with stores.Store(boundary_store) as st:
@@ -188,7 +178,6 @@ def test_build_confidence_recorded(boundary_store):
         assert conf[("s1", "dep:Dup", "uses_type")] == "ambiguous"
 
 
-#### 视图 ####
 #### 内部视图只保留目标符号，且本夹具下无目标→目标边 [@380kkm 2026-06-05] ####
 def test_internal_view(boundary_store):
     with stores.Store(boundary_store) as st:
@@ -218,8 +207,7 @@ def test_dependency_surface_rollup(boundary_store):
     with stores.Store(boundary_store) as st:
         _, g = _build(st)
         es = boundary.dependency_surface(g, rollup_modules=True, store=st)
-        # plugin/ 下的 *.uplugin 是唯一的模块标记，故 engine/ 下的依赖符号
-        # （s2、s3）会汇入 "(root)" 模块组。
+        # engine/ 下的依赖符号（s2、s3）汇入 "(root)" 模块组
         dep_groups = sorted(n for n in es.nodes if n.startswith("dep:"))
         # 至少一个汇总后的依赖节点
         assert dep_groups
@@ -242,7 +230,6 @@ def test_crossings(boundary_store):
         assert all(c.evidence.startswith("plugin/Foo.cpp") for c in cs)
 
 
-#### 确定性 ####
 #### 同一库两次构建的 JSON 渲染逐字节相同 [@380kkm 2026-06-05] ####
 def test_determinism(boundary_store):
     with stores.Store(boundary_store) as st:
@@ -256,7 +243,6 @@ def test_determinism(boundary_store):
     assert a == c
 
 
-#### render 分区编码（sigma：颜色 + 空间，无复合父节点） ####
 #### 从 html 中抽出注入的 const DATA={...} JSON 对象（不含内联库） [@380kkm 2026-06-05] ####
 def _data_payload(html: str) -> str:
     marker = "const DATA="
@@ -304,11 +290,8 @@ def test_render_no_zone_byte_compat(synth_store):
     assert "nodes" in d and "edges" in d and "bounded" in d
 
 
-#### CLI 可靠性 guard（拒绝自动探测） ####
 #### 无标记且无 --target-root 时 boundary 须拒绝（退出码 2） [@380kkm 2026-06-05] ####
 def test_cli_refuses_unsound_autodetect(cpp_no_marker_store, capsys):
-    """当库里没有索引到任何标记、又没给 --target-root 时，boundary 必须拒绝
-    （退出码 2），而不是把一个依赖静默地分类成目标。"""
     import scan
     rc = scan.main(["boundary", "--store", str(cpp_no_marker_store), "--format", "json"])
     assert rc == 2
@@ -318,8 +301,6 @@ def test_cli_refuses_unsound_autodetect(cpp_no_marker_store, capsys):
 
 #### 显式 --target-root 时同一库正常扫描，依赖符号正确归为 DEPENDENCY [@380kkm 2026-06-05] ####
 def test_cli_explicit_target_root_runs(cpp_no_marker_store, capsys):
-    """给出显式 --target-root 后，同一个库可正常扫描（guard 不触发），
-    且依赖符号被正确分类为 DEPENDENCY（而非目标）。"""
     import scan
     rc = scan.main(["boundary", "--store", str(cpp_no_marker_store),
                     "--target-root", "MyPlugin", "--dep-root", "Engine",
@@ -343,8 +324,6 @@ def test_cli_empty_target_root_opts_in(cpp_no_marker_store, capsys):
 
 #### 向后兼容：旧 plugin-boundary 子命令 + --plugin-root/--engine-root 仍可用 [@380kkm 2026-06-05] ####
 def test_cli_backcompat_plugin_boundary_and_flags(cpp_no_marker_store, capsys):
-    """向后兼容：旧的 plugin-boundary 子命令 + --plugin-root/--engine-root
-    标志仍然工作，映射到新的 target/dependency 目标项。"""
     import scan
     rc = scan.main(["plugin-boundary", "--store", str(cpp_no_marker_store),
                     "--plugin-root", "MyPlugin", "--engine-root", "Engine",
@@ -355,11 +334,8 @@ def test_cli_backcompat_plugin_boundary_and_flags(cpp_no_marker_store, capsys):
     assert "s1" in ids and "s2" in ids
 
 
-#### 依赖面汇总确定性（集合→按 (len,str) 排序） ####
 #### 汇总模块排序为全序 (len,str)，多次运行逐字节一致 [@380kkm 2026-06-05] ####
 def test_dependency_surface_rollup_deterministic(boundary_store):
-    """汇总模块的排序必须是 (len,str) 全序，使汇总面在多次运行间逐字节相同，
-    与集合/哈希种子的迭代顺序无关。"""
     outs = []
     for _ in range(3):
         with stores.Store(boundary_store) as st:
@@ -370,8 +346,6 @@ def test_dependency_surface_rollup_deterministic(boundary_store):
 
 #### --format html 产出一张含页内视图切换的自包含页面（非投影子图） [@380kkm 2026-06-05] ####
 def test_cli_html_is_one_page_with_toggle(boundary_store, capsys):
-    """boundary --format html 输出一张含页内视图切换的自包含页面
-    （无论 --view 为何），而非投影后的 internal/dependency 子图。"""
     import scan
     rc = scan.main(["boundary", "--store", str(boundary_store),
                     "--target-root", "plugin", "--view", "internal", "--format", "html"])
@@ -382,16 +356,12 @@ def test_cli_html_is_one_page_with_toggle(boundary_store, capsys):
     assert "id='view'" in out
     # --view 作为初始值传入
     assert "<option value='internal' selected>" in out
-    # 完整图被输出（即使 --view internal，依赖节点仍在）：投影现已移至客户端，
-    # 故依赖符号仍留在页面里。
+    # 完整图被输出：即使 --view internal，依赖节点仍在页面里
     assert '"zone": "dependency"' in out and '"zone": "target"' in out
 
 
-#### 视图隐藏配置：默认隐藏烘焙 + --ignore CLI 接线 ####
 #### _default_hidden_keys 返回排序、确定的列表，命中名字匹配与高扇入节点 [@380kkm 2026-06-05] ####
 def test_default_hidden_keys_sorted_deterministic():
-    """scan._default_hidden_keys 返回一个排序、确定的列表，借复用的
-    render._importance 度量同时命中名字匹配与高扇入节点。"""
     import scan
     from lib import render
     from test_render import _zoned_hub_graph
@@ -443,8 +413,6 @@ def test_default_hidden_keys_segment_and_pattern(tmp_path):
 
 #### 在分区图中 view_hide 仅作用于依赖侧，绝不默认隐藏目标符号 [@380kkm 2026-06-05] ####
 def test_default_hidden_keys_engine_side_only():
-    """在分区（zoned）图视图里 view_hide 仅作用于依赖侧：它绝不默认隐藏
-    目标/内部符号 —— 既不因与依赖同名，也不因 fan_in。"""
     import scan
     from lib.graph import Edge, Graph, Node
     g = Graph()
@@ -480,10 +448,8 @@ def test_cli_boundary_ignore_bakes_hidden(boundary_store, capsys, tmp_path):
     assert "const HIDDEN=" in out and '"s1"' in out
 
 
-#### 无 --ignore 且无提交的 view_hide 时与 v0.6.0 完全一致（无 HIDDEN 行），两次渲染逐字节相同 [@380kkm 2026-06-05] ####
+#### 无 --ignore 且无提交的 view_hide 时无 HIDDEN 行，两次渲染逐字节相同 [@380kkm 2026-06-05] ####
 def test_cli_boundary_no_config_byte_identical(boundary_store, capsys):
-    """无 --ignore + 无提交的 view_hide => 与 v0.6.0 一致（无 HIDDEN 行），
-    且两次渲染逐字节相同。"""
     import scan
     rc = scan.main(["boundary", "--store", str(boundary_store), "--target-root", "plugin",
                     "--format", "html"])
@@ -494,7 +460,7 @@ def test_cli_boundary_no_config_byte_identical(boundary_store, capsys):
     assert rc == 0
     b = capsys.readouterr().out
     assert a == b
-    # 受门控的 HIDDEN 行不出现在常量块里（与 v0.6.0 逐字节兼容）
+    # 受门控的 HIDDEN 行不出现在常量块里
     consts = a[a.index("const DATA="):a.index('<script id="ms-boot">')]
     assert "const HIDDEN=" not in consts
 
@@ -548,7 +514,6 @@ def test_roots_by_len_total_order(module_store):
         assert roots == sorted(roots, key=lambda r: (-len(r), r))
 
 
-#### N 段分层：assign_bands 正确性 + 依赖深度 2 填充 ####
 #### 用 (files, syms, edges) 字面量构建一个微型真实 schema 库 [@380kkm 2026-06-05] ####
 def _mk_store(tmp_path, files, syms, edges):
     _, mr_db = stores.manyread_lib()
@@ -624,18 +589,17 @@ def test_assign_bands_deterministic(boundary_store):
 
 #### 有跨越边的目标归 target-iface，仅有目标→目标边的目标归 target-core [@380kkm 2026-06-05] ####
 def test_target_core_vs_iface_split(tmp_path):
-    """有跨越边的目标 -> 目标接口层 (1)；只有目标→目标边的目标 -> 目标核心层 (0)。"""
     files = [(1, "plugin/X.uplugin", ".uplugin", "{}"),
              (2, "plugin/A.cpp", ".cpp", "x"),
              (3, "plugin/B.cpp", ".cpp", "x"),
              (4, "engine/Dep.h", ".h", "x")]
-    # A (s1) 既用 B (s2, 目标) 又用 Dep (s3, 依赖) -> A 是接口层。
-    # B (s2) 仅被 A 使用；B 无出边 -> B 是目标核心层。
+    # A 既用 B（目标）又用 Dep（依赖）-> A 是接口层；B 无出边 -> B 是核心层
     syms = [(1, 2, "A", "class", 1, 1, None),
             (2, 3, "B", "class", 1, 1, None),
             (3, 4, "Dep", "class", 1, 1, None)]
-    edges = [(1, 2, 1, 2, None, "uses_type"),     # A -> B（目标→目标）
-             (2, 2, 1, 3, None, "uses_type")]      # A -> Dep（目标→依赖，跨越）
+    # A -> B（目标→目标）；A -> Dep（目标→依赖，跨越）
+    edges = [(1, 2, 1, 2, None, "uses_type"),
+             (2, 2, 1, 3, None, "uses_type")]
     db = _mk_store(tmp_path, files, syms, edges)
     with stores.Store(db) as st:
         z = boundary.make_zoning(st, "plugin", ["engine"])
@@ -651,17 +615,17 @@ def test_target_core_vs_iface_split(tmp_path):
 
 #### 深度 2 的依赖填充 dep-core：表层依赖再引用的第二依赖在深度 2 才出现并落 band 3 [@380kkm 2026-06-05] ####
 def test_dep_depth_2_populates_dep_core(tmp_path):
-    """一个表层依赖符号自身又引用另一个依赖符号：深度 1 时第二个依赖是汇点（缺席）；
-    深度 2 时它出现，携带 dep_core，落到 band 3。"""
     files = [(1, "plugin/X.uplugin", ".uplugin", "{}"),
              (2, "plugin/Foo.cpp", ".cpp", "x"),
              (3, "engine/Surface.h", ".h", "x"),
              (4, "engine/Behind.h", ".h", "x")]
-    syms = [(1, 2, "Foo", "class", 1, 1, None),     # 目标
-            (2, 3, "Surface", "class", 1, 1, None),  # 依赖表层（s-id）
-            (3, 4, "Behind", "class", 1, 1, None)]   # 表层背后的依赖
-    edges = [(1, 2, 1, 2, None, "uses_type"),        # Foo -> Surface（深度 1）
-             (2, 3, 2, 3, None, "uses_type")]         # Surface -> Behind（深度 2）
+    # Foo 目标；Surface 依赖表层；Behind 表层背后的依赖
+    syms = [(1, 2, "Foo", "class", 1, 1, None),
+            (2, 3, "Surface", "class", 1, 1, None),
+            (3, 4, "Behind", "class", 1, 1, None)]
+    # Foo -> Surface（深度 1）；Surface -> Behind（深度 2）
+    edges = [(1, 2, 1, 2, None, "uses_type"),
+             (2, 3, 2, 3, None, "uses_type")]
     db = _mk_store(tmp_path, files, syms, edges)
     with stores.Store(db) as st:
         z = boundary.make_zoning(st, "plugin", ["engine"])
@@ -686,18 +650,18 @@ def test_dep_depth_2_populates_dep_core(tmp_path):
 
 #### 被目标(深度1)与依赖同时引用的依赖须保持 dep-iface，绝不误标 dep-core [@380kkm 2026-06-05] ####
 def test_dep_core_mislabel_guard(tmp_path):
-    """一个被目标（深度 1）与另一依赖都引用的依赖符号必须保持 dep-iface
-    （band 2），而非 dep-core —— 它首次在深度 1 加入，故深度 2 这一趟既不重加也不标记。"""
     files = [(1, "plugin/X.uplugin", ".uplugin", "{}"),
              (2, "plugin/Foo.cpp", ".cpp", "x"),
              (3, "engine/Shared.h", ".h", "x"),
              (4, "engine/Surface.h", ".h", "x")]
-    syms = [(1, 2, "Foo", "class", 1, 1, None),       # 目标
-            (2, 4, "Surface", "class", 1, 1, None),    # 依赖表层
-            (3, 3, "Shared", "class", 1, 1, None)]      # 被 Foo 与 Surface 同时引用
-    edges = [(1, 2, 1, 3, None, "uses_type"),          # Foo -> Shared（深度 1）
-             (2, 2, 1, 2, None, "uses_type"),          # Foo -> Surface（深度 1）
-             (3, 4, 2, 3, None, "uses_type")]           # Surface -> Shared（深度 2）
+    # Foo 目标；Surface 依赖表层；Shared 被 Foo 与 Surface 同时引用
+    syms = [(1, 2, "Foo", "class", 1, 1, None),
+            (2, 4, "Surface", "class", 1, 1, None),
+            (3, 3, "Shared", "class", 1, 1, None)]
+    # Foo -> Shared（深度 1）；Foo -> Surface（深度 1）；Surface -> Shared（深度 2）
+    edges = [(1, 2, 1, 3, None, "uses_type"),
+             (2, 2, 1, 2, None, "uses_type"),
+             (3, 4, 2, 3, None, "uses_type")]
     db = _mk_store(tmp_path, files, syms, edges)
     with stores.Store(db) as st:
         z = boundary.make_zoning(st, "plugin", ["engine"])
@@ -711,8 +675,6 @@ def test_dep_core_mislabel_guard(tmp_path):
 
 #### 深度 2 过程中溢出须置 g.truncated + g.elided（如实上报，不静默丢弃） [@380kkm 2026-06-05] ####
 def test_dep_depth_2_truncation_composes(tmp_path):
-    """在深度 2 这一趟中溢出的低 max-nodes 必须置 g.truncated + g.elided
-    （深度 2 溢出如实上报，而非静默丢弃）。"""
     files = [(1, "plugin/X.uplugin", ".uplugin", "{}"),
              (2, "plugin/Foo.cpp", ".cpp", "x"),
              (3, "engine/Surface.h", ".h", "x"),
@@ -720,8 +682,9 @@ def test_dep_depth_2_truncation_composes(tmp_path):
     syms = [(1, 2, "Foo", "class", 1, 1, None),
             (2, 3, "Surface", "class", 1, 1, None),
             (3, 4, "Behind", "class", 1, 1, None)]
-    edges = [(1, 2, 1, 2, None, "uses_type"),        # Foo -> Surface
-             (2, 3, 2, 3, None, "uses_type")]         # Surface -> Behind（深度 2）
+    # Foo -> Surface；Surface -> Behind（深度 2）
+    edges = [(1, 2, 1, 2, None, "uses_type"),
+             (2, 3, 2, 3, None, "uses_type")]
     db = _mk_store(tmp_path, files, syms, edges)
     with stores.Store(db) as st:
         z = boundary.make_zoning(st, "plugin", ["engine"])
@@ -734,9 +697,6 @@ def test_dep_depth_2_truncation_composes(tmp_path):
 
 #### boundary --layers/--dep-depth 接线：html 烘焙 band + BANDS，json 与无 --layers 逐字节一致 [@380kkm 2026-06-05] ####
 def test_cli_layers_dep_depth_wiring(boundary_store, capsys):
-    """boundary --layers four --dep-depth 2 --format html 返回 0，html 携带烘焙的
-    band 属性 + BANDS 常量；--layers flat 输出 const BANDS=[]；
-    且 --format json 在有无 --layers 时逐字节相同（band 对它无效）。"""
     import scan
     rc = scan.main(["boundary", "--store", str(boundary_store), "--target-root", "plugin",
                     "--layers", "four", "--dep-depth", "2", "--format", "html"])
@@ -761,12 +721,8 @@ def test_cli_layers_dep_depth_wiring(boundary_store, capsys):
     assert with_layers == without_layers
 
 
-#### 可折叠的 模块<->符号 商图：assign_modules + CLI --collapse ####
 #### assign_modules('file') 确定、id 带侧前缀、无路径依赖归 (external)，meta 排序且每项完备 [@380kkm 2026-06-05] ####
 def test_assign_modules_determinism_and_ids(boundary_store):
-    """assign_modules('file') 是确定的，给 id 加侧前缀，并把无路径的按名依赖
-    路由到各侧的 '(external)' 桶；modules_meta 按 id 排序，含整数成员数 +
-    每项的 band/zone/color。"""
     with stores.Store(boundary_store) as st:
         z, g = _build(st)
         band_of, _ = boundary.assign_bands(g, "four")
@@ -780,8 +736,7 @@ def test_assign_modules_determinism_and_ids(boundary_store):
         # 依赖符号（s2 engine/Actor.h, s3 engine/Core.h）-> 'dependency:<module>'
         assert module_of["s2"].startswith("dependency:")
         assert module_of["s3"].startswith("dependency:")
-        # 无路径的按名依赖 -> '(external)'。在 boundary_store 中两个 Dup 候选
-        # 都属依赖分区，故 Foo->Dup 解析为 dep:Dup（而非 amb:），侧为 dependency。
+        # 无路径的按名依赖 -> '(external)'，dep:Dup 在依赖侧
         assert module_of["dep:Missing"] == "dependency:(external)"
         assert module_of["dep:Dup"] == "dependency:(external)"
         # modules_meta 按 id 排序；每项格式完备
@@ -829,17 +784,17 @@ def test_assign_modules_dir_level(tmp_path):
 
 #### 跨 target-core 与 target-iface 的文件折叠到较低 band（成员最小 band） [@380kkm 2026-06-05] ####
 def test_assign_modules_band_is_min_member(tmp_path):
-    """一个横跨 target-core（band 0）与 target-iface（band 1）的文件，
-    折叠到较低的 band（成员最小 band）。"""
+    # A、B 同处 plugin/Same.cpp => 一个模块
     files = [(1, "plugin/X.uplugin", ".uplugin", "{}"),
-             (2, "plugin/Same.cpp", ".cpp", "x"),       # A、B 同处一个文件 => 一个模块
+             (2, "plugin/Same.cpp", ".cpp", "x"),
              (3, "engine/Dep.h", ".h", "x")]
-    # A (s1) 有跨越边 -> target-iface（band 1）；B (s2) 无 -> target-core（band 0）。
+    # A 有跨越边 -> target-iface（band 1）；B 无 -> target-core（band 0）
     syms = [(1, 2, "A", "class", 1, 1, None),
             (2, 2, "B", "class", 2, 2, None),
             (3, 3, "Dep", "class", 1, 1, None)]
-    edges = [(1, 2, 1, 3, None, "uses_type"),           # A -> Dep（跨越 => A 接口层）
-             (2, 2, 1, 2, None, "uses_type")]           # A -> B（目标→目标）
+    # A -> Dep（跨越 => A 接口层）；A -> B（目标→目标）
+    edges = [(1, 2, 1, 3, None, "uses_type"),
+             (2, 2, 1, 2, None, "uses_type")]
     db = _mk_store(tmp_path, files, syms, edges)
     with stores.Store(db) as st:
         z = boundary.make_zoning(st, "plugin", ["engine"])
@@ -855,8 +810,6 @@ def test_assign_modules_band_is_min_member(tmp_path):
 
 #### 无 --collapse、--collapse off、标志缺席三者逐字节相同；两次渲染也逐字节相同 [@380kkm 2026-06-05] ####
 def test_cli_collapse_off_equals_pre_flag(boundary_store, capsys):
-    """boundary --format html 在无 --collapse、--collapse off、标志缺席三种情况下 ->
-    逐字节相同（门控）；两次渲染也逐字节相同。"""
     import scan
     runs = []
     for extra in ([], ["--collapse", "off"]):
@@ -870,8 +823,6 @@ def test_cli_collapse_off_equals_pre_flag(boundary_store, capsys):
 
 #### off/file/dir 每种折叠级别两次 html 渲染逐字节相同且 md5 一致 [@380kkm 2026-06-05] ####
 def test_collapse_md5_stable_each_level(boundary_store, capsys):
-    """对 off/file/dir 各级别，两次 html 渲染逐字节相同且 md5 相等
-    （位置在浏览器内计算，故输出文件不携带商图坐标）。"""
     import hashlib
 
     import scan
@@ -888,8 +839,6 @@ def test_collapse_md5_stable_each_level(boundary_store, capsys):
 
 #### --collapse file 烘焙每节点 module 属性（带侧前缀），且无死属性 modside [@380kkm 2026-06-05] ####
 def test_collapse_per_node_attrs_baked(boundary_store, capsys):
-    """--collapse file 烘焙每节点的 "module" 属性（带侧前缀的 id）；目标 Foo
-    节点携带 'target:Foo'。只烘焙 "module" —— 没有死的 "modside" 属性。"""
     import scan
     rc = scan.main(["boundary", "--store", str(boundary_store), "--target-root", "plugin",
                     "--format", "html", "--collapse", "file"])

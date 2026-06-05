@@ -21,12 +21,7 @@ from enrich.rules_glue import _preview_diff, _resolve_merged_rules
 def enrich(cfg: config.ProjectConfig, langs: list[str], do_refs: bool,
            rules_path: str | None = None, no_rules: bool = False,
            preview: bool = False) -> dict:
-    """清空并重新填充每个扩展名映射到所选语言的文件的 symbols/edges。
-
-    在原始 tree-sitter 提取之后、写入之前，把项目 override 规则（spec 第 16 节）
-    作为一趟纯变换施加上去。当 preview=True 时只计算变换并收集 before/after 差异，
-    但绝不写入数据库（既有的 symbols/edges 原样保留）。
-    """
+    """preview=True 时只计算变换并收集 before/after 差异，不写入数据库。"""
     db_path = Path(cfg.db_path)
     if not db_path.exists():
         raise SystemError(f"no index db at {db_path} — run index_build.py first")
@@ -44,7 +39,6 @@ def enrich(cfg: config.ProjectConfig, langs: list[str], do_refs: bool,
 
         if not preview:
             #### 清除既有 enrich 结果以做幂等全量重建 [@380kkm 2026-06-05] ####
-            # preview 模式不动数据库，所以带规则重跑才是唯一写入路径
             conn.execute("DELETE FROM edges")
             conn.execute("DELETE FROM symbols")
             conn.commit()
@@ -73,7 +67,7 @@ def enrich(cfg: config.ProjectConfig, langs: list[str], do_refs: bool,
             if lang not in parsers:
                 try:
                     parsers[lang] = Parser(_load_language(lang))
-                except Exception as exc:  # noqa: BLE001 - grammar load failure is per-lang
+                except Exception as exc:  # noqa: BLE001
                     print(f"warning: could not load {lang} grammar: {exc}", file=sys.stderr)
                     # 标记为失败，后续跳过该语言的文件
                     parsers[lang] = None
@@ -84,7 +78,7 @@ def enrich(cfg: config.ProjectConfig, langs: list[str], do_refs: bool,
             if lang in query_specs and lang not in query_objs:
                 try:
                     query_objs[lang] = Query(_load_language(lang), query_specs[lang])
-                except Exception as exc:  # noqa: BLE001 - a bad query must not abort enrichment
+                except Exception as exc:  # noqa: BLE001
                     print(f"warning: bad dependency query for {lang}: {exc}", file=sys.stderr)
                     query_objs[lang] = None
             try:
@@ -105,7 +99,7 @@ def enrich(cfg: config.ProjectConfig, langs: list[str], do_refs: bool,
                     per_lang_sym[lang] = per_lang_sym.get(lang, 0) + n_sym
                     per_lang_edge[lang] = per_lang_edge.get(lang, 0) + n_edge
                 n_files += 1
-            except Exception as exc:  # noqa: BLE001 - graceful per-file skip
+            except Exception as exc:  # noqa: BLE001
                 n_errors += 1
                 print(f"warning: failed to enrich {path}: {exc}", file=sys.stderr)
         #### /逐文件提取符号与边 ####
@@ -185,8 +179,7 @@ def main(argv: list[str] | None = None) -> int:
     langs = [l for l in requested if l in SUPPORTED_LANGS]
     if not langs:
         langs = list(SUPPORTED_LANGS)
-    # typescript 与 tsx 成对（同一 walker、不同 grammar 方言）；
-    # 请求其一就一并拉入另一个，使 .ts 与 .tsx 都被覆盖
+    # typescript 与 tsx 成对：请求其一就一并拉入另一个
     if "typescript" in langs and "tsx" not in langs:
         langs.append("tsx")
     if "tsx" in langs and "typescript" not in langs:

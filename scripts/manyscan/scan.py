@@ -96,33 +96,17 @@ def cmd_analyze(args) -> int:
 
 #### 由 view-hide 配置算出默认隐藏的节点 id（确定性排序列表） [@380kkm 2026-06-05] ####
 def _default_hidden_keys(g, vh: dict) -> list[str]:
-    """由已解析的 view_hide 配置算出默认隐藏的节点 id 的确定性排序列表。
-
-    并集语义 —— 满足以下任一条件即默认隐藏：
-      * 其 label（限定名）在 ``names`` 中，或其末段 ``::`` 片段在 ``names`` 中
-      * 对 ``patterns`` 中任一 p，fnmatch(label, p) 或 fnmatch(segment, p)
-      * ``min_fan_in`` 非 None 且该节点的 fan_in >= min_fan_in
-
-    仅作用于依赖侧：在边界图中（任一节点带 target/dependency 区域）只有
-    ``dependency`` 区域的节点有资格 —— 配置永远不能默认隐藏 target/内部符号
-    （你绝不想丢掉正在分析的代码）。非边界图（无区域）按原逻辑匹配。
-
-    同时匹配 label 与末段片段，可一并命中裸名外部符号（``dep:<name>`` / ``amb:<name>``，
-    label == 裸名）与限定的内部符号（``Outer::Inner::FString``）。大小写敏感（C++ 标识符
-    本就如此）。复用 ``render._importance`` 取 fan_in（已排序/确定性）。
-    """
     names = set(vh.get("names") or [])
     pats = list(vh.get("patterns") or [])
     mfi = vh.get("min_fan_in")
-    # {nid: {fan_in, ...}}，复用（不新增度量）
+    # 每节点的 fan_in 度量字典
     imp = render._importance(g)
     zoned = any(g.nodes[n].attrs.get("zone") in ("target", "dependency") for n in g.nodes)
     hit: set[str] = set()
-    # g.nodes 是 id->Node 的字典
     for nid in g.nodes:
         node = g.nodes[nid]
         if zoned and node.attrs.get("zone") != "dependency":
-            # 仅作用于依赖侧：绝不隐藏 target/内部符号
+            # 仅隐藏 dependency 区节点
             continue
         label = node.label or nid
         seg = label.rsplit("::", 1)[-1]
@@ -132,7 +116,6 @@ def _default_hidden_keys(g, vh: dict) -> list[str]:
             hit.add(nid)
         elif mfi is not None and imp.get(nid, {}).get("fan_in", 0) >= mfi:
             hit.add(nid)
-    # 排序 => 字节级稳定的烘焙
     return sorted(hit)
 #### /_default_hidden_keys ####
 
@@ -141,10 +124,7 @@ def _default_hidden_keys(g, vh: dict) -> list[str]:
 def cmd_boundary(args) -> int:
     info = _store_info(args)
     with stores.Store(info.db_path) as st:
-        # 健全性保护：autodetect 依赖已索引的模块标记（*.uplugin / *.Build.cs）。L1 索引器
-        # 只存储已配置的源码扩展名，故这些标记通常未被索引 —— autodetect 这时会返回 "" 并
-        # 悄悄把整个仓库（含依赖）都归类为 target，这是不健全的。该情形下要求显式给出
-        # --target-root。传 --target-root "" 可故意选择把整个仓库当作 target。
+        # 无模块标记且未给 --target-root 时拒绝 autodetect
         if args.target_root is None and not boundary.has_module_markers(st):
             print("error: cannot autodetect --target-root (no *.uplugin / *.Build.cs "
                   "markers are indexed; the L1 index only stores source extensions). "
@@ -157,19 +137,14 @@ def cmd_boundary(args) -> int:
         if not g.nodes:
             print(f"warning: no target-zone symbols under target-root "
                   f"{z.target_root!r}", file=sys.stderr)
-        # HTML 是单个自包含、可在页内切换的页面：始终输出完整图（两个区域 + 跨界边），由
-        # render.to_html 的视图选择器在客户端切换 internal|dependency|both。
-        # internal_view / dependency_surface 投影仅保留给静态的非 HTML 格式
-        # （json/text/dot）。--layers / --dep-depth 仅影响 html 路径（否则分带不起作用）。
+        # html 输出完整图，视图切换在客户端进行
         if args.format == "html":
             band_of, bands_meta = boundary.assign_bands(g, args.layers)
-            # 解析已提交/被覆盖的 view-hide 配置（None => v0.6.0 的字节）。
+            # 解析 view-hide 配置
             mr_cfg = stores.manyread_lib()[0]
             vh = mr_cfg.load_view_hide(info.store, Path(args.ignore) if args.ignore else None)
             default_hidden = _default_hidden_keys(g, vh) if vh else None
-            # 受开关控制的可折叠 module<->symbol 商图视图。off（默认）=> module_of /
-            # modules_meta 保持 None，故不烘焙 module 节点属性、也不烘焙 `const MODULES=`
-            # 行 => DATA/consts 字节与 v0.6.2 完全一致。
+            # collapse 关闭时不构建 module 商图
             module_of = modules_meta = None
             if args.collapse != "off":
                 module_of, modules_meta = boundary.assign_modules(

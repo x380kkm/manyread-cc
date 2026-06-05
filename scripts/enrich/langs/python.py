@@ -19,24 +19,18 @@ def _walk_python(node: Node, src: bytes, pend: Pending, parent_local: int | None
     if t in _PY_DEFS:
         name = _named_child_text(node, "name", src) or "<anonymous>"
         kind = _PY_DEFS[t]
-
-        #### 嵌套在 class 下的 function 是 method [@380kkm 2026-06-05] ####
+        # 嵌套在 class 下的 function 是 method
         if kind == "function" and parent_local is not None and pend.rows[parent_local].kind == "class":
             kind = "method"
-        #### /method 判定 ####
-
         idx = pend.add(name, kind, node, parent_local)
         if t == "class_definition":
-
-            #### 解析基类，逐个登记为 extends 边 [@380kkm 2026-06-05] ####
+            # 解析基类，逐个登记为 extends 边
             supers = node.child_by_field_name("superclasses")
             if supers is not None:
                 for arg in supers.named_children:
                     bn = _text(arg, src).strip()
                     if bn:
                         pend.inherit.append((idx, bn, "extends"))
-            #### /基类解析 ####
-
         cur_parent = idx
 
     for ch in node.children:

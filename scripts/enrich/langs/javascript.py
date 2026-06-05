@@ -7,15 +7,6 @@ from enrich.model import Pending, _named_child_text, _text
 
 #### 取 lexical_declaration 绑定的箭头/函数表达式的名字 [@380kkm 2026-06-05] ####
 def _js_lexical_fn_name(node: Node, src: bytes) -> str | None:
-    """当 lexical_declaration 绑定了箭头函数或函数表达式时返回其名字。
-
-    参数:
-        node: lexical_declaration 节点。
-        src: 文件的 utf-8 字节内容。
-
-    返回:
-        绑定的函数名；若该声明未绑定函数表达式则返回 None。
-    """
     for decl in node.named_children:
         if decl.type != "variable_declarator":
             continue

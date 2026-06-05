@@ -1,23 +1,17 @@
-"""enrich 中声明式依赖边查询层的回归测试。
-
-须在 scripts/ 目录下、带 tree-sitter 依赖运行，例如：
-    cd scripts && uv run --python 3.12 --with pytest --with "tree-sitter>=0.23" \
-        --with tree-sitter-language-pack -m pytest tests/test_enrich_query.py -q
-（它不放在 scripts/manyscan/tests 里，是因为 enrich 会 import manyread 核心的 `lib`
-包，而那会在该套件的 sys.path 中遮蔽 manyscan 自己的 `lib`。）
-"""
+"""enrich 中声明式依赖边查询层的回归测试。"""
 import os
 import sys
 
 import pytest
 
-sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), "..")))  # scripts/
+# scripts/
+sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), "..")))
 try:
     import enrich_treesitter as E
     from tree_sitter import Parser, Query
     from tree_sitter_language_pack import get_language
     _HAVE = True
-except Exception:  # noqa: BLE001 - tree-sitter 未安装时干净跳过
+except Exception:  # noqa: BLE001
     _HAVE = False
 
 pytestmark = pytest.mark.skipif(not _HAVE, reason="tree-sitter not installed")
@@ -60,8 +54,6 @@ def _edges(src: str):
 
 #### python 依赖边端到端：calls/uses_type/imports 归属于其封闭符号 [@380kkm 2026-06-05] ####
 def test_python_edges_end_to_end():
-    # 注意：每条 @dep 边都归属于其封闭（ENCLOSING）符号；顶层语句没有封闭符号，故模块作用域
-    # 的 import/call 被丢弃（文件级节点是未来工作）。因此这里的 import 写在方法内，使其确有归属。
     src = ("class A(Base):\n"
            "    def m(self, x: Widget) -> Out:\n"
            "        from pkg.mod import thing\n"
@@ -78,7 +70,6 @@ def test_python_edges_end_to_end():
 
 #### 已知局限：模块作用域的边因无封闭符号而被丢弃 [@380kkm 2026-06-05] ####
 def test_module_scope_edges_dropped():
-    # 记录已知局限：模块级 import 没有封闭符号。
     _rows, edges = _edges("from pkg.mod import thing\nx = helper()\n")
     assert not edges
 
@@ -91,14 +82,8 @@ def test_query_edges_deterministic():
     assert e1 == e2
 
 
-# ===========================================================================
-# UE 资产 DSL（无遍历器、纯查询驱动）的符号 + 连线提取。
-# 这些用例走 _extract_file 的 `lang not in HAS_WALKER` 分支：符号来自 @def 捕获
-# （经 _query_symbols），连线来自 @dep 捕获。
-# ===========================================================================
 #### 用内建 .scm 查询为无遍历器 DSL 跑 _extract_file 的夹具 [@380kkm 2026-06-05] ####
 def _dsl_extract(src: str, lang: str):
-    """为无遍历器的 DSL 以其内建 .scm 查询运行 _extract_file。"""
     # 三种 DSL 都共用 scheme grammar
     L = get_language("scheme")
     specs = E._load_query_specs(None)
@@ -106,7 +91,6 @@ def _dsl_extract(src: str, lang: str):
     return E._extract_file(1, src, lang, Parser(L), False, q)
 
 
-# --- matlang 样例文本（对应 DSL/Examples/*.matlang） -------------------------
 _SIMPLE_PBR = (
     '(material "M_SimplePBR"\n'
     "  :domain surface\n"
@@ -175,7 +159,6 @@ def test_matlang_symbols():
 
 #### 取 matlang `uses_type` 连线边的 (src_name, dst_name) 集合 [@380kkm 2026-06-05] ####
 def _wire_pairs(rows, edges):
-    """matlang `uses_type` 连线边的 (src_name, dst_name) 集合。"""
     local_to_name = {r["_local"]: r["name"] for r in rows}
     return {(local_to_name[e["src_local"]], e["dst_name"])
             for e in edges if e["relation"] == "uses_type"}
@@ -221,7 +204,6 @@ def test_matlang_deterministic():
     assert r1 == r2 and e1 == e2
 
 
-# --- bplisp -----------------------------------------------------------------
 _VILLAGER = (
     "(function\n"
     "  None\n"
@@ -246,18 +228,15 @@ def test_bplisp_symbols_and_binds():
     nodes = sorted(r["name"] for r in rows if r["kind"] == "node")
     assert nodes == ["let", "let", "set", "set"]
     calls = sorted(r["name"] for r in rows if r["kind"] == "call")
-    # 仅真实的 UFunction 调用 —— `:param (Selected Actor)` 里的类型不再被误捕为 call
-    # （call 规则现要求第二个子节点是 :pin）。
+    # 仅真实的 UFunction 调用，参数类型不被误捕为 call
     assert calls == ["K2_SetTimer", "PrintString", "SpawnSystemAttached"]
-    # 回归保护：参数类型不是 call
+    # 参数类型不是 call
     assert "Selected" not in calls
-    # binds 的目标名（let/set 绑定的变量）。returnvalue/NS_Path 在文件内没有同名符号，故保持
-    # 未解析（提取时 dst_local 为 None）；只有 matlang 的 $id 连线会在文件内解析。
+    # binds 的目标名（let/set 绑定的变量），均未解析
     binds = sorted(e["dst_name"] for e in edges if e["relation"] == "binds")
     assert binds == ["NS_Path", "Selected", "returnvalue", "returnvalue"]
     assert all(e["dst_local"] is None for e in edges if e["relation"] == "binds")
-    # 顶层语句的 node/call 由 function graph 容纳；PrintString/set/let 直接挂在其下，而
-    # SpawnSystemAttached/K2_SetTimer 在其各自的 `let`（最内层封闭 @def）下再深一层。
+    # 顶层 node/call 由 function graph 容纳
     contained_under_graph = {e["dst_name"] for e in edges
                              if e["relation"] == "contains" and e["src_local"] == g_local}
     assert {"PrintString", "set", "let"} <= contained_under_graph
@@ -268,7 +247,6 @@ def test_bplisp_symbols_and_binds():
     assert nested_calls == {"SpawnSystemAttached", "K2_SetTimer"}
 
 
-# --- animlang ---------------------------------------------------------------
 _STATE_MACHINE = (
     '(anim-blueprint "SimpleStateMachine"\n'
     "  :variables [(float :speed 0.0 :range [0.0 600.0])]\n"
@@ -311,8 +289,7 @@ def test_animlang_symbols_real_form():
 
 #### animlang 导出器形态（define/ref）的尽力绑定与 ref 连线（合成片段） [@380kkm 2026-06-05] ####
 def test_animlang_exporter_form_synthetic():
-    # 导出器形态 (define ...)/(ref ...) —— 仓内样例里没有；这里仅以合成片段固定其尽力绑定
-    # + ref 连线行为。真正依赖前请先对真实导出器转储重新核验。
+    # 导出器形态 (define ...)/(ref ...) 的合成片段
     src = (
         '(anim-blueprint "X"\n'
         "  :anim-graph\n"
@@ -322,20 +299,14 @@ def test_animlang_exporter_form_synthetic():
     rows, edges = _dsl_extract(src, "animlang")
     bindings = [r for r in rows if r["kind"] == "binding"]
     assert len(bindings) == 1 and bindings[0]["name"] == "CachedLeg"
-    # (ref "Get Speed") -> 一条 dep.ref 边。dst_name 保留引号（复用的 _query_edges 跑的是
-    # _simplify_dep 而非 _dsl_name），且保持未解析。
+    # (ref "Get Speed") 产生一条 dep.ref 边，dst_name 保留引号且未解析
     refs = [e for e in edges if e["relation"] == "ref"]
     assert len(refs) == 1 and refs[0]["dst_name"] == '"Get Speed"'
-    # 已记录行为：`(CachedLeg)` 复用会产生一个名为 'CachedLeg' 的多余 def.node 符号
-    # （@dep.use 的后置过滤被刻意省略）。
+    # `(CachedLeg)` 复用额外产生一个名为 'CachedLeg' 的 def.node 符号
     node_named_cachedleg = [r for r in rows if r["kind"] == "node" and r["name"] == "CachedLeg"]
     assert len(node_named_cachedleg) == 1
 
 
-# ===========================================================================
-# 无回归：遍历器语言（cpp/python）在 @def 新增（受 HAS_WALKER 闸门控制）后仍逐字节
-# 一致。golden 取自遍历器输出。
-# ===========================================================================
 #### 用遍历器语言的内建预设跑 _extract_file 的夹具 [@380kkm 2026-06-05] ####
 def _walker_extract(src: str, lang: str):
     L = get_language(E._PACK_NAME[lang])
@@ -409,16 +380,8 @@ def test_python_walker_byte_identical():
     assert edges == _PY_GOLDEN_EDGES
 
 
-# ===========================================================================
-# javascript / typescript / tsx / csharp 的依赖边预设。
-# 符号来自这些语言（已接线的）tree-sitter 遍历器；新的
-# scripts/queries/{javascript,typescript,tsx,csharp}.scm 仅追加 EDGE-only 的
-# @dep.calls / @dep.imports / @dep.uses_type 捕获。与 python 用例同一套内存测床：
-# 走内建预设的 _extract_file，不落 DB。
-# ===========================================================================
 #### 用遍历器语言的内建 .scm 预设取 (rows, edges) 的夹具 [@380kkm 2026-06-05] ####
 def _lang_edges(src: str, lang: str):
-    """走内建 .scm 预设、为某遍历器语言返回 (rows, edges)。"""
     L = get_language(E._PACK_NAME[lang])
     specs = E._load_query_specs(None)
     assert lang in specs, f"missing built-in preset for {lang}"
@@ -427,21 +390,24 @@ def _lang_edges(src: str, lang: str):
 
 #### 取限定在 `relations` 内的 (封闭符号名, 关系, dst_name) 集合 [@380kkm 2026-06-05] ####
 def _rel_pairs(rows, edges, relations):
-    """限定在 `relations` 内的 {(封闭符号名, 关系, dst_name)} 集合。"""
     by_local = {r["_local"]: r["name"] for r in rows}
     return {(by_local[e["src_local"]], e["relation"], e["dst_name"])
             for e in edges if e["relation"] in relations}
 
 
-# --- javascript -------------------------------------------------------------
 _JS_SRC = (
-    'import topdep from "./top.js";\n'           # 模块作用域：被丢弃（无封闭符号）
+    # 模块作用域：被丢弃（无封闭符号）
+    'import topdep from "./top.js";\n'
     "function loader() {\n"
-    '    const fs = require("node:fs");\n'        # require -> calls 'require' 且 imports 'node:fs'
-    "    helper(loader);\n"                       # 自由调用
-    "    return obj.read(fs);\n"                  # 成员调用 -> 'read'
+    # require -> calls 'require' 且 imports 'node:fs'
+    '    const fs = require("node:fs");\n'
+    # 自由调用
+    "    helper(loader);\n"
+    # 成员调用 -> 'read'
+    "    return obj.read(fs);\n"
     "}\n"
-    "class Widget extends Base {\n"               # extends 来自遍历器（WALKER），而非 .scm
+    # extends 来自遍历器，而非 .scm
+    "class Widget extends Base {\n"
     "    render() { this.draw(); helper(); }\n"
     "}\n"
 )
@@ -471,22 +437,27 @@ def test_javascript_edges_end_to_end():
 
 #### 文件顶部无封闭符号的 import 产生零条边（与 python 一致） [@380kkm 2026-06-05] ####
 def test_javascript_module_scope_import_dropped():
-    # 顶部 import 无封闭符号，产生零条边（与 python 相同）。
     _rows, edges = _lang_edges('import x from "pkg";\n', "javascript")
     assert not edges
 
 
-# --- typescript / tsx -------------------------------------------------------
 _TS_SRC = (
-    "class Circle extends Base implements Shape {\n"   # extends/implements -> 遍历器
-    "    area(): Box {\n"                               # 返回类型 -> uses_type Box
-    '        const legacy = require("legacy");\n'       # require -> imports 'legacy'，不是 call
-    "        return helper(this.svc.doThing());\n"      # calls helper + doThing（仅末段属性）
+    # extends/implements -> 遍历器
+    "class Circle extends Base implements Shape {\n"
+    # 返回类型 -> uses_type Box
+    "    area(): Box {\n"
+    # require -> imports 'legacy'，不是 call
+    '        const legacy = require("legacy");\n'
+    # calls helper + doThing（仅末段属性）
+    "        return helper(this.svc.doThing());\n"
     "    }\n"
     "}\n"
-    "function compute(a: Vec3): Result {\n"             # 参数 Vec3 + 返回 Result -> uses_type
-    "    const col: Color = make(a);\n"                 # 变量类型 Color -> uses_type；make -> calls
-    "    return new Widget();\n"                        # new T -> uses_type Widget
+    # 参数 Vec3 + 返回 Result -> uses_type
+    "function compute(a: Vec3): Result {\n"
+    # 变量类型 Color -> uses_type；make -> calls
+    "    const col: Color = make(a);\n"
+    # new T -> uses_type Widget
+    "    return new Widget();\n"
     "}\n"
 )
 _TS_EXPECTED_CALLS_IMPORTS = {
@@ -507,8 +478,6 @@ _TS_EXPECTED_TYPES = {
 #### typescript/tsx 依赖边端到端：.ts 与 .tsx 产出相同边，require 算 import [@380kkm 2026-06-05] ####
 @pytest.mark.parametrize("lang", ["typescript", "tsx"])
 def test_typescript_edges_end_to_end(lang):
-    # tsx grammar 与 typescript 共用节点/字段名，tsx.scm 预设是其镜像，故 .ts 与 .tsx 对本
-    # 片段必产出相同的依赖边。
     rows, edges = _lang_edges(_TS_SRC, lang)
     assert _TS_EXPECTED_CALLS_IMPORTS <= _rel_pairs(rows, edges, {"calls", "imports"})
     assert _TS_EXPECTED_TYPES <= _rel_pairs(rows, edges, {"uses_type"})
@@ -533,18 +502,26 @@ def test_typescript_predicate_distinguishes_require():
     assert ("f", "imports", "x") not in pairs
 
 
-# --- csharp -----------------------------------------------------------------
 _CS_SRC = (
-    "using System;\n"                                   # 模块作用域 using -> 丢弃（无符号）
-    "using Alias = Some.Long.Name;\n"                   # 别名 'Alias' 绝不能成为 import
+    # 模块作用域 using -> 丢弃（无符号）
+    "using System;\n"
+    # 别名 'Alias' 绝不能成为 import
+    "using Alias = Some.Long.Name;\n"
     "namespace MyApp {\n"
-    "  public class Widget : BaseWidget, IDisposable {\n"   # base_list -> 遍历器 extends/implements
-    "    private Helper _helper;\n"                      # 字段类型 -> uses_type（封闭者：class）
-    "    public Result DoWork(Config cfg) {\n"           # 参数 + 返回类型 -> uses_type
-    "      var sb = new StringBuilder();\n"              # 对象创建类型 -> uses_type
-    '      Console.WriteLine("hi");\n'                   # 成员调用 -> WriteLine
-    "      _helper.Process(cfg);\n"                      # 成员调用 -> Process
-    "      return new Result(Compute());\n"              # 自由调用 Compute + new Result
+    # base_list -> 遍历器 extends/implements
+    "  public class Widget : BaseWidget, IDisposable {\n"
+    # 字段类型 -> uses_type（封闭者：class）
+    "    private Helper _helper;\n"
+    # 参数 + 返回类型 -> uses_type
+    "    public Result DoWork(Config cfg) {\n"
+    # 对象创建类型 -> uses_type
+    "      var sb = new StringBuilder();\n"
+    # 成员调用 -> WriteLine
+    '      Console.WriteLine("hi");\n'
+    # 成员调用 -> Process
+    "      _helper.Process(cfg);\n"
+    # 自由调用 Compute + new Result
+    "      return new Result(Compute());\n"
     "    }\n"
     "    private int Compute() => 2;\n"
     "  }\n"
@@ -575,8 +552,6 @@ def test_csharp_edges_end_to_end():
 
 #### 带别名的 using 捕获源类型而非别名标识符 [@380kkm 2026-06-05] ####
 def test_csharp_aliased_using_excludes_alias_name():
-    # `using Alias = Some.Long.Name;` 必须捕获源类型，绝不能捕获别名 'Alias'。
-    # 顶层 using 无封闭符号（成边时被丢弃），故在原始捕获层面断言 !name 锚点从不抓到别名标识符。
     L = get_language(E._PACK_NAME["csharp"])
     specs = E._load_query_specs(None)
     q = Query(L, specs["csharp"])
@@ -600,11 +575,6 @@ def test_js_ts_csharp_deterministic():
         assert r1 == r2 and e1 == e2
 
 
-# ===========================================================================
-# 回归：无 .scm 预设的遍历器语言不受此层影响 —— 仍保留仅遍历器的边
-# （contains/extends），零条 @dep 边。`java` 有遍历器（符号 + extends）但不带
-# java.scm，是完美的探针。
-# ===========================================================================
 #### 无 .scm 预设的遍历器语言只有遍历器边、无任何 dep 边 [@380kkm 2026-06-05] ####
 def test_walker_lang_without_scm_has_no_dep_edges():
     # 不存在 java.scm 预设
@@ -622,12 +592,6 @@ def test_walker_lang_without_scm_has_no_dep_edges():
     assert any(r["name"] == "A" and r["kind"] == "class" for r in rows)
 
 
-# ===========================================================================
-# 真实夹具冒烟测试：每种语言搭一个微型临时仓库，索引 + enrich 进一个隔离的库，断言
-# 依赖边落入 DB。MANYREAD_HOME 指向临时目录，使 hub 注册表写入绝不碰用户 hub
-# （~/.manyread/stores.json）；一切在 finally 中清理。这条路径走完整的
-# index_build -> enrich_treesitter -> edges 表，而不止内存提取器。
-# ===========================================================================
 #### 隔离库内 js/csharp 全链路冒烟：依赖边落入 edges 表且 hub 隔离 [@380kkm 2026-06-05] ####
 def test_real_fixture_smoke_js_csharp_isolated(tmp_path, monkeypatch):
     import sqlite3
@@ -638,7 +602,7 @@ def test_real_fixture_smoke_js_csharp_isolated(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     home.mkdir()
     repo.mkdir()
-    # 隔离 hub 及任何环境中的库发现，确保绝不触碰用户 hub。
+    # 隔离 hub 及任何环境中的库发现
     monkeypatch.setenv("MANYREAD_HOME", str(home))
     monkeypatch.delenv("MANYREAD_STORE", raising=False)
 
@@ -696,17 +660,11 @@ def test_real_fixture_smoke_js_csharp_isolated(tmp_path, monkeypatch):
     assert (home / "stores.json").exists()
 
 
-# ===========================================================================
-# macro_strip：对声明修饰符宏（`class|struct <ALLCAPS_MACRO> <RealName>`）做长度保持
-# 的解析前剥离。纯函数、确定性、span 精确、默认开启、泛化安全（干净 cpp 与非 cpp 逐字节
-# 一致）。变换见 enrich_treesitter._strip_decl_macros + config.load_macro_strip。
-# ===========================================================================
 _MS_DEFAULT = {"enabled": True, "extra_names": [], "extra_patterns": []}
 
 
 #### 用真实 cpp grammar 取 (有错误, 类/结构体名, 主体存在) 的夹具 [@380kkm 2026-06-05] ####
 def _cpp_class(src: str):
-    """经真实 cpp grammar 返回 (has_error, class/struct 名, 带主体的成员是否存在)。"""
     parser = Parser(get_language("cpp"))
     tree = parser.parse(src.encode())
     cs = [None]
@@ -728,15 +686,15 @@ def _cpp_class(src: str):
 #### 正向：剥离后无解析错误、恢复真实名、保有真实主体 [@380kkm 2026-06-05] ####
 @pytest.mark.parametrize("src,real_name", [
     ("class ENGINE_API UMaterial : public UMaterialInterface { int A; void F(){} };", "UMaterial"),
-    ("class BASE_EXPORT Foo {};", "Foo"),                       # Chromium
-    ("struct PROTOBUF_EXPORT Bar { int x; };", "Bar"),          # protobuf
-    ("class UE_DEPRECATED(5.0) UOld {};", "UOld"),              # 带实参的宏
-    ("class CV_EXPORTS Mat { int rows; };", "Mat"),             # OpenCV
+    ("class BASE_EXPORT Foo {};", "Foo"),
+    ("struct PROTOBUF_EXPORT Bar { int x; };", "Bar"),
+    # 带实参的宏
+    ("class UE_DEPRECATED(5.0) UOld {};", "UOld"),
+    ("class CV_EXPORTS Mat { int rows; };", "Mat"),
     ("class ENGINE_API UMaterial final : public X {};", "UMaterial"),
     ("template<typename T> class ENGINE_API TFoo {};", "TFoo"),
 ])
 def test_macro_strip_recovers_real_name(src, real_name):
-    """正向：剥离后无解析错误、得到真实名、并有真实主体。"""
     stripped = E._strip_decl_macros(src, _MS_DEFAULT)
     # 长度保持
     assert len(stripped) == len(src)
@@ -749,7 +707,6 @@ def test_macro_strip_recovers_real_name(src, real_name):
 
 #### 剥离后恢复成员符号且存活 token 字节偏移与手工空白化逐字节一致 [@380kkm 2026-06-05] ####
 def test_macro_strip_recovers_member_rows_and_spans():
-    """类被改名且其主体方法成为子符号；存活 token 的字节偏移与手工（空格）空白化的源逐字节一致。"""
     src = "class ENGINE_API UMaterial : public UMaterialInterface { int A; void F(){} };"
     rows_on, edges_on = E._extract_file(
         1, src, "cpp", Parser(get_language("cpp")), False, None, _MS_DEFAULT)
@@ -770,36 +727,37 @@ def test_macro_strip_recovers_member_rows_and_spans():
 
 #### 负向/泛化安全：干净 cpp、非类名位置的宏、class/struct 作为子串都是逐字节 no-op [@380kkm 2026-06-05] ####
 @pytest.mark.parametrize("src", [
-    ("class Baz {};"),                                          # 普通类
-    ("class RGBA {};"),                                         # 全大写名，无第二个标识符
+    # 普通类
+    ("class Baz {};"),
+    # 全大写名，无第二个标识符
+    ("class RGBA {};"),
     ("struct UPPER {};"),
-    ("class Foo : public Bar { int a; void f(){} };"),         # 干净的继承
-    ("class Foo : public BAR_API Base {};"),                    # 宏在基类列表里，不在名位置
-    ("int ENGINE_API_VERSION = 3;"),                            # 形似宏的名，在取值位置
-    ("void ENGINE_API Foo();"),                                 # 函数返回修饰符（不在处理范围）
+    # 干净的继承
+    ("class Foo : public Bar { int a; void f(){} };"),
+    # 宏在基类列表里，不在名位置
+    ("class Foo : public BAR_API Base {};"),
+    # 形似宏的名，在取值位置
+    ("int ENGINE_API_VERSION = 3;"),
+    # 函数返回修饰符（不在处理范围）
+    ("void ENGINE_API Foo();"),
     ("enum class EColor { Red };"),
-    # 词边界：作为用户标识符子串的 `class`/`struct` 绝不能命中
-    # （否则其后的全大写 token 会被当成修饰符宏空白化）。
+    # 作为用户标识符子串的 class/struct 不命中
     ("subclass ENGINE_API Foo x;"),
     ("metaclass FOO_API Bar y;"),
     ("mystruct ENGINE_API_T xVar;"),
     ("superclass DLL_API Baz q;"),
 ])
 def test_macro_strip_negative_byte_identical(src):
-    """负向/泛化安全：干净 cpp + 非类名位置的宏 + class/struct 作为子串的标识符都是逐字节 no-op
-    （即便默认开启）。"""
     assert E._strip_decl_macros(src, _MS_DEFAULT) == src
 
 
 #### 堆叠的声明修饰符宏被完全剥离（不动点） [@380kkm 2026-06-05] ####
 @pytest.mark.parametrize("src,real_name", [
-    # 堆叠的 export+可见性/属性宏：两者都必须被剥离（迭代到不动点）。
     ("class DLL_EXPORT ENGINE_API UMaterial { int A; void F(){} };", "UMaterial"),
     ("struct BASE_EXPORT PROTOBUF_EXPORT Bar {};", "Bar"),
     ("class A_API B_API C_API UFoo {};", "UFoo"),
 ])
 def test_macro_strip_stacked_macros_recovered(src, real_name):
-    """堆叠的声明修饰符宏被完全剥离 -> 真实名、无错误。"""
     stripped = E._strip_decl_macros(src, _MS_DEFAULT)
     assert len(stripped) == len(src)
     err, name, has_body = _cpp_class(stripped)
@@ -808,8 +766,6 @@ def test_macro_strip_stacked_macros_recovered(src, real_name):
 
 #### `enum class <MACRO> <Name>` 恢复 enum 的真实名 [@380kkm 2026-06-05] ####
 def test_macro_strip_enum_class_macro_recovered():
-    """`enum class <MACRO> <Name>` 恢复 enum 的真实名（\\b 词边界仍在 `enum class` 内的
-    `class` 词首处触发）。"""
     src = "enum class ENGINE_API EColor { Red, Green };"
     stripped = E._strip_decl_macros(src, _MS_DEFAULT)
     assert len(stripped) == len(src)
@@ -824,10 +780,6 @@ def test_macro_strip_enum_class_macro_recovered():
 
 #### 高危回归：被空白化的宏实参区内的非 ASCII 字符不移位下游字节偏移 [@380kkm 2026-06-05] ####
 def test_macro_strip_utf8_byte_offsets_preserved():
-    """高危回归：被空白化的宏实参区内的非 ASCII 字符（如 UE_DEPRECATED 消息里的 em-dash）
-    绝不能移位下游 BYTE 偏移。空白化按每个 UTF-8 字节输出一个空格，使编码长度不变，于是后续
-    符号的 start_byte 等于其在原始（未改动）内容里的偏移。
-    """
     src = ('class UE_DEPRECATED(5.0, "Use NewType — deprecated") UOld {};\n'
            "class Bar {};")
     stripped = E._strip_decl_macros(src, _MS_DEFAULT)
@@ -845,9 +797,6 @@ def test_macro_strip_utf8_byte_offsets_preserved():
 
 #### 注释内的误命中无害：空白化长度保持且仅作用于解析副本 [@380kkm 2026-06-05] ####
 def test_macro_strip_comment_false_positive_is_harmless():
-    """已记录的开放风险：原始文本正则可能空白化出现在 // 注释里的 `class MACRO Name`。它是
-    无害的，因为空白化长度保持且只作用于本地解析副本（入库内容保持原样），故提取出的符号与未
-    空白化的源相同。"""
     src = ("class RealClass {\n"
            "  // class ENGINE_API Fake Inner {}; in a comment\n"
            "};\n")
@@ -871,8 +820,6 @@ def test_macro_strip_disabled_is_identity():
 
 #### 配置的 extra_names/extra_patterns 扩展检测器，位置闸门仍约束之 [@380kkm 2026-06-05] ####
 def test_macro_strip_extra_names_and_patterns():
-    """配置扩展内建检测器；位置闸门仍对其加以约束。"""
-    # GTEST_API_（尾下划线）是已记录的 _is_macro_type 缺口。
     g = "class GTEST_API_ MyTest : public Test {};"
     # 默认 no-op
     assert E._strip_decl_macros(g, _MS_DEFAULT) == g
@@ -901,7 +848,6 @@ def test_macro_strip_idempotent_and_newline_preserving():
 
 #### 仅 c 系语言运行该变换，非 cpp 语言不受影响 [@380kkm 2026-06-05] ####
 def test_macro_strip_only_cfamily_lang():
-    """非 cpp 语言绝不运行该变换（lang not in _CFAMILY_STRIP_LANGS）。"""
     assert "cpp" in E._CFAMILY_STRIP_LANGS
     for lang in ("python", "javascript", "typescript", "csharp", "glsl", "java"):
         assert lang not in E._CFAMILY_STRIP_LANGS
@@ -913,8 +859,6 @@ def test_macro_strip_only_cfamily_lang():
 
 #### 已提交的 cpp golden 无修饰符宏，默认开启的剥离对其是 no-op [@380kkm 2026-06-05] ####
 def test_macro_strip_golden_cpp_unchanged():
-    """已提交的 cpp golden 无修饰符宏 -> 默认开启的剥离是 no-op，故即便用生产默认值，逐字节
-    golden 仍保持绿色。"""
     assert E._strip_decl_macros(_CPP_GOLDEN_SRC, _MS_DEFAULT) == _CPP_GOLDEN_SRC
     rows, edges = E._extract_file(
         1, _CPP_GOLDEN_SRC, "cpp", Parser(get_language("cpp")), False, None, _MS_DEFAULT)
@@ -923,7 +867,6 @@ def test_macro_strip_golden_cpp_unchanged():
 
 #### config.load_macro_strip：缺省=>开启、可禁用、可扩展、畸形=>默认+告警 [@380kkm 2026-06-05] ####
 def test_macro_strip_config_load(tmp_path):
-    """config.load_macro_strip：缺省=>ON、禁用、扩展、畸形=>默认+告警。"""
     import json
     from lib import config
     store = tmp_path

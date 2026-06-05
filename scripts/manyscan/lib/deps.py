@@ -144,12 +144,7 @@ def _match_path(store: "stores.Store", candidates: list[str], *,
 
 #### 内存中的文件路径索引，用于快速 import 解析 [@380kkm 2026-06-05] ####
 class PathIndex:
-    """内存中的文件路径索引，用于快速 import 解析。
-
-    从存储库一次性构建（一条 ``SELECT id,path``），即可以 O(1)/O(小) 回答
-    精确 / 后缀 / 基名查询，无需每次调用都做 SQL ``LIKE`` 扫描 —— 对引擎级
-    存储库（10 万+ 文件）的有界扩展至关重要。
-    """
+    """一条 ``SELECT id,path`` 构建后，以 O(1)/O(小) 回答精确 / 后缀 / 基名查询。"""
 
     #### 从存储库一次性加载所有文件路径，建立三种查询索引 [@380kkm 2026-06-05] ####
     def __init__(self, store: "stores.Store"):
@@ -202,8 +197,6 @@ class PathIndex:
 
 #### 为一条 import 返回 (候选路径, 是否后缀匹配, 是否基名匹配)，无法映射时返回 None [@380kkm 2026-06-05] ####
 def _candidates_for(ref: ImportRef, from_path: str | None) -> tuple[list[str], bool, bool] | None:
-    """为一条 import 返回 ``(candidate_paths, use_suffix, use_basename)``；
-    当其无法映射到树内文件（裸 js 模块、C# 命名空间）时返回 None。"""
     if ref.kind == "python":
         mod = ref.target
         if mod.startswith("."):
@@ -234,11 +227,7 @@ def _candidates_for(ref: ImportRef, from_path: str | None) -> tuple[list[str], b
 #### 尽力而为：把一条 ImportRef 映射为同一存储库内的目标 file_id [@380kkm 2026-06-05] ####
 def resolve_import(store: "stores.Store", ref: ImportRef, from_path: str | None = None,
                    index: "PathIndex | None" = None) -> int | None:
-    """尽力而为：把一条 :class:`ImportRef` 映射为同一存储库内的目标 file_id。
-
-    传入 :class:`PathIndex` 可加速重复解析；不传则回退到 SQL 匹配。
-    对外部依赖 / 无法解析者返回 None。
-    """
+    """传入 :class:`PathIndex` 走索引匹配，不传则回退到 SQL 匹配；外部依赖 / 无法解析返回 None。"""
     spec = _candidates_for(ref, from_path)
     if spec is None:
         return None
@@ -251,16 +240,9 @@ def resolve_import(store: "stores.Store", ref: ImportRef, from_path: str | None 
 #### 把一条边的 dst_name 全局解析为跨所有文件的候选符号 [@380kkm 2026-06-05] ####
 def resolve_edge_targets(store: "stores.Store", dst_name: str,
                          kinds: set[str] | None = None) -> list[sqlite3.Row]:
-    """把一条边的 ``dst_name`` 全局解析为跨所有文件的候选符号。
+    """按精确名跨整个存储库解析；``len(result)`` 即歧义度（0 = 外部 / 不存在）。
 
-    manyread 只在单个文件内解析 extends/implements；本函数按精确名把它提升到
-    整个存储库。``len(result)`` 即歧义度（0 = 外部 / 不存在）。
-
-    定义优先：当候选 >1 且其中至少一个是带函数体的「定义」时，丢弃声明大小的
-    「前向声明」。C++ 头文件会在许多文件里前向声明同一个类（``class UMaterial;``
-    —— 其 span 约为 len("class <name>")），否则会把一个本应单一的定义误判为
-    ``ambiguous``。前向声明永不是定义；若该名下「只有」声明（没有定义），则全部
-    保留（诚实）。逻辑与 link_source 镜像。
+    候选 >1 且其中含带函数体的定义时，丢弃声明大小的前向声明；该名下只有声明时全部保留。
     """
     cands = store.symbols_named(dst_name, kinds=kinds)
     if len(cands) <= 1:

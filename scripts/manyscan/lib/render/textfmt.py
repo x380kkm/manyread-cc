@@ -12,11 +12,6 @@ from lib.graph import Graph
 #### 生成有界状态提示行(截断/深度封顶) [@380kkm 2026-06-05] ####
 def _bounded_lines(truncated: bool, depth_bounded: bool, frontier_depth: int,
                    elided: int, frontier: dict) -> list[str]:
-    """根据有界标志返回 0 或 1 行可见提示。
-
-    截断时给出封顶层、省略依赖数及其在各边界节点上的分布;仅深度封顶时给出温和提示;
-    都未发生则返回空列表。
-    """
     if truncated:
         dist = ", ".join(f"{k}→{v}" for k, v in sorted(frontier.items()))
         return [f"⚠ 已在第 {frontier_depth} 层封顶,省略 {elided} 个依赖(分布: {dist})"]
@@ -28,10 +23,7 @@ def _bounded_lines(truncated: bool, depth_bounded: bool, frontier_depth: int,
 
 #### 把图渲染为纯文本节点清单 [@380kkm 2026-06-05] ####
 def to_text(g: Graph) -> str:
-    """把 Graph 渲染为纯文本:首行统计节点/边数,随后按 id 排序逐行列出节点标签。
-
-    有界提示行紧跟统计行;边界上的节点在行尾标注 ``(+N 越界)`` 表示越界依赖数。
-    """
+    """首行统计节点/边数,有界提示行紧跟其后,随后按 id 排序逐行列出节点标签,边界节点行尾标注 ``(+N 越界)``。"""
     lines = [f"nodes={len(g.nodes)} edges={len(g.edges)}"]
     lines += _bounded_lines(g.truncated, g.depth_bounded, g.frontier_depth, g.elided, g.frontier)
     for n in sorted(g.nodes.values(), key=lambda n: n.id):
@@ -43,11 +35,7 @@ def to_text(g: Graph) -> str:
 
 #### 把度量结果渲染为纯文本报告 [@380kkm 2026-06-05] ####
 def metrics_text(m: analyze.Metrics) -> str:
-    """把 analyze.Metrics 渲染为纯文本报告。
-
-    首行汇总节点/边/环/桥/切点/分层计数;随后是有界提示、最不稳定与最被依赖的节点;
-    存在时再分别列出待解耦的环、候选切点(桥)、脆弱枢纽(切点)及不稳定度前 5 的节点。
-    """
+    """首行汇总节点/边/环/桥/切点/分层计数;随后有界提示、最不稳定与最被依赖节点;再列出环、桥、切点及不稳定度前 5 的节点。"""
     s = m.summary
     lines = [
         f"nodes={s['nodes']} edges={s['edges']} | cycles={s['cycles']} "

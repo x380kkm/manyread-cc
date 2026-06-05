@@ -26,15 +26,6 @@ _JAVA_TYPE_KINDS = frozenset(("class", "interface", "enum"))
 
 #### 收集 superclass / interfaces 节点下的类型标识符文本 [@380kkm 2026-06-05] ####
 def _java_type_names(node: Node, src: bytes) -> list[str]:
-    """递归收集某个 superclass 或 interfaces 节点下的类型标识符文本。
-
-    参数:
-        node: superclass 或 interfaces 子树的根节点。
-        src: 文件的 utf-8 字节内容。
-
-    返回:
-        去空后的类型名列表（类型标识符、限定类型标识符、泛型类型）。
-    """
     out: list[str] = []
     for ch in node.named_children:
         if ch.type in ("type_identifier", "scoped_type_identifier", "generic_type"):

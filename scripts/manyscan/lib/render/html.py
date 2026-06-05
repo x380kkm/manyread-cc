@@ -14,21 +14,6 @@ from lib.graph import Graph
 
 
 #### 自包含交互式 HTML（sigma.js / WebGL + graphology 力导布局）的素材与库清单 [@380kkm 2026-06-05] ####
-# 单个文件，可在任意浏览器中打开——无需服务器/node/构建。为支撑海量节点
-# （依赖级别的有界切片）而设计：sigma.js 在 GPU（WebGL）上渲染，故在数百到数千节点上
-# 平移/缩放/拖拽仍流畅，而旧的 Canvas2D 渲染器在此会卡死。布局采用
-# graphology-forceAtlas2（快速，在浏览器内从确定性烘焙种子细化）。保留的特性：
-# 按度数定大小、hub 光晕、bridge 边、搜索、目标/依赖视图切换、点击→路径、
-# 拖节点≠平移画布、诚实的截断横幅。分区由 颜色 + 空间聚类 编码（sigma 无复合父节点），
-# 取代旧的浅色方框；bridge 为 红色+加粗（sigma 边在无额外程序时不能虚线）。
-#
-# 离线：sigma + graphology + graphology-library（forceAtlas2）均提供 UMD 构建，
-# 按顺序作为普通 <script> 全局内联——graphology（核心，window.graphology）→
-# graphology-library（含 forceAtlas2 等布局，window.graphologyLibrary）→
-# sigma（window.Sigma）。素材缺失时逐文件回退到 CDN。sigma 的 UMD 自带与 ES5 一致的
-# events polyfill，故无 ESM/node-shim 的类构造器错位（这正是不用 ESM 包的原因）。
-# 输出字节（静态库文本 + DATA + 烘焙的种子位置）保持确定性；力导布局在浏览器内计算，
-# 故没有任何与时间/随机相关的内容被烘焙。
 _ASSET_DIR = Path(__file__).resolve().parent.parent.parent / "assets"
 _SIGMA_LIBS = [
     (_ASSET_DIR / "graphology.umd.min.js",
@@ -41,20 +26,12 @@ _SIGMA_LIBS = [
 _PALETTE = ["#4e79a7", "#f28e2b", "#59a14f", "#e15759", "#76b7b2",
             "#edc948", "#b07aa1", "#ff9da7", "#9c755f", "#9d7660"]
 
-# bootstrap 是普通（非 f）字符串：字面的 { } 花括号。注入值以 const 块到达
-# （DATA、HAS_ZONES、ITER、INITVIEW）——无 token 重写，故无 mapData/DEGMAX 的脆弱性
-# （节点大小逐节点烘焙在 DATA 中）。sigma / graphology / forceAtlas2 全局来自上面内联的
-# UMD <script> 标签。内容取自被 vendored 的素材文件（与 sigma 库相同的 _ASSET_DIR）并
-# 逐字内联——素材内容即 bootstrap 字符串值，故输出字节与旧的内联字面量一致。
-# 强制读取（无 CDN 回退：bootstrap 是应用本身，而非可选的 vendored 库）。
 _BOOTSTRAP_ASSET = _ASSET_DIR / "boundary_bootstrap.js"
 _HTML_BOOTSTRAP = _BOOTSTRAP_ASSET.read_text(encoding="utf-8")
 #### /自包含交互式 HTML 的素材与库清单 ####
 
 
 #### 隐藏面板（#hp）的 MODULES（可折叠商图）区段的静态标记 [@380kkm 2026-06-05] ####
-# 仅当商图开启（已烘焙 modules_meta）时插入面板——故 OFF 页面的面板标记与 v0.6.2
-# 逐字节一致。静态以便 PRISTINE_HP 把它逐字带入下钻子图。
 _HP_MODULES_SECTION = (
     "<div id='hp-mods' class='hp-sec active'>"
     "<div class='hp-sec-body'>"
@@ -69,12 +46,6 @@ _HP_MODULES_SECTION = (
 
 #### 生成隐藏面板（#hp）的 HTML 标记 [@380kkm 2026-06-05] ####
 def _hide_panel_html(with_modules: bool) -> str:
-    """生成隐藏面板（#hp）的标记。
-
-    ``with_modules`` 为 False ⇒ 与 v0.6.2 逐字节一致（OFF 路径）；为 True ⇒
-    在前面加上 MODULES 区段，并把 HIDE 块包进可折叠的 ``.hp-sec``，使两个子区段各有
-    一个可点击的标题。
-    """
     body = (
         "<div class='hp-hd'>"
         "<input id='hpq' placeholder='filter symbols...'>"
@@ -105,7 +76,6 @@ def _hide_panel_html(with_modules: bool) -> str:
             "<div class='hp-tab' id='hp-tab'>HIDE</div>"
             "<div class='hp-grip' id='hp-grip' title='drag to resize'></div>")
     if not with_modules:
-        # v0.6.2 标记，逐字节一致
         return head + body + "</div>"
     return (head
             + "<div class='hp-tabs'>"
@@ -127,15 +97,6 @@ def _html_escape(s: str | None) -> str:
 
 #### 计算每个节点的重要性信号（纯、确定性） [@380kkm 2026-06-05] ####
 def _importance(g: Graph) -> dict[str, dict]:
-    """每个节点的重要性信号（纯函数、确定性）。
-
-    为每个节点 id 返回 ``{deg, fan_in, fan_out, hub, bridge}``。``fan_in``/``fan_out``
-    与 :func:`analyze.node_metrics` 一致（去重邻居，排除自环）；``deg = fan_in + fan_out``
-    驱动所有图的节点定大小。``hub`` 标记被重度依赖/脆弱的中心——
-    ``analyze.cut_nodes`` 与高 fan_in 节点（``fan_in >= max(2, p90)``）的并集。
-    ``bridge`` 标记被 ``analyze.bridges`` 关节边触及的节点（逐边 bridge 集另行返回）。
-    全程仅整数且已排序，故两次运行逐字节一致。
-    """
     info: dict[str, dict] = {}
     fan_in: dict[str, int] = {}
     for nid in sorted(g.nodes):
@@ -147,8 +108,7 @@ def _importance(g: Graph) -> dict[str, dict]:
     hubs: set[str] = set(analyze.cut_nodes(g))
     fins = sorted(fan_in.values())
     if fins:
-        # 对 fan_in 取 p90（最近秩）；门限设为 >= max(2, p90)，使只有真正被依赖的中心
-        # 点亮（小图至少需要 2 条入边）
+        # 取 fan_in 的 p90（最近秩），门限为 max(2, p90)
         p90 = fins[min(len(fins) - 1, (90 * len(fins)) // 100)]
         gate = max(2, p90)
         hubs |= {nid for nid in g.nodes if fan_in[nid] >= gate}
@@ -164,7 +124,6 @@ def _importance(g: Graph) -> dict[str, dict]:
 
 
 #### 分区标识与配色（由 to_html 共享） [@380kkm 2026-06-05] ####
-# 依赖区可能容纳多个不同的依赖源；分区由节点 颜色 + 空间聚类 编码
 _ZONES = ("target", "dependency")
 _ZONE_COLOR = {"target": "#4e79a7", "dependency": "#f28e2b"}
 
@@ -172,15 +131,6 @@ _ZONE_COLOR = {"target": "#4e79a7", "dependency": "#f28e2b"}
 #### 计算确定性的初始布局种子坐标 [@380kkm 2026-06-05] ####
 def _seed_xy(i: int, n_total: int, zone: str | None = None,
              band: int | None = None, n_bands: int = 1) -> tuple[float, float]:
-    """确定性的初始布局种子（按排序下标摆成圆；band/zone 的 x 偏置使各 band/zone 起始分开）。
-
-    forceAtlas2 在浏览器内从此细化；四舍五入使输出字节稳定。
-
-    给定 ``band``（n_bands > 1）时，种子 x 按 band 列偏置（步距 520），使各 band 起始
-    呈左→右顺序——这是仅在跳过 forceAtlas2（离线/无 GPU）时使用的粗略回退；预期几何是
-    浏览器内的 ``partitionBands`` 重映射（步距不同，故两个常量不同）。无 band 时，使用
-    旧的双分区偏置。
-    """
     ang = 2.0 * math.pi * i / max(1, n_total)
     x = math.cos(ang) * 120.0
     y = math.sin(ang) * 120.0
@@ -198,30 +148,16 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
             band_of: dict | None = None, bands_meta: list | None = None,
             default_hidden: list[str] | None = None,
             module_of: dict | None = None, modules_meta: list | None = None) -> str:
-    """把一个 Graph 渲染为单个自包含交互式 HTML 文件（sigma.js / WebGL）。
-
-    sigma + graphology + graphology-library（forceAtlas2）从被 vendored 的 UMD 包作为
-    普通 ``<script>`` 全局内联（graphology 核心 → graphology-library → sigma），仅在素材
-    缺失时逐文件用 CDN ``<script src>`` 回退。图数据 + 烘焙的种子位置乘载于单个裸 const
-    ``<script>``，故输出是单个离线文件，可在任意浏览器中渲染 GPU 加速、可缩放、可搜索的图。
-    节点位置在浏览器内计算（forceAtlas2 从确定性烘焙种子出发），故输出字节跨运行逐字节一致。
-
-    ``default_hidden``（可选）：一组起始即被应用隐藏（不在启动布局中）但仍列在隐藏面板中
-    且可重新启用的节点 id。渲染器把已排序的列表烘焙进一行受门控的 ``const HIDDEN=``；
-    为 ``None`` 时该行被完全省略，故未配置的渲染与 v0.6.0 逐字节一致。
-
+    """``default_hidden``（可选）：起始即应用隐藏、但仍列在隐藏面板中可重新启用的节点 id；
+    渲染器把已排序的列表烘焙进受门控的 ``const HIDDEN=``，为 ``None`` 时省略该行。
     ``module_of`` / ``modules_meta``（可选，可折叠的 模块↔符号 商图视图）：两者都给出时，
-    每个节点获得一个受门控的 ``attrs['module']``（其带侧前缀的模块 id），并烘焙一个已排序的
-    ``const MODULES=`` 列表；随后 bootstrap 渲染默认全折叠的商图（模块超级节点），用户可在
-    侧栏 MODULES 区段逐模块展开。为 ``None``（默认）时不烘焙 module 属性 / ``MODULES`` 行，
-    故 DATA/const 块 + 运行时行为与 v0.6.2 逐字节/逐行为一致（静态 bootstrap 中惰性的商图
-    机制永不运行，因为 ``MODULES`` 未定义 ⇒ ``displayed===graph``）。
+    每个节点获得受门控的 ``attrs['module']``（带侧前缀的模块 id），并烘焙已排序的
+    ``const MODULES=`` 列表，bootstrap 渲染默认全折叠的商图；为 ``None`` 时不烘焙这两项。
     """
     n_sorted = sorted(g.nodes.values(), key=lambda n: n.id)
     n_total = len(n_sorted)
 
-    # 这是边界图时按 分区 着色（使 目标↔依赖 凸显），否则在有内聚簇（attrs['cluster']）时
-    # 按簇着色，再否则按 kind 着色
+    # 着色键：边界图按分区，有簇时按簇，否则按 kind
     zoned = any(n.attrs.get("zone") in _ZONES for n in g.nodes.values())
     clustered = any(n.attrs.get("cluster") for n in g.nodes.values())
     if zoned:
@@ -256,9 +192,7 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
             base = max(base, 12.0) + 4.0
         return round(base, 2)
 
-    # 节点：{key, attrs}，烘焙位置 / 尺寸 / 颜色（graphology 模型）。
-    # n_bands 统计 bands_meta 中的每个 band（含可能为空的 dep-core band），
-    # 故缝隙几何在含/不含 dep-core 的图之间稳定
+    # 节点列表：每项 {key, attrs}，烘焙位置 / 尺寸 / 颜色
     n_bands = len(bands_meta) if bands_meta else 1
     nodes: list[dict] = []
     for i, n in enumerate(n_sorted):
@@ -280,12 +214,10 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
         }
         if zoned and zone in _ZONES:
             attrs["zone"] = zone
-        # 门控于 band_of is not None：平坦图的 DATA 字节不变（字节兼容）
+        # 门控于 band_of is not None
         if band_of is not None:
             attrs["band"] = band_of.get(n.id, 0)
-        # 门控于 module_of is not None：可折叠商图只烘焙一个属性——带侧前缀的模块 id。
-        # 侧由 JS 中的 MODULES[...].side 推导（单一真相源），故不烘焙单独的 modside 属性；
-        # OFF ⇒ 不存在
+        # 门控于 module_of is not None：烘焙带侧前缀的模块 id
         if module_of is not None:
             attrs["module"] = module_of.get(n.id, "")
         nodes.append({"key": n.id, "attrs": attrs})
@@ -329,7 +261,7 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
     )
     meta = f"{len(g.nodes)} nodes &middot; {len(g.edges)} edges"
 
-    # 单页视图切换（仅对分区图有意义；JS 在其他情形隐藏它）
+    # 单页视图切换
     view = view if view in ("both", "internal", "dependency") else "both"
     view_opts = "".join(
         f"<option value='{v}'{' selected' if v == view else ''}>{v}</option>"
@@ -340,8 +272,7 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
         if zoned else ""
     )
 
-    # forceAtlas2 迭代预算——大图迭代更少（布局是唯一的浏览器内 CPU 成本；WebGL 负责渲染）。
-    # 按规模确定
+    # forceAtlas2 迭代预算：按规模递减
     iters = 200 if n_total <= 200 else (90 if n_total <= 1200 else 45)
 
     #### 按顺序内联一个 vendored UMD 库，缺失时回退 CDN [@380kkm 2026-06-05] ####
@@ -352,8 +283,7 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
 
     lib = "".join(_script_for(asset, cdn) for asset, cdn in _SIGMA_LIBS)
 
-    # 受门控的可折叠商图 CSS：仅当烘焙了 MODULES 时追加在 .hp-foot 之后，
-    # 故 OFF 页面的 <style> 字节与 v0.6.2 逐字节一致
+    # 受门控的可折叠商图 CSS：仅当烘焙了 MODULES 时追加
     modules_css = (
         ".hp-tabs{display:flex;padding:0 8px 0 24px;background:#222838;border-bottom:1px solid #39415a}"
         ".hp-tabb{flex:1;background:transparent;color:#9aa6b2;border:none;border-bottom:2px solid transparent;"
@@ -444,18 +374,13 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
         f"const INITVIEW={json.dumps(view)};\n"
         f"const BANDS={json.dumps(bands_meta or [], ensure_ascii=False)};\n"
     )
-    # 受门控、已排序的 default-hidden 烘焙：default_hidden 为 None 时完全省略
-    # （保留 v0.6.0 字节）。保持在同一个裸 const <script> 内，使离线裸标签计数（>=4）
-    # 与 libTexts() 的 `const ` 前缀跳过都仍成立
+    # 受门控、已排序的 default-hidden 烘焙：None 时完全省略
     if default_hidden is not None:
         consts += f"const HIDDEN={json.dumps(sorted(default_hidden))};\n"
-    # 受门控的可折叠商图：已排序的 modules_meta。为 None 时完全省略（保留 v0.6.2 字节）。
-    # 乘载在同一个裸 const <script> 内，使离线裸标签计数（>=4）与 libTexts() 的 `const `
-    # 前缀跳过都仍成立。该列表在 Python 端已按 id 排序（assign_modules），故两次运行一致
+    # 受门控的可折叠商图：已排序的 modules_meta，为 None 时完全省略
     if modules_meta is not None:
         consts += f"const MODULES={json.dumps(modules_meta, ensure_ascii=False)};\n"
-    # 结构性：const 放在一个裸 <script>（使离线守卫仍能数出 4 个裸的 库+const 标签，
-    # 且下钻子图能凭 `const ` 前缀区分它）；bootstrap 带 id="ms-boot" 使子图能逐字取回
+    # const 放在一个裸 <script>，bootstrap 带 id="ms-boot"
     consts_tag = "<script>" + consts + "</script>"
     boot_tag = '<script id="ms-boot">' + _HTML_BOOTSTRAP + "</script>"
     return head + lib + consts_tag + boot_tag + "</body></html>"

@@ -6,12 +6,7 @@
 
 一个 :class:`SourceAdapter` 把 manyread 存储库转换成 manyscan 的图原语：
 ``seed_nodes``（把种子 resolve 成起始节点）与 ``neighbors``（产出进出某节点的
-真实依赖 :class:`Step`）。``scope`` 由适配器驱动，故有界扩展引擎无需知道依赖是
-如何派生的。
-
-v1 提供 :class:`CodeAdapter`（在已索引代码上做 imports/includes + 边解析）。当
-manyread 日后把 UE 蓝图/材质或 Unity 元数据暴露为新的 row 时，``AssetAdapter`` /
-``MetaAdapter`` 实现同一 Protocol 即可直接插入 —— 这就是向前兼容的接缝。
+真实依赖 :class:`Step`）。``scope`` 由适配器驱动。
 """
 from __future__ import annotations
 
@@ -27,8 +22,6 @@ from lib.graph import Edge, Evidence, Node, Step
 #### 在 manyread 存储库上产出 manyscan 图原语的来源协议 [@380kkm 2026-06-05] ####
 @runtime_checkable
 class SourceAdapter(Protocol):
-    """在 manyread 存储库之上产出 manyscan 图原语的来源协议。"""
-
     name: str
 
     def seed_nodes(self, store: "stores.Store", seed: str, alias: str | None = None,
@@ -57,8 +50,6 @@ def _import_keys(path: str) -> list[str]:
 
 #### v1 适配器：由代码 imports/includes 派生 file→file 依赖边 [@380kkm 2026-06-05] ####
 class CodeAdapter:
-    """v1 适配器：由代码 imports/includes 派生 file→file 依赖边。"""
-
     name = "code"
 
     #### 把种子 resolve 成起始 file 节点（精确路径 -> 符号名 -> 模糊名 -> 全文检索） [@380kkm 2026-06-05] ####
@@ -132,7 +123,7 @@ class CodeAdapter:
                  index: "deps.PathIndex", alias: str | None, limit: int) -> Iterator[Step]:
         seen: set[int] = set()
         for key in _import_keys(path):
-            # 每文件的 importer 总数有上限，而非每个 key
+            # importer 总数达上限即停
             if len(seen) >= limit:
                 break
             try:
@@ -163,16 +154,10 @@ class CodeAdapter:
 
 #### 符号级适配器：extends/implements/uses_type 边 + 深度 1 依赖汇点 [@380kkm 2026-06-05] ####
 class SymbolAdapter:
-    """符号级适配器：产出 ``extends``/``implements``/``uses_type`` 边，并以深度 1 的依赖汇点收口。
+    """每个节点是单个符号（``s<id>``）或一个外部依赖目标（``dep:<name>``）。
 
-    每个节点是单个符号（``s<id>``）或一个外部依赖目标（``dep:<name>``）。
-    ``neighbors`` 产出某符号的边界出边，resolve 到具体目标并附带健全度置信度
-    （置信度作为私有 ``_confidence`` 属性挂在产出的 ``Step.edge`` 上，使
-    ``boundary.build`` 能把它记到 Graph 上）。依赖区或 ``dep:`` 节点是汇点 ——
-    其邻居永不展开 —— 这正是把切片限定在目标加上其一层依赖边界的关键。
-
-    ``boundary`` 在方法内部按需 import，以避免 import 环
-    （``adapters`` ← ``boundary`` ← ``adapters``）。
+    ``neighbors`` 产出某符号的边界出边，置信度作为私有 ``_confidence`` 属性挂在产出的
+    ``Step.edge`` 上。依赖区或 ``dep:`` 节点是汇点，其邻居不展开。
     """
 
     name = "symbol"
@@ -213,7 +198,7 @@ class SymbolAdapter:
             edge = Edge(src=node_id, dst=r.target_id, relation=er["relation"],
                         evidence=Evidence(boundary._NORM(row["path"]) if row["path"] else None,
                                           row["start_line"]))
-            # 把置信度挂在边上，使 build() 能记到 Graph
+            # 把置信度挂在边上
             edge._confidence = r.confidence  # type: ignore[attr-defined]
             yield Step(edge=edge, node=r.node)
     #### /产出某符号的边界出边 ####

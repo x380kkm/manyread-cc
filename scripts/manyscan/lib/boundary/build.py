@@ -35,22 +35,13 @@ def _target_seed_rows(store, z: Zoning) -> list[sqlite3.Row]:
 #### 直接构造整个目标及其深度 1 依赖边界图 [@380kkm 2026-06-05] ####
 def build(store, z: Zoning, budget: Budget, alias: str | None = None,
           dep_depth: int = 1) -> Graph:
-    """通过直接构造，得到整个目标及其深度 1 的依赖边界。
+    """每个目标区符号都被纳入；对其边界边（``extends``/``implements``/``uses_type``）解析，
+    依赖/``dep:`` 目标作为深度 1 汇点加入。``budget.max_nodes`` 是带截断的安全上限，
+    逐边置信度记于 ``g.edge_confidence``，UE ``*_API`` 宏被跳过。
 
-    每个目标区符号都被纳入（目标是有限且完全需要的——不从种子做有界 BFS，
-    否则预算可能在种子自身上耗尽）。对每个目标符号的边界边
-    （``extends``/``implements``/``uses_type``）进行解析；目标被加入——
-    依赖/``dep:`` 目标作为深度 1 汇点加入（其自身的边永不被跟随，因为只迭代目标符号）。
-    ``budget.max_nodes`` 是带诚实截断的安全上限。逐边置信度记于 ``g.edge_confidence``；
-    UE ``*_API`` 宏被跳过。
-
-    ``dep_depth`` 控制在目标之外展开多少层有界出边。``dep_depth <= 1``（默认）
-    是历史行为：只展开一层（依赖*表层*），且每个依赖节点都是汇点——build() 输出
-    与之前逐字节一致。``dep_depth >= 2`` 在表层之后多跑一层有界展开；在该层中
-    首次被加入的依赖 SYMBOL 节点被标记为 ``dep_core``（这种 id 跟踪是精确的：
-    被某目标与另一依赖同时引用的依赖符号已在深度 1 加入，故深度 2 不会再加它，
-    它保持为表层/``dep-iface`` 节点）。共享的 ``truncated``/``elided`` 计数器在两趟之间
-    叠加，故深度 2 的溢出会被诚实报告，而非静默丢弃。
+    ``dep_depth`` 控制目标之外展开的有界出边层数。``dep_depth <= 1``（默认）只展开依赖
+    *表层*，每个依赖节点都是汇点。``dep_depth >= 2`` 在表层之后多展开一层，该层首次加入的
+    依赖 SYMBOL 节点标记 ``dep_core``。``truncated``/``elided`` 计数器跨两趟叠加。
     """
     g = Graph()
     cap = budget.max_nodes
@@ -70,13 +61,6 @@ def build(store, z: Zoning, budget: Budget, alias: str | None = None,
 
     #### 从一组有序源 id 展开一层有界出边，返回新增依赖符号 id [@380kkm 2026-06-05] ####
     def _expand(src_ids: list[str]) -> list[str]:
-        """从一个已排序的源 id 列表展开一层有界出边。
-
-        解析每个源的边界边（与历史循环相同的 _MACRO_RE 跳过 + resolve_target +
-        置信度），通过 ``id not in g.nodes`` 去重新节点，共享外层（nonlocal）的
-        ``truncated``/``elided`` 上限计数，并仅返回新增的依赖 SYMBOL id 的有序集合
-        （``s`` 前缀、zone == DEPENDENCY）——即下一层的确定性种子。
-        """
         nonlocal truncated, elided
         new_dep_syms: set[str] = set()
         for nid in src_ids:
@@ -103,7 +87,7 @@ def build(store, z: Zoning, budget: Budget, alias: str | None = None,
         return sorted(new_dep_syms)
     #### /从有序源展开一层有界出边 ####
 
-    # 深度 1（历史行为）
+    # 深度 1：展开依赖表层
     surface_dep = _expand(target_ids)
     if dep_depth >= 2:
         # 表层之后多展开一层有界出边

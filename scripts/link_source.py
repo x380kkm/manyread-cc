@@ -45,25 +45,13 @@ import sys
 from pathlib import Path
 
 
-#### 按文件路径直接加载模块到指定私有别名（绕开 lib 名冲突）[@380kkm 2026-06-05] ####
-#
-# 直接以文件路径、在一个唯一的模块别名下加载 manyscan 的只读存储库层
-# （scripts/manyscan/lib/stores.py），而**不**经由 ``from lib import stores``。
-#
-# 为何不用裸 ``lib`` 名：manyread 自己的包是 scripts/lib，且
-# dsl_validate -> enrich_treesitter 会做 ``from lib import config``，把
-# ``sys.modules['lib']`` 绑定到 scripts/lib（其下没有 ``stores`` 子模块）。当本模块
-# 与该 import 路径共享同一个 Python 会话时（如合并的核心测试套件），这里的
-# ``from lib import stores`` 会落到已缓存的 scripts/lib 包上并抛 ImportError。
-# stores.py 自身**不**做 ``from lib import ...``（它按文件路径、以别名加载 manyread
-# 的 lib），故按路径在私有别名下直接加载它能彻底回避冲突，并保持本模块纯净
-# （仅 stdlib + stores 的只读 sqlite）。
+#### 按文件路径在私有别名下加载模块 [@380kkm 2026-06-05] ####
 def _load_module(name: str, path: str):
     spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:  # pragma: no cover - defensive
+    if spec is None or spec.loader is None:  # pragma: no cover
         raise ImportError(f"cannot load {name} from {path}")
     mod = importlib.util.module_from_spec(spec)
-    #### exec 前先注册（镜像 stores._load_module）
+    # exec 前先注册
     sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
@@ -73,35 +61,25 @@ def _load_module(name: str, path: str):
 _MANYSCAN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manyscan")
 stores = _load_module("manyscan_stores", os.path.join(_MANYSCAN_DIR, "lib", "stores.py"))
 
-#### UE 类以 kind='class' 产出；F 前缀的反射类型是 struct
+# class/struct 视为可解析的类符号 kind
 CLASS_KINDS = {"class", "struct"}
-#### ambiguous 解析至多列出这么多候选位置（确定性样本）；真实总数另作 "ambiguity" 报告
+# ambiguous 解析至多列出的候选位置数
 _CAND_CAP = 12
-#### UE 反射名映射到带前缀的 C++ 类（U/A/F）；按优先级试这些层级，并在第一个非空处停止。
-#### 裸名仅作最后手段（真正无前缀的类型）——急于试它会在常见名上爆炸：对真实引擎索引，裸 "Material" 匹配了 254 个无关符号。
+# 反射名按 U/A/F/裸 前缀顺序试探
 PREFIXES = ("U", "A", "F", "")
 
 
 #### 本地、仅 stdlib 的 schema 加载器（dsl_validate.load_schema 的副本）[@380kkm 2026-06-05] ####
 def load_schema(path: str) -> dict:
-    """纯函数 schema 加载器：json.load + 形状校验。形状畸形时抛 ValueError，使 CLI
-    报出干净的错误。以 '$' 开头的顶层元数据键被允许并忽略。
-
-    在此重新实现（而非 import dsl_validate.load_schema），是因为 dsl_validate 在模块
-    加载时 import enrich_treesitter，后者又 import tree-sitter——这是一个只读链接器
-    绝不应要求的硬依赖。
-
-    形状：根是对象；每个非 '$' 键（一个 lang）映射到 nodeType -> spec 对象；可选的
-    'properties'/'pins' 为对象。
+    """形状：根是对象；每个非 '$' 键（一个 lang）映射到 nodeType -> spec 对象；可选的
+    'properties'/'pins' 为对象。形状畸形时抛 ValueError；'$' 开头的顶层元数据键被忽略。
     """
     with open(path, encoding="utf-8") as fh:
-        #### JSONDecodeError 会上抛给 CLI
         data = json.load(fh)
     if not isinstance(data, dict):
         raise ValueError("schema root must be a JSON object (lang -> nodeType -> spec)")
     for lang, types in data.items():
         if lang.startswith("$"):
-            #### 元数据键 -> 忽略
             continue
         if not isinstance(types, dict):
             raise ValueError(f"schema[{lang!r}] must be an object of nodeType -> spec")
@@ -120,7 +98,6 @@ def load_schema(path: str) -> dict:
 
 #### 从 classPath 提取 ReflectedName（末尾 '.' 之后的部分）[@380kkm 2026-06-05] ####
 def reflected_name(class_path: str) -> str | None:
-    """``/Script/Engine.MaterialExpressionMultiply`` -> ``MaterialExpressionMultiply``。"""
     if not class_path or "." not in class_path:
         return None
     return class_path.rsplit(".", 1)[-1]
@@ -129,33 +106,18 @@ def reflected_name(class_path: str) -> str | None:
 
 #### 归一化存储的文件路径用于输出（反斜杠 -> '/'）[@380kkm 2026-06-05] ####
 def _norm(path: str) -> str:
-    """归一化存储的文件路径用于输出（反斜杠 -> '/'），使报告跨 OS 一致。
-    files.path 在索引时按 OS 分隔符存储。"""
     return (path or "").replace("\\", "/")
 #### /归一化路径 ####
 
 
 #### 把 ReflectedName 解析到代码库的 class/struct 候选 [@380kkm 2026-06-05] ####
 def resolve_class(code: "stores.Store", reflected: str, code_lang: str = "cpp") -> dict:
-    """把一个 ReflectedName 解析到代码存储库的 class/struct 候选。
-
-    前缀优先：一个反射名恰好映射到唯一 C++ 前缀（UMaterial 是 U，AActor 是 A，
-    FLinearColor 是 F），故按 U/A/F/"" 顺序逐层尝试，返回**第一个**产出候选的层级。
-    裸名仅作最后手段——急于把它并入会在常见名上爆炸（对真实引擎索引，裸 "Material"
-    匹配了 254 个无关符号）。在胜出层级内，**前向声明**（声明大小的字节跨度）被丢弃
-    以偏向**定义**，随后候选按 ``(path, id)`` 排序——确定性。
-
-    候选被限制在 ``code_lang``（默认 'cpp'）。C++ 类是唯一有意义的解析目标；没有此
-    过滤时，代码库中来自**不同** lang、恰好共享某 ReflectedName 的 class/struct 符号
-    （如两库被合并时的某个 DSL 'material' 根）会被算作候选，并可能把 'unique' 解析翻
-    成 'ambiguous'。``symbols_named`` 没有 lang 过滤（它是共享的 boundary 基础设施），
-    故 lang 切割在此施加。传 ``code_lang=None`` 可跨**所有** lang 解析。
-
+    """按 U/A/F/"" 前缀顺序试探，返回第一个产出候选的层级。``code_lang`` 把候选限制在
+    该 lang（默认 'cpp'）；传 ``code_lang=None`` 可跨所有 lang 解析。
     返回 {"confidence": "unique"|"ambiguous"|"unresolved", "cands": [Row, ...]}。
     """
     placeholders = ",".join("?" * len(CLASS_KINDS))
     for prefix in PREFIXES:
-        #### 优先级顺序；在第一个非空层级停止
         name = prefix + reflected
         rows = code.conn.execute(
             "SELECT s.id, s.file_id, f.path, s.name, s.kind, s.lang, "
@@ -169,28 +131,18 @@ def resolve_class(code: "stores.Store", reflected: str, code_lang: str = "cpp") 
         if not cands:
             continue
 
-        #### 偏向定义：丢弃前向声明 [@380kkm 2026-06-05] ####
-        # UE 头文件在数百个文件里前向声明一个类（`class UMaterial;` -> 一个约
-        # len("class <Name>") 字节、无函数体的符号）；只有真正的定义有函数体（UE 反射
-        # 类总是很大——UCLASS + GENERATED_BODY + 成员）。一个跨度仅略超其声明的符号
-        # 即前向声明。仅保留定义；若**只**索引到前向声明（定义被漏掉，如这里 UMaterial
-        # 这种被宏搞混的名字），则全部保留（诚实——仍被呈现，标 ambiguous）。
+        # 跨度仅略超声明的符号为前向声明，丢弃以偏向定义
         defs = [r for r in cands if (r["end_byte"] - r["start_byte"]) > len(name) + 16]
         chosen = sorted(defs or cands, key=lambda r: (_norm(r["path"]), r["id"]))
         conf = "unique" if len(chosen) == 1 else "ambiguous"
-        #### ambiguous 绝不挑选其一
         return {"confidence": conf, "cands": chosen}
-        #### /偏向定义 ####
     return {"confidence": "unresolved", "cands": []}
 #### /解析 class ####
 
 
 #### 逐个产出 (row, lookup_key) 覆盖每个 DSL 节点/材质符号，已排序 [@380kkm 2026-06-05] ####
 def dsl_nodes(dsl: "stores.Store", lang: str):
-    """为每个 DSL 节点/材质符号产出 ``(row, lookup_key)``，已排序。
-
-    lookup_key = 存在时取 attrs.node_type，否则在 kind=='material' 时取行 KIND
-    （material 根的 attrs=={}，但 schema 携带一个 'material' 条目）。
+    """lookup_key = 存在时取 attrs.node_type，否则在 kind=='material' 时取行 KIND；
     kind=='outputs'（纯容器）由 WHERE 子句排除。
     """
     rows = dsl.conn.execute(
@@ -210,11 +162,8 @@ def dsl_nodes(dsl: "stores.Store", lang: str):
 #### 构建确定性的链接报告（纯函数、只读）[@380kkm 2026-06-05] ####
 def link(dsl_store: str, code_store: str, schema_path: str, lang: str = "matlang",
          code_lang: str | None = "cpp") -> dict:
-    """构建确定性的链接报告（纯函数、只读）。可能抛 ValueError / FileNotFoundError
-    （schema/存储库错误），由 CLI 映射为退出码 2。
-
-    ``code_lang`` 把代码库候选限制在该 lang（默认 'cpp'）；传 None 可跨代码库中每个
-    lang 解析 class/struct 符号。
+    """schema/存储库错误时抛 ValueError / FileNotFoundError，由 CLI 映射为退出码 2。
+    ``code_lang`` 把代码库候选限制在该 lang（默认 'cpp'）；传 None 可跨每个 lang 解析。
     """
     schema = load_schema(schema_path)
     types = schema.get(lang, {})
@@ -252,7 +201,7 @@ def link(dsl_store: str, code_store: str, schema_path: str, lang: str = "matlang
                     entry["resolved"] = {
                         "confidence": "ambiguous",
                         "ambiguity": len(cands),
-                        #### 确定性样本（排序列表的前 _CAND_CAP 个）；"ambiguity" 携带真实总数
+                        # 排序列表的前 _CAND_CAP 个候选样本
                         "candidates": [
                             f'{_norm(c["path"])}:{c["start_line"]}'
                             for c in cands[:_CAND_CAP]
@@ -279,7 +228,7 @@ def link(dsl_store: str, code_store: str, schema_path: str, lang: str = "matlang
         summary[bucket[e["status"]]] += 1
     return {
         "lang": lang,
-        #### 来源路径被归一化（反斜杠 -> '/'），使整份报告——不仅是承重的解析位置——跨 OS 字节一致
+        # 来源路径归一化（反斜杠 -> '/'）
         "dsl_store": _norm(str(dsl_info.db_path)),
         "code_store": _norm(str(code_info.db_path)),
         "schema": _norm(str(schema_path)),
@@ -342,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         rep = link(args.dsl_store, args.code_store, args.schema, args.lang, code_lang)
     except (ValueError, FileNotFoundError, json.JSONDecodeError) as exc:
-        #### 归一化诊断信息中嵌入的任何路径，保持跨 OS 一致
+        # 归一化诊断信息中嵌入的路径
         print(f"error: {_norm(str(exc))}", file=sys.stderr)
         return 2
 

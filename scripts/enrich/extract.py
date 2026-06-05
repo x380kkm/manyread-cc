@@ -11,36 +11,13 @@ from enrich.query import _query_edges, _query_symbols
 #### 解析单个文件为共享契约的 rows + edges 字典结构 [@380kkm 2026-06-05] ####
 def _extract_file(file_id: int, content: str, lang: str, parser: Parser,
                   do_refs: bool, query=None, macro_strip: dict | None = None):
-    """把单个文件解析成共享契约的字典结构（符号 rows + 边 edges）。
-
-    返回 (rows, edges)：rows 是以单文件内 `_local` 下标为键的符号字典列表，
-    edges 通过 `src_local`/`dst_local` 引用 rows。这正是 apply_rules() 消费的形态；
-    此处不向数据库写入任何内容。
-
-    对 c 系语言（cpp；HLSL 扩展名路由到 cpp），可选地对 `content` 的本地副本做一次
-    保长度的预解析声明修饰宏剥离，该副本仅喂给 parser.parse()（见 `_strip_decl_macros`）。
-    macro_strip 为 None 时不做任何变换（已提交的 golden 测试以 6 个位置参数调用本函数，
-    默认值因此保持字节一致）。对调用方而言原始 `content` 保持不变。
-
-    参数:
-        file_id: 文件在库中的 id。
-        content: 文件源码文本。
-        lang: 语言标识。
-        parser: 已加载对应语言的 tree-sitter 解析器。
-        do_refs: 是否额外计算尽力而为的 references 边。
-        query: 该语言的 .scm 查询对象，可为 None。
-        macro_strip: c 系宏剥离配置，可为 None。
-
-    返回:
-        (rows, edges) 二元组。
-    """
     if lang in _CFAMILY_STRIP_LANGS:
         content = _strip_decl_macros(content, macro_strip)
     src = content.encode("utf-8", "replace")
     tree = parser.parse(src)
 
     if lang in HAS_WALKER:
-        # 由遍历器拥有的语言（cpp/python/...）：与引入 DSL 之前字节一致
+        # 由遍历器拥有的语言（cpp/python/...）
         pend = Pending()
         WALKERS[lang](tree.root_node, src, pend, None)
 
@@ -72,8 +49,7 @@ def _extract_file(file_id: int, content: str, lang: str, parser: Parser,
                     "dst_name": r.name,
                     "relation": "contains",
                 })
-        # 由基类子句生成的 extends/implements 边。dst_local 留空：
-        # 在入库时（任何规则改名之后）解析为同文件内的符号 id
+        # 由基类子句生成的 extends/implements 边（dst_local 留空，入库时按名解析）
         for src_local, dst_name, relation in pend.inherit:
             simple = dst_name.split("<")[0].strip()
             simple = simple.split("::")[-1].split(".")[-1].strip()
@@ -89,8 +65,7 @@ def _extract_file(file_id: int, content: str, lang: str, parser: Parser,
         if query is not None:
             edges.extend(_query_edges(file_id, tree, src, query, rows))
 
-        # 可选的尽力而为 references 边（默认关闭）。基于原始 span 计算，
-        # 按 _local 下标归属到外围符号。该计算需要 pend，故仅在遍历器分支可用（DSL 分支无 pend）
+        # 可选的尽力而为 references 边（默认关闭）
         if do_refs:
             edges.extend(_reference_edges(file_id, tree, src, pend))
     else:
@@ -117,17 +92,6 @@ def _extract_file(file_id: int, content: str, lang: str, parser: Parser,
 
 #### 尽力而为地生成 references 边（契约字典形态） [@380kkm 2026-06-05] ####
 def _reference_edges(file_id: int, tree, src: bytes, pend: Pending) -> list[dict]:
-    """尽力而为地把标识符引用整理成 references 边（契约字典 src_local/dst_local）。
-
-    参数:
-        file_id: 文件在库中的 id。
-        tree: 已解析的 tree-sitter 语法树。
-        src: 文件的 utf-8 字节内容。
-        pend: 该文件的符号累加器，提供按名查找与 span 归属。
-
-    返回:
-        references 边的契约字典列表；无可归属的函数/方法/类符号时返回空列表。
-    """
     by_name: dict[str, int] = {}
     for local_idx, r in enumerate(pend.rows):
         if r.kind in ("function", "method", "class", "struct"):

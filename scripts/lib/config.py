@@ -47,10 +47,7 @@ LANG_EXTS: dict[str, list[str]] = {
     "gdscript": [".gd"],
     "shader": [".hlsl", ".usf", ".ush"],
     "glsl": [".glsl", ".vert", ".frag", ".comp", ".geom", ".tesc", ".tese"],
-    # UE 资产 DSL（来自外部编辑器插件的 S 表达式文本）。在此列出扩展名，可让
-    # index_build 的 DEFAULT_EXTS 兜底 + default_exts_for() 识别它们，从而让
-    # `--langs matlang` / 裸 --root 索引能真正摄入 .matlang/.bplisp/.animlang 文件
-    # （enrich 随后通过 scheme 语法 + 每个 DSL 的 .scm 查询来读取）。
+    # UE 资产 DSL 的 S 表达式文本扩展名
     "matlang": [".matlang"],
     "bplisp": [".bplisp"],
     "animlang": [".animlang"],
@@ -65,7 +62,6 @@ DEFAULT_IGNORE_GLOBS: list[str] = [
 ]
 
 #### 写入存储库的 .gitignore 内容：把每用户 + 短期内容排除出 git [@380kkm 2026-06-05] ####
-# 但共享 source.db / refs / traces / manyread.json
 STORE_GITIGNORE = "# manyread store — per-user + short-term content is NOT shared\nuser/\nshort/\n"
 
 
@@ -102,11 +98,7 @@ class ProjectConfig:
 
 #### 从 start（默认 cwd）向上查找 manyread/ 存储库目录 [@380kkm 2026-06-05] ####
 def find_store(start: Path | None = None) -> Path | None:
-    """从 ``start``（默认 cwd）向上查找 ``manyread/`` 存储库目录。
-
-    存储库是一个名为 ``manyread`` 且包含 ``manyread.json`` 的目录。同时尊重
-    MANYREAD_STORE 环境变量覆盖项（一个显式的存储库路径）。
-    """
+    """MANYREAD_STORE 环境变量覆盖此查找，指向一个显式的存储库路径。"""
     env = os.environ.get("MANYREAD_STORE")
     if env:
         p = Path(env)
@@ -151,9 +143,7 @@ def _read_json(path: Path) -> dict:
     if not path.is_file():
         return {}
     try:
-        # utf-8-sig：容忍 UTF-8 BOM（例如文件被 PowerShell 等 Windows 工具重写时
-        # 默认会加上），对纯 UTF-8 的读取结果完全相同。纯 "utf-8" 会被 BOM 噎住，
-        # 而下面的 except 会吞掉它，从而悄悄把配置清空。
+        # utf-8-sig：容忍 UTF-8 BOM
         data = json.loads(path.read_text(encoding="utf-8-sig"))
         return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError):
@@ -162,28 +152,21 @@ def _read_json(path: Path) -> dict:
 
 #### 读取已提交的共享配置 <store>/manyread.json [@380kkm 2026-06-05] ####
 def load_shared(store: Path) -> dict:
-    """已提交的共享配置：<store>/manyread.json。"""
     return _read_json(store / "manyread.json")
 
 
 #### 读取每用户的 gitignore 配置 <store>/user/config.json [@380kkm 2026-06-05] ####
 def load_user(store: Path) -> dict:
-    """每用户、被 gitignore 的配置：<store>/user/config.json（可能不存在）。"""
     return _read_json(store / "user" / "config.json")
 
 
 #### view-hide 配置的合法键集合（已提交、共享、视图级、可恢复） [@380kkm 2026-06-05] ####
-# 符号 view-hide 配置记录普遍存在的高扇入噪声（int32 / FString / TArray / 基础类型），
-# 在边界 html 中默认隐藏。它不是破坏性的 enrich `drop`（那会从索引中删除）——
-# 命中的节点仍留在索引、仍留在数据中、仍列在隐藏面板里，只是在加载时被应用为隐藏
-# （可重新启用）。归属：共享的 <store>/manyread.json 中一个已提交的 `view_hide` 键
-# （随仓库迁移；每次运行自动发现）。
 _VIEW_HIDE_KEYS = {"version", "names", "patterns", "min_fan_in"}
 
 
 #### 校验一份 view_hide 文档，返回人类可读的错误列表 [@380kkm 2026-06-05] ####
 def validate_view_hide(vh: dict) -> list[str]:
-    """返回一份 view_hide 文档的人类可读校验错误列表（空 == 合法）。"""
+    """空列表 == 合法。"""
     if not isinstance(vh, dict):
         return ["view_hide must be an object"]
     errs: list[str] = []
@@ -201,15 +184,10 @@ def validate_view_hide(vh: dict) -> list[str]:
 
 #### 解析已提交的符号 view-hide 配置（优先 --ignore 文件） [@380kkm 2026-06-05] ####
 def load_view_hide(store: Path, override_path: Path | None = None) -> dict | None:
-    """解析已提交的符号 view-hide 配置。``None`` => 表现为 v0.6.0。
+    """优先级：``override_path``（--ignore 文件）> ``manyread.json['view_hide']`` > None。
 
-    优先级：``override_path``（--ignore 文件）> ``manyread.json['view_hide']`` > None。
-    读取时宽容：一个 --ignore 文件既可以是 ``{view_hide:{...}}`` 包装形式，也可以是裸的
+    一个 --ignore 文件既可以是 ``{view_hide:{...}}`` 包装形式，也可以是裸的
     ``{names,patterns,min_fan_in}``。结构损坏 => 向 stderr 告警并返回 None。
-
-    显式 --ignore 文件缺失/不可读是一种硬性、可见的状况（大声告警）：用户明确要了一个
-    文件，若悄悄退回 v0.6.0 行为会掩盖错误。而 manyread.json[view_hide] 缺失则保持静默
-    （这是正确的 v0.6.0 行为）。
     """
     import sys
 
@@ -231,9 +209,7 @@ def load_view_hide(store: Path, override_path: Path | None = None) -> dict | Non
     else:
         mr_json = store / "manyread.json"
         if mr_json.is_file():
-            # 区分“存在但不可读/为空”（一次失败的手工合并）与“配置干净但没有
-            # view_hide 键”：导出往返会诱使用户手改 manyread.json，一个语法错误会
-            # 悄悄重置全部共享配置。
+            # 存在但不可读/为空时告警
             shared = _read_json(mr_json)
             if not shared:
                 print(f"manyread: {mr_json} present but unreadable/empty — "
@@ -256,24 +232,12 @@ def load_view_hide(store: Path, override_path: Path | None = None) -> dict | Non
 
 
 #### macro_strip 配置的合法键集合（已提交、共享、解析输入变换） [@380kkm 2026-06-05] ####
-# 针对 c 系（cpp）遍历器的一种保长度的“解析前”变换：剥除 `class|struct <MACRO> <RealName>`
-# 位置上的声明修饰宏 token（导出/可见性/弃用宏：ENGINE_API、BASE_EXPORT、PROTOBUF_EXPORT、
-# CV_EXPORTS、UE_DEPRECATED(5.0) ……），否则 tree-sitter 会把 MACRO 当成类名，并把真名 +
-# 基类列表 + 函数体重新归入一个 ERROR 节点（丢失成员）。空白填充保持字节长度 + 换行，
-# 因此所有下游 span/偏移都不变，且只有喂给 parser.parse() 的本地副本被改写（存储库中
-# 的内容仍为原样）。参见 enrich_treesitter 的 `_strip_decl_macros`。归属：<store>/manyread.json
-# 中一个已提交的 `macro_strip` 键。
-#
-# 默认（键缺失）=> 启用，并使用内置的 `_is_macro_type` 检测器。这与 view_hide 的
-# 缺失=>关闭相反，是有意为之：c 系解析修复是一项正确性改进，应当开箱即用地帮到每个 cpp
-# 项目。用 {"macro_strip": {"enabled": false}} 退出以获得修复前的精确行为。要在既有存储库
-# 上生效，需重新 enrich。
 _MACRO_STRIP_KEYS = {"enabled", "extra_names", "extra_patterns"}
 
 
 #### 校验一份 macro_strip 文档，返回人类可读的错误列表 [@380kkm 2026-06-05] ####
 def validate_macro_strip(ms: dict) -> list[str]:
-    """返回一份 macro_strip 文档的人类可读校验错误列表（空 == 合法）。"""
+    """空列表 == 合法。"""
     if not isinstance(ms, dict):
         return ["macro_strip must be an object"]
     errs: list[str] = []
@@ -296,15 +260,10 @@ def validate_macro_strip(ms: dict) -> list[str]:
 
 #### 解析已提交的 c 系 macro-strip 配置（缺失键时默认启用） [@380kkm 2026-06-05] ####
 def load_macro_strip(store: Path) -> dict:
-    """从 <store>/manyread.json 解析已提交的 c 系 macro-strip 配置。
-
-    键缺失 => {"enabled": True, "extra_names": [], "extra_patterns": []}（通用默认为开；
-    这与 view_hide 的缺失=>关闭相反，是有意为之 —— c 系解析修复应开箱即用地帮到每个
-    cpp 项目）。
+    """键缺失 => {"enabled": True, "extra_names": [], "extra_patterns": []}。
 
     结构损坏 / 正则错误 => 默认 + 向 stderr 告警。未知键 => 告警 + 继续。manyread.json
-    存在但不可读 => 默认 + 告警（与 load_view_hide 对称）。总是返回一个 dict（绝不为
-    None），以便调用方可直接把它传给变换。
+    存在但不可读 => 默认 + 告警。总是返回一个 dict（绝不为 None）。
     """
     import sys
 
@@ -314,8 +273,7 @@ def load_macro_strip(store: Path) -> dict:
         return dict(DEFAULT)
     shared = _read_json(mr_json)
     if not shared:
-        # 存在但不可读/为空（一次失败的手工合并）：按默认处理，但告警以让重置可见
-        # （manyread.json 容易诱使手工编辑）。
+        # 存在但不可读/为空时按默认处理并告警
         if mr_json.stat().st_size > 0:
             print(f"manyread: {mr_json} present but unreadable/empty — "
                   "shared config (incl. macro_strip) ignored, using defaults", file=sys.stderr)
@@ -344,10 +302,9 @@ def load_macro_strip(store: Path) -> dict:
 def init_store(location: Path, alias: str | None = None,
                languages: list[str] | None = None, exts: list[str] | None = None,
                ignore_globs: list[str] | None = None, root: Path | None = None) -> Path:
-    """在 ``location``（默认：cwd）下创建一个全新的 ``manyread/`` 存储库。
+    """写入 manyread.json（共享）+ 子目录骨架 + .gitignore，返回存储库路径。
 
-    写入 manyread.json（共享）+ 子目录骨架 + .gitignore。返回存储库路径。幂等：
-    已存在的文件不会被覆盖。
+    幂等：已存在的文件不会被覆盖。
     """
     store = Path(location).resolve() / STORE_DIRNAME
     paths = _store_paths(store)
@@ -366,8 +323,7 @@ def init_store(location: Path, alias: str | None = None,
             "profile": None,
             "ignore_globs": ignore_globs if ignore_globs is not None else list(DEFAULT_IGNORE_GLOBS),
         }
-        # 与存储库父目录不同的源码根属于每用户、非共享；只有在显式作为共享默认提供时
-        # 才在此记录它。
+        # 仅当显式作为共享默认提供时才记录源码根
         if root is not None:
             payload["root"] = str(root)
         cfg_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -381,7 +337,6 @@ def init_store(location: Path, alias: str | None = None,
 
 #### 写入每用户配置（机器路径 / 覆盖项），被 gitignore [@380kkm 2026-06-05] ####
 def save_user(store: Path, data: dict) -> None:
-    """写入每用户配置（机器路径 / 覆盖项）—— 被 gitignore。"""
     user_cfg = store / "user" / "config.json"
     user_cfg.parent.mkdir(parents=True, exist_ok=True)
     user_cfg.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -389,9 +344,8 @@ def save_user(store: Path, data: dict) -> None:
 
 #### 由存储库 + 源码根解析出一个 ProjectConfig [@380kkm 2026-06-05] ####
 def resolve_project(root: str | None = None, store: str | None = None) -> ProjectConfig:
-    """由存储库 + 源码根解析出一个 ProjectConfig。
+    """store：显式 --store > MANYREAD_STORE 环境变量 > 从 ``root``（若给定）或 cwd 向上查找。
 
-    store：显式 --store > MANYREAD_STORE 环境变量 > 从 ``root``（若给定）或 cwd 向上查找。
     找不到时抛出 SystemError 并给出指引。
     root：显式 --root > user 配置 "root" > shared 配置 "root" > store.parent。
     """
@@ -452,9 +406,6 @@ def resolve_project(root: str | None = None, store: str | None = None) -> Projec
 
 
 #### 每用户 hub（env 目录）：已激活存储库路径的注册表 [@380kkm 2026-06-05] ####
-# hub 刻意只是一个“manyread 在何处激活”的列表（供用户 / Claude 浏览、删除、查找可复用
-# 的存储库）—— 不是被索引的数据，那些数据仍项目本地地留在各自的存储库中。hub 可放在
-# env/home 目录，因为它只装路径。
 def hub_dir() -> Path:
     """每用户 hub 目录：MANYREAD_HOME 环境变量，否则 ~/.manyread。"""
     env = os.environ.get("MANYREAD_HOME")
@@ -468,7 +419,7 @@ def _hub_registry_path() -> Path:
 
 #### 返回 hub 注册表 [@380kkm 2026-06-05] ####
 def list_stores() -> dict:
-    """返回 hub 注册表：{ "<store 绝对路径>": {alias, root, updated} }。"""
+    """形状：{ "<store 绝对路径>": {alias, root, updated} }。"""
     p = _hub_registry_path()
     if not p.exists():
         return {}
@@ -481,7 +432,6 @@ def list_stores() -> dict:
 
 #### 在每用户 hub 注册表中记录（或刷新）一个存储库 [@380kkm 2026-06-05] ####
 def register_store(store: Path, alias: str | None = None, root: Path | None = None) -> None:
-    """在每用户 hub 注册表中记录（或刷新）一个存储库。"""
     reg = list_stores()
     reg[str(Path(store).resolve())] = {
         "alias": alias or "",
@@ -495,7 +445,6 @@ def register_store(store: Path, alias: str | None = None, root: Path | None = No
 
 #### 从 hub 注册表中移除一个存储库（不动磁盘上的存储库） [@380kkm 2026-06-05] ####
 def unregister_store(store: Path) -> bool:
-    """从 hub 注册表中移除一个存储库（不会触碰磁盘上的存储库）。"""
     reg = list_stores()
     key = str(Path(store).resolve())
     if key in reg:
@@ -507,11 +456,9 @@ def unregister_store(store: Path) -> bool:
 
 #### 判断 path 是否为不宜就地放置存储库/索引的系统位置 [@380kkm 2026-06-05] ####
 def is_system_location(path: Path) -> bool:
-    """当 ``path`` 是不宜就地放置存储库 / 索引的位置时返回 True。
+    """覆盖盘符根（C:\\、W:\\、/）、用户家目录，以及家目录正下方的常见外壳文件夹
 
-    覆盖盘符根（C:\\、W:\\、/）、用户家目录，以及家目录正下方的常见外壳文件夹
-    （Desktop/Documents/Downloads/OneDrive）。代理应改为建议一个专用的项目子文件夹，
-    而非直接索引这些位置。
+    （Desktop/Documents/Downloads/OneDrive）。
     """
     p = Path(path).resolve()
     # 文件系统 / 盘符根

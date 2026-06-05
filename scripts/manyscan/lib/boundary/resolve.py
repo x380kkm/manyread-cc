@@ -20,7 +20,7 @@ from .nodes import ambiguous_internal_node, external_node, symbol_node
 from .zoning import DEPENDENCY, TARGET, Zoning, zone_of_path
 
 #### 构成边界的符号关系字母表 [@380kkm 2026-06-05] ####
-# 已排序；不含 contains（结构关系，非依赖）；calls 不在范围内；references 刻意省略
+# 已排序；不含 contains / calls / references
 REL: tuple[str, ...] = ("extends", "implements", "uses_type")
 
 
@@ -39,14 +39,11 @@ class Resolved:
 
 #### 把一条 edges 记录解析到具体目标并记录置信度 [@380kkm 2026-06-05] ####
 def resolve_target(store, row, z: Zoning, alias: str | None = None) -> Resolved:
-    """把一条 edges 记录解析到具体目标，并记录置信度。
-
-    * 设置了 ``dst_symbol_id`` → 该符号，``direct``。
+    """* 设置了 ``dst_symbol_id`` → 该符号，``direct``。
     * 否则按精确名在全局解析 ``dst_name``：
-        - 0 个候选 → ``dep:<name>``，``unresolved``（依赖/缺失）。
+        - 0 个候选 → ``dep:<name>``，``unresolved``。
         - 恰好 1 个 → 该符号，``unique``。
-        - N > 1   → ``dep:<name>`` 且 ``ambiguity=N``，``ambiguous``
-                    （绝不悄悄挑一个 —— C++ 按名解析不可靠）。
+        - N > 1   → ``dep:<name>`` 且 ``ambiguity=N``，``ambiguous``。
     """
     dst_sid = row["dst_symbol_id"]
     if dst_sid is not None:
@@ -61,9 +58,6 @@ def resolve_target(store, row, z: Zoning, alias: str | None = None) -> Resolved:
         return Resolved(f"s{sid}", "unique", 1, symbol_node(store, sid, z, alias))
 
     #### N>1：有歧义 —— 全为目标区则判为内部歧义，否则判为依赖 [@380kkm 2026-06-05] ####
-    # 绝不挑一个。但若每个候选都在目标区（例如目标自身类型的头文件定义 + 前向声明），
-    # 它必定属内部，只是无法锁定到单一符号 → 保留在目标区（不计入依赖边界）。
-    # 只有当某个候选属依赖/混合时，才判为依赖。
     n = len(cands)
     if {zone_of_path(c["path"], z) for c in cands} == {TARGET}:
         return Resolved(f"amb:{name}", "ambiguous", n, ambiguous_internal_node(name, n))
@@ -73,7 +67,6 @@ def resolve_target(store, row, z: Zoning, alias: str | None = None) -> Resolved:
 
 #### 取一个符号的全部边界出边，按总序排列以保证确定性 [@380kkm 2026-06-05] ####
 def out_edges(store, symbol_id: int) -> list[sqlite3.Row]:
-    """取一个符号的全部边界出边，已总序排列以保证确定性。"""
     placeholders = ",".join("?" * len(REL))
     return store.conn.execute(
         "SELECT id, src_symbol_id, dst_symbol_id, dst_name, relation FROM edges "

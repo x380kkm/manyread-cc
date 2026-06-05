@@ -11,8 +11,7 @@ from pathlib import Path
 
 import pytest
 
-# 把 manyscan 目录加入路径，使 ``from lib import ...`` 可解析
-# （合并布局：scripts/manyscan/tests/conftest.py -> parents[1] == scripts/manyscan/）
+# 把 manyscan 目录加入路径
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from lib import stores  # noqa: E402
@@ -61,7 +60,6 @@ def synth_store(tmp_path) -> Path:
 
 
 #### 符号级目标↔依赖边界的文件行：plugin/Foo.cpp 为目标，依赖 engine/{Core.h,Actor.h} [@380kkm 2026-06-05] ####
-# *.uplugin 标记文件驱动目标根自动探测。`Dup` 同时存在于两个依赖文件，用以演练歧义（>1）解析。
 _B_FILES = [
     (1, "plugin/X.uplugin", ".uplugin", "{}"),
     (2, "plugin/Foo.cpp", ".cpp", "class Foo : public Actor {};\n"),
@@ -127,7 +125,6 @@ def boundary_store(tmp_path) -> Path:
 
 
 #### 仅含 C++、files 中无任何模块标记文件的文件行：复刻真实 L1 索引器对 cpp 项目的产物 [@380kkm 2026-06-05] ####
-# 真实 L1 索引器不索引 .uplugin/.Build.cs。此夹具用于锁定 plugin 根自动探测的健全性守卫。
 _NM_FILES = [
     (1, "MyPlugin/Source/Foo.h", ".h", "class Foo : public AActor {};\n"),
     (2, "Engine/Source/Actor.h", ".h", "class AActor {};\n"),
@@ -149,9 +146,6 @@ _NM_EDGES = [
 #### 建一个无 *.uplugin/*.Build.cs 标记被索引的 cpp 存储库（真实索引场景） [@380kkm 2026-06-05] ####
 @pytest.fixture
 def cpp_no_marker_store(tmp_path) -> Path:
-    """此处 ``boundary.has_module_markers`` 必须为 False，使目标根自动探测不可信，
-    CLI 在无显式 --target-root 时必须拒绝。
-    """
     _, mr_db = stores.manyread_lib()
     store = tmp_path / "manyread"
     store.mkdir(parents=True)

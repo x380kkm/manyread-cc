@@ -6,8 +6,8 @@
 
 切片缓存在 ``<store>/manyscan/cache/<key>.json``，其中 ``key`` 对索引指纹
 （manyread ``meta.enriched_at``，缺失时退回 db mtime）+ seed + budget 做哈希。
-manyread 重新索引时 ``enriched_at`` 改变 → 键改变 → 陈旧条目自然落空（无需显式
-失效）。manyread 存储库本身从不写入（只读）；只写入同级的 cache 目录。
+manyread 重新索引时 ``enriched_at`` 改变 → 键改变 → 陈旧条目落空。manyread 存储库
+本身从不写入（只读）；只写入同级的 cache 目录。
 """
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ def put(store: "stores.Store", key: str, data: dict) -> None:
 def cached_scan(store: "stores.Store", seed: str, budget: Budget | None = None,
                 alias: str | None = None, use_cache: bool = True) -> tuple[dict, bool]:
     """返回 ``(graph_dict, hit)`` —— 新鲜则给缓存切片，否则计算并存储。"""
-    # 局部 import 保持模块依赖图无环
+    # 局部 import
     from lib import render, scope
 
     budget = budget or Budget()

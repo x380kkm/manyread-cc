@@ -1,22 +1,10 @@
-"""ASSET->SOURCE 跨层链接器（scripts/link_source.py）的回归测试。
-
-自包含且快速：两个输入存储库都经 manyread 自带的 ``db.init_schema`` 用直接 SQL
-INSERT 构建（沿用 conftest 的 ``boundary_store`` 写法）—— 不走 tree-sitter，不走
-index/enrich。本套测试针对链接器的置信度逻辑（解析器本身已由 test_enrich_query 覆盖）。
-使用真实的样例 schema（scripts/schemas/matlang.sample.json）。以 MANYREAD_HOME=tmp
-完全隔离。
-
-须在 scripts/ 目录下运行（无需 tree-sitter）::
-
-    cd scripts && uv run --python 3.12 --with pytest -m pytest tests/test_link_source.py -q
-"""
+"""ASSET->SOURCE 跨层链接器（scripts/link_source.py）的回归测试。"""
 import json
 import os
 import sys
 from pathlib import Path
 
-# 把 scripts/ 加入路径，使 ``import link_source`` 能解析；link_source 自身会再把
-# scripts/manyscan 加入路径以接入存储库层。
+# 把 scripts/ 加入路径
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), "..")))
 
 import link_source as L  # noqa: E402
@@ -27,11 +15,6 @@ SCHEMA = os.path.normpath(
 
 
 #### 模拟 CODE 存储库：桩 C++ 类符号 [@380kkm 2026-06-05] ####
-# UMaterialExpressionMultiply（'multiply' 唯一命中），
-# UMaterialExpressionConstant（'constant' 唯一命中），
-# UMaterial（经 U- 前缀作为 'material' 根的唯一命中），
-# UMaterialExpressionScalarParameter 在两个文件中重复（歧义(2)），
-# 并刻意省略 UMaterialExpressionFresnel（'fresnel' 解析失败）。
 _CODE_FILES = [
     (1, "engine/Mul.h", ".h", "class UMaterialExpressionMultiply {};\n"),
     (2, "engine/Const.h", ".h", "class UMaterialExpressionConstant {};\n"),
@@ -52,8 +35,6 @@ _CODE_SYMS = [
 #### /模拟 CODE 存储库 ####
 
 #### DSL 存储库：matlang 节点行 + 一个 material 根 [@380kkm 2026-06-05] ####
-# 每个节点携带 attrs {"node_type": ...}。'panner' 不在样例 schema 中（无 classPath）。
-# material 根 kind='material'，attrs={}（无 node_type）。
 _DSL_FILES = [
     (1, "M_Test.matlang", ".matlang", "(material M_Test ...)\n"),
 ]
@@ -130,7 +111,6 @@ import pytest  # noqa: E402
 #### 夹具：隔离的 MANYREAD_HOME + 各自目录下的 code 与 DSL 存储库 [@380kkm 2026-06-05] ####
 @pytest.fixture
 def stores_pair(tmp_path, monkeypatch):
-    """隔离的 MANYREAD_HOME，外加各自目录下的一个 code 存储库与一个 DSL 存储库。"""
     monkeypatch.setenv("MANYREAD_HOME", str(tmp_path / "hub"))
     code_db = _build_code_store(tmp_path / "code")
     dsl_db = _build_dsl_store(tmp_path / "dsl")
@@ -223,9 +203,6 @@ def test_material_root_resolved_unique(stores_pair):
 
 #### 测试 code_lang 过滤使跨语言同名符号不破坏唯一解析 [@380kkm 2026-06-05] ####
 def test_code_lang_filter_keeps_unique(tmp_path, monkeypatch):
-    """共享同一 ReflectedName 的跨语言 class-kind 符号不得把 'cpp' 解析翻成歧义
-    （审计修复：resolve_class 按 code_lang 过滤）。当 code_lang=None（跨所有语言解析）时它
-    确会变成歧义，由此证明正是语言切分保护了默认的 'cpp' 解析。"""
     monkeypatch.setenv("MANYREAD_HOME", str(tmp_path / "hub"))
     _, mr_db = L.stores.manyread_lib()
     store = tmp_path / "code2" / "manyread"
@@ -282,8 +259,6 @@ def test_summary_counts(stores_pair):
 
 #### 测试顶层溯源路径做反斜杠归一化、报告跨平台逐字节可移植 [@380kkm 2026-06-05] ####
 def test_toplevel_paths_normalized(stores_pair):
-    """顶层溯源路径做反斜杠归一化 -> 整份报告跨操作系统逐字节可移植，而非仅解析的 loc
-    可移植（审计修复 #2）。"""
     dsl_db, code_db = stores_pair
     rep = L.link(str(dsl_db), str(code_db), SCHEMA)
     for k in ("dsl_store", "code_store", "schema"):
@@ -340,11 +315,8 @@ def test_cli_exit_codes(stores_pair, capsys):
     assert rc2 == 2
 
 
-#### 显式 span 的存储库构造器：用于定义优先（v0.8.6） [@380kkm 2026-06-05] ####
-# 接受显式 span，从而能在一堆前向声明（极小 span）中植入一个真实定义（大 span）——
-# 上面的桩存储库 span 均为 1，无法触发此路径。
+#### 显式 span 的存储库构造器：用于定义优先 [@380kkm 2026-06-05] ####
 def _build_store(tmp: Path, files, syms, lang: str) -> Path:
-    """files: [(fid, path)]；syms: [(sid, fid, name, kind, start_byte, end_byte, attrs)]。"""
     _, mr_db = L.stores.manyread_lib()
     store = tmp / "manyread"
     store.mkdir(parents=True)
@@ -368,8 +340,6 @@ def _build_store(tmp: Path, files, syms, lang: str) -> Path:
 
 #### 测试定义（大 span）优先于多个前向声明并唯一命中 [@380kkm 2026-06-05] ####
 def test_definition_preferred_over_forward_declarations(tmp_path, monkeypatch):
-    """1 个定义（大 span）+ N 个前向声明（极小 span）-> 定义胜出，唯一命中。这是真实引擎的
-    模式：UMaterialExpressionX 在许多头文件中被前向声明，只有定义带主体。"""
     monkeypatch.setenv("MANYREAD_HOME", str(tmp_path / "hub"))
     code = _build_store(tmp_path / "code",
         [(1, "engine/Mul.h"), (2, "a/A.h"), (3, "b/B.h"), (4, "c/C.h")],
@@ -390,8 +360,6 @@ def test_definition_preferred_over_forward_declarations(tmp_path, monkeypatch):
 
 #### 测试仅有前向声明时保留全部并维持歧义 [@380kkm 2026-06-05] ####
 def test_only_forward_declarations_stay_ambiguous(tmp_path, monkeypatch):
-    """当只索引到前向声明（该名下无定义 —— 真实的 UMaterial 反常情形）时，保留它们并以歧义
-    呈现，而非隐藏。"""
     monkeypatch.setenv("MANYREAD_HOME", str(tmp_path / "hub"))
     code = _build_store(tmp_path / "code", [(1, "a/A.h"), (2, "b/B.h")],
         [(1, 1, "UMaterial", "class", 0, 15, None),

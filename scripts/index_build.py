@@ -49,7 +49,7 @@ DEFAULT_EXTS: list[str] = sorted(
     {ext for exts in config.LANG_EXTS.values() for ext in exts} | {".md"}
 )
 
-#### 单文件内容字节上限，防止超大 / 二进制文件撑爆 db [@380kkm 2026-06-05] ####
+#### 单文件内容字节上限 [@380kkm 2026-06-05] ####
 # 4 MiB
 MAX_FILE_BYTES = 4 * 1024 * 1024
 
@@ -71,11 +71,6 @@ def is_git_repo(root: Path) -> bool:
 
 #### 经 git ls-files 枚举「已跟踪 + 未跟踪但未被忽略」的文件 [@380kkm 2026-06-05] ####
 def enumerate_git(root: Path) -> list[Path]:
-    """经 ``git ls-files`` 枚举已跟踪 + 未跟踪但未被忽略的文件。
-
-    使用 --cached --others --exclude-standard，使新加入（但未被忽略）的文件
-    可见，同时跳过被 .gitignore 的文件。
-    """
     out = subprocess.run(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
         cwd=str(root),
@@ -163,8 +158,7 @@ def build(cfg: config.ProjectConfig, rebuild: bool) -> dict:
 
     conn = db.connect(db_path)
     try:
-        # init_schema 建立 files/files_fts，并建立空的 symbols/edges/meta 表
-        # 供 L2 后续填充。
+        # 建立 files/files_fts 与空的 symbols/edges/meta 表
         db.init_schema(conn)
 
         #### 写入 files + files_fts [@380kkm 2026-06-05] ####
@@ -218,11 +212,6 @@ def build(cfg: config.ProjectConfig, rebuild: bool) -> dict:
 
 #### 按复制重用：把既有存储库的索引 + refs + traces 拷入目标 [@380kkm 2026-06-05] ####
 def _copy_store_data(src_store: Path, dst_store: Path) -> list[str]:
-    """按复制重用：把既有存储库的 index + refs + traces 拷入 dst。
-
-    始终是字面拷贝（绝不建链接），使删除源不会影响副本 —— 例如多个游戏项目
-    共享同一个已索引的引擎。
-    """
     copied: list[str] = []
     src_db = src_store / "source.db"
     if src_db.exists():

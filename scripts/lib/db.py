@@ -13,7 +13,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-# spec 第 6 节给出的确切 schema
+#### spec 第 6 节给出的确切 schema [@380kkm 2026-06-05] ####
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -70,10 +70,7 @@ CREATE INDEX IF NOT EXISTS idx_edges_rel ON edges(relation);
 
 #### 打开项目数据库的 sqlite 连接（并创建父目录） [@380kkm 2026-06-05] ####
 def connect(path: str | Path) -> sqlite3.Connection:
-    """打开到项目数据库的 sqlite 连接（必要时创建父目录）。
-
-    传入 ":memory:" 可得到内存数据库（自测用）。
-    """
+    """传入 ":memory:" 可得到内存数据库。"""
     if str(path) != ":memory:":
         Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
@@ -83,13 +80,6 @@ def connect(path: str | Path) -> sqlite3.Connection:
 
 #### 从 SCHEMA_SQL 建立所有表与索引（幂等） [@380kkm 2026-06-05] ####
 def init_schema(conn: sqlite3.Connection) -> None:
-    """从 SCHEMA_SQL 创建所有表与索引（幂等）。
-
-    同时迁移已存在的旧库：symbols 表新增了 attrs 与 provenance 列
-    （spec 第 16 节，override-rules 层）。sqlite 没有
-    `ADD COLUMN IF NOT EXISTS`，故通过 PRAGMA table_info 检查并仅补齐
-    缺失的列，保持旧数据库向后兼容。
-    """
     conn.executescript(SCHEMA_SQL)
     _migrate_symbol_columns(conn)
     conn.commit()

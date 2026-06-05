@@ -13,8 +13,6 @@
   * ``bridges``   —— 移除后会切开 graph 的边（待切的候选缝）。
   * ``cut_nodes`` —— 移除后会切开 graph 的关节节点（脆弱的枢纽）。
   * ``layers``    —— 拓扑分层（``leftover`` = 缠在 cycle 里的节点）。
-
-所有连通性检查都是精确的，且运行在“有界”切片上，因此开销很小。
 """
 from __future__ import annotations
 
@@ -55,7 +53,6 @@ class Metrics:
 
 #### 计算逐节点耦合度量，按最不稳定 / 被依赖最多优先排序 [@380kkm 2026-06-05] ####
 def node_metrics(g: Graph) -> list[NodeMetric]:
-    """逐节点耦合度量，按最不稳定 / 被依赖最多优先排序。"""
     out: list[NodeMetric] = []
     for nid, node in g.nodes.items():
         ca = len({p for p in g.predecessors(nid) if p != nid})
@@ -68,7 +65,7 @@ def node_metrics(g: Graph) -> list[NodeMetric]:
 
 #### 找出真正构成 cycle 的强连通分量 [@380kkm 2026-06-05] ####
 def cycles(g: Graph) -> list[list[str]]:
-    """构成真正 cycle 的 SCC（>1 个节点，或带自环的单节点）。"""
+    """>1 个节点、或带自环的单节点，方计入。"""
     self_loops = {e.src for e in g.edges if e.src == e.dst}
     return [c for c in graph.scc(g) if len(c) > 1 or (len(c) == 1 and c[0] in self_loops)]
 
@@ -111,10 +108,7 @@ def _count_components(nodes, adj, skip_node=None, remove_pair=None) -> int:
 
 #### 找出移除后会增加连通分量数的边（无向桥） [@380kkm 2026-06-05] ####
 def bridges(g: Graph) -> list[tuple[str, str, str]]:
-    """移除后会增加连通分量数的边（无向桥）。
-
-    一对节点间的平行边永远不是桥（移除其一仍保留连接），因此只测试唯一连接的边。
-    """
+    """一对节点间的平行边永远不是桥，故只测试唯一连接的边。"""
     adj = _undirected_adj(g)
     nodes = list(g.nodes)
     mult: Counter = Counter(frozenset((e.src, e.dst)) for e in g.edges if e.src != e.dst)
@@ -130,7 +124,6 @@ def bridges(g: Graph) -> list[tuple[str, str, str]]:
 
 #### 找出移除后会增加连通分量数的关节节点 [@380kkm 2026-06-05] ####
 def cut_nodes(g: Graph) -> list[str]:
-    """关节节点：移除其一会增加连通分量数。"""
     adj = _undirected_adj(g)
     nodes = list(g.nodes)
     base = _count_components(nodes, adj)
@@ -139,7 +132,7 @@ def cut_nodes(g: Graph) -> list[str]:
 
 #### 按拓扑序把节点分到各层，cycle 节点归为 leftover [@380kkm 2026-06-05] ####
 def layers(g: Graph) -> tuple[list[list[str]], list[str]]:
-    """拓扑分层（层号 = 1 + 前驱最大层号）；leftover = cycle 节点。"""
+    """层号 = 1 + 前驱最大层号；leftover = cycle 节点。"""
     order, leftover = graph.toposort(g)
     layer: dict[str, int] = {}
     for nid in order:
@@ -153,7 +146,6 @@ def layers(g: Graph) -> tuple[list[list[str]], list[str]]:
 
 #### 装配某 graph 切片的完整重构支持度量集 [@380kkm 2026-06-05] ####
 def metrics(g: Graph) -> Metrics:
-    """装配某 graph 切片的完整重构支持度量集。"""
     nms = node_metrics(g)
     cy = cycles(g)
     br = bridges(g)

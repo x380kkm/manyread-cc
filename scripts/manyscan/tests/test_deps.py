@@ -5,7 +5,6 @@ from lib import deps, stores
 
 
 #### 测试 Python import 抽取（import / as / from） [@380kkm 2026-06-05] ####
-# 纯抽取，不依赖存储库
 def test_extract_python():
     src = "import os\nimport pkg.a as a, pkg.b  # c\nfrom pkg.c import C\n"
     refs = deps.extract_imports(src, ".py")
@@ -48,7 +47,6 @@ def test_family_unknown_ext():
 
 
 #### 测试在真实 schema 存储库上取某文件的 import [@380kkm 2026-06-05] ####
-# 基于真实 schema 存储库（合成夹具：pkg/a 导入 pkg.b + pkg.c）
 def test_file_imports_over_store(synth_store):
     with stores.Store(synth_store) as st:
         # pkg/a.py
@@ -76,7 +74,6 @@ def test_resolve_edge_targets_global(synth_store):
 
 #### 自定义 span 存储库：用于定义优先（存在定义时丢弃前向声明） [@380kkm 2026-06-05] ####
 def _store_with_spans(tmp_path, syms):
-    """syms: [(id, path, name, start_byte, end_byte)] —— 全部 kind=class、lang cpp。"""
     _, mr_db = stores.manyread_lib()
     store = tmp_path / "manyread"
     store.mkdir(parents=True)
@@ -119,7 +116,6 @@ def test_resolve_prefers_definition_over_forward_declarations(tmp_path):
 
 #### 测试仅有前向声明时保留全部、维持歧义 [@380kkm 2026-06-05] ####
 def test_resolve_keeps_all_when_only_forward_declarations(tmp_path):
-    # 该名下无定义 -> 诚实保留全部（维持歧义）
     db = _store_with_spans(tmp_path, [
         (1, "a/A.h", "UThing", 0, 12),
         (2, "b/B.h", "UThing", 0, 12),

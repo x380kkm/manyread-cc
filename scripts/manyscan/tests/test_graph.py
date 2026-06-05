@@ -7,8 +7,6 @@ from lib.graph import Budget, Edge, Graph, Node, Step
 
 #### 由邻接字典构造 expand(node_id)->Steps 回调 [@380kkm 2026-06-05] ####
 def _make_expand(adj: dict[str, list[str]]):
-    """由一个普通的邻接字典构造 expand(node_id)->Steps 回调。"""
-
     #### 对单个节点逐个产出指向其后继的 Step（边 + 目标节点） [@380kkm 2026-06-05] ####
     def expand(nid: str):
         for nxt in adj.get(nid, []):
@@ -107,8 +105,7 @@ def test_bfs_seed_cap():
 
 #### 宽层时提前停止枚举仍保持有界（下一层不被部分纳入） [@380kkm 2026-06-05] ####
 def test_bfs_early_stop_on_wide_level_stays_bounded():
-    # 第 1 层放得下（10 个孩子）；第 2 层会溢出 -> 整层放弃，且 frontier
-    # 枚举提前停止（限制内存）而不破坏上限。
+    # 第 1 层放得下，第 2 层会溢出 -> 整层放弃，frontier 枚举提前停止
     adj = {"s": [f"a{i}" for i in range(10)]}
     for i in range(10):
         adj[f"a{i}"] = [f"b{i}"]

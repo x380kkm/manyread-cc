@@ -29,15 +29,8 @@ from types import ModuleType
 
 #### 解析 manyread 插件的 scripts/ 目录（兼容性骨架的所在） [@380kkm 2026-06-05] ####
 def manyread_scripts_dir() -> Path:
-    """解析 manyread 插件的 ``scripts/`` 目录（其中含 ``lib/config.py``）。
-
-    优先遵从 ``MANYSCAN_MANYREAD`` 覆盖（插件根或其 ``scripts/``）；否则按文档化的缓存
-    glob ``~/.claude/plugins/cache/*/manyread/*/scripts`` 选取版本号最高的已安装插件。
-    """
-    # 插件内（已并入 manyread）：manyread 的 lib 是位于 scripts/lib 的同级目录。
-    # 本文件是 scripts/manyscan/lib/stores.py，故 parents[2] == scripts/。
-    # 此同仓分支是正常路径；下面的 env + cache-glob 仅作为从独立 checkout 运行 manyscan
-    # 时的回退。
+    """优先遵从 ``MANYSCAN_MANYREAD`` 覆盖,否则取缓存 glob 中版本号最高的已安装插件。"""
+    # 同仓内 manyread 的 lib 位于 parents[2]/lib
     in_plugin = Path(__file__).resolve().parents[2]
     if not os.environ.get("MANYSCAN_MANYREAD") and (in_plugin / "lib" / "config.py").is_file():
         return in_plugin
@@ -62,9 +55,7 @@ def _load_module(name: str, path: Path) -> ModuleType:
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load {name} from {path}")
     mod = importlib.util.module_from_spec(spec)
-    # 在 exec 之前注册：dataclasses + `from __future__ import annotations` 会经
-    # sys.modules[cls.__module__] 解析字符串注解，故类体执行期间该模块必须已在
-    # sys.modules 中。
+    # 在 exec 之前注册到 sys.modules
     sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
@@ -75,11 +66,7 @@ _MR: dict[str, ModuleType] = {}
 
 #### 返回 manyread 的 (config, db) 模块（加载一次并缓存） [@380kkm 2026-06-05] ####
 def manyread_lib() -> tuple[ModuleType, ModuleType]:
-    """返回 manyread 的 ``(config, db)`` 模块，加载一次并缓存。
-
-    按文件路径以别名化的名字加载，使 manyscan 自己的 ``lib`` 包永不被遮蔽。
-    ``config.py`` / ``db.py`` 仅依赖标准库且自包含。
-    """
+    """按文件路径以别名化的名字加载。"""
     if "config" not in _MR:
         libdir = manyread_scripts_dir() / "lib"
         _MR["config"] = _load_module("manyread_config", libdir / "config.py")
@@ -109,7 +96,6 @@ def _info_from_store_dir(store: Path, alias: str | None = None, root: Path | Non
 
 #### 列出 manyread hub 中注册的所有存储库 [@380kkm 2026-06-05] ####
 def list_stores() -> list[StoreInfo]:
-    """manyread hub（``~/.manyread/stores.json``）中注册的所有存储库。"""
     mr_config, _ = manyread_lib()
     out = [
         _info_from_store_dir(Path(s), info.get("alias"), info.get("root"))
@@ -121,11 +107,7 @@ def list_stores() -> list[StoreInfo]:
 
 #### 从 --store/--root 或 hub 别名解析单个存储库 [@380kkm 2026-06-05] ####
 def resolve(store: str | None = None, root: str | None = None) -> StoreInfo:
-    """从显式的 ``--store``/``--root`` 或一个 hub 别名解析出单个存储库。
-
-    委托给 manyread 的 ``resolve_project``，使发现语义保持一致；裸别名（非已存在的
-    路径）会与 hub 做匹配。
-    """
+    """委托给 manyread 的 ``resolve_project``;裸别名(非已存在的路径)与 hub 做匹配。"""
     if store:
         sp = Path(store)
         # 当作 hub 别名
@@ -146,7 +128,6 @@ def resolve(store: str | None = None, root: str | None = None) -> StoreInfo:
 
 #### manyread source.db 的只读句柄（files/symbols/edges/meta） [@380kkm 2026-06-05] ####
 class Store:
-    """对 manyread ``source.db``（files/symbols/edges/meta）的只读句柄。"""
 
     #### 以只读模式打开 source.db [@380kkm 2026-06-05] ####
     def __init__(self, db_path: Path | str):
@@ -219,7 +200,6 @@ class Store:
 
     #### 遍历文件行 (id, path, ext, size)，可按扩展名集合过滤 [@380kkm 2026-06-05] ####
     def iter_files(self, exts: set[str] | None = None) -> Iterator[sqlite3.Row]:
-        """逐个产出 (id, path, ext, size) 行，可选地过滤到 ``exts``（带点）。"""
         for row in self.conn.execute("SELECT id, path, ext, size FROM files ORDER BY path"):
             if exts is None or (row["ext"] or "").lower() in exts:
                 yield row
@@ -235,7 +215,6 @@ class Store:
     #### 按精确名跨所有文件查找符号（供跨文件边解析） [@380kkm 2026-06-05] ####
     def symbols_named(self, name: str, kinds: set[str] | None = None,
                       limit: int = 500) -> list[sqlite3.Row]:
-        """跨所有文件的精确名符号查找（供跨文件边解析）。"""
         if kinds:
             placeholders = ",".join("?" * len(kinds))
             return self.conn.execute(

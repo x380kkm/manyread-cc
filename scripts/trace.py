@@ -73,21 +73,18 @@ DEFAULT_STALE_DAYS = 30
 
 #### 从命令行参数解析项目配置（即定位存储库） [@380kkm 2026-06-05] ####
 def _cfg(args: argparse.Namespace) -> config.ProjectConfig:
-    """从命令行参数解析项目配置（并由此确定存储库）。"""
     return config.resolve_project(root=getattr(args, "root", None),
                                   store=getattr(args, "store", None))
 
 
 #### 返回本存储库的轨迹数据库路径 [@380kkm 2026-06-05] ####
 def trace_path(cfg: config.ProjectConfig) -> Path:
-    """本存储库的轨迹数据库: <store>/short/traces/trace.db（临时、被 gitignore）。"""
     cfg.short_traces_dir.mkdir(parents=True, exist_ok=True)
     return cfg.short_traces_dir / "trace.db"
 
 
 #### 打开存储库的轨迹数据库并确保 schema 就绪 [@380kkm 2026-06-05] ####
 def connect(cfg: config.ProjectConfig):
-    """打开存储库的轨迹数据库（按需创建父目录）并确保 schema 已建立。"""
     conn = db.connect(trace_path(cfg))
     conn.executescript(TRACE_SCHEMA_SQL)
     conn.commit()
@@ -108,7 +105,6 @@ def parse_files_arg(files: str | None) -> list[str]:
 
 #### 为给定路径采集 [{path, mtime, size}] 文件状态 [@380kkm 2026-06-05] ####
 def capture_file_state(paths: list[str], cfg: config.ProjectConfig) -> list[dict]:
-    """为给定（相对根目录或绝对）路径采集 [{path, mtime, size}] 文件状态。"""
     state: list[dict] = []
     for raw in paths:
         p = raw.strip()
@@ -126,7 +122,6 @@ def capture_file_state(paths: list[str], cfg: config.ProjectConfig) -> list[dict
 
 #### 把记录的路径解析为可 stat 的当前路径（绝对或相对根目录） [@380kkm 2026-06-05] ####
 def _resolve_for_state(path_str: str, cfg: config.ProjectConfig) -> Path:
-    """把记录的路径解析为可对当前状态 stat 的路径（绝对，或相对根目录）。"""
     p = Path(path_str)
     if p.exists():
         return p
@@ -137,9 +132,7 @@ def _resolve_for_state(path_str: str, cfg: config.ProjectConfig) -> Path:
 #### 判定动态轨迹行是否陈旧并给出原因 [@380kkm 2026-06-05] ####
 def is_stale(row_kind: str, valid_date: str | None, file_state: str | None,
              cfg: config.ProjectConfig, stale_days: int) -> tuple[bool, str]:
-    """返回某动态轨迹行的 (是否陈旧, 原因)。static 行永不陈旧。
-
-    参数:
+    """参数:
         row_kind: 轨迹类别（static 或 dynamic）。
         valid_date: 该行的有效日期（ISO 字符串），用于年龄判定。
         file_state: 记录的文件状态 json 字符串。

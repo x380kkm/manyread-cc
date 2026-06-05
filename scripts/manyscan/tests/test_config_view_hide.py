@@ -2,8 +2,7 @@
 
 覆盖 validate_view_hide 的结构性检查、load_view_hide 的优先级
 （--ignore 覆盖 > manyread.json['view_hide'] > None）、包裹式或裸式的 --ignore 文件，
-以及“显式失败响亮、隐式缺省静默”的契约（缺失/畸形的显式 --ignore 会告警；缺失已提交的键
-是 v0.6.0 的静默行为）。
+以及缺失/畸形的显式 --ignore 告警。
 """
 from __future__ import annotations
 
@@ -20,7 +19,6 @@ def _cfg():
 
 #### 构造带 manyread.json（可选携带 view_hide 键）的裸存储库目录 [@380kkm 2026-06-05] ####
 def _store(tmp_path, view_hide=None, *, write_json=True, raw=None):
-    """一个裸存储库目录，含一份 manyread.json（可选携带 view_hide 键）。"""
     store = tmp_path / "manyread"
     store.mkdir(parents=True, exist_ok=True)
     if raw is not None:
@@ -114,8 +112,7 @@ def test_load_view_hide_missing_ignore_file_warns_loud(tmp_path, capsys):
 #### 测试未知键告警但仍按其余有效键继续 [@380kkm 2026-06-05] ####
 def test_load_view_hide_unknown_key_warns_but_proceeds(tmp_path, capsys):
     cfg = _cfg()
-    # 'name' 拼写错误（应为 'names'）：校验通过却会静默地什么都不隐藏；我们告警以使
-    # 持久化循环的失败可见。min_fan_in 仍然生效。
+    # 'name' 拼写错误（应为 'names'）：校验通过但不隐藏任何项；min_fan_in 仍生效
     store = _store(tmp_path, view_hide={"name": ["FString"], "min_fan_in": 10})
     got = cfg.load_view_hide(store)
     assert got is not None and got.get("min_fan_in") == 10

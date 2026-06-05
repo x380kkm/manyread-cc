@@ -71,7 +71,6 @@ def test_scan_unresolved_is_empty(synth_store):
 
 #### 测试真实引擎存储库上的有界铁律（结果 <= 预算） [@380kkm 2026-06-05] ####
 def test_expand_bounded_on_engine_store():
-    """在真实的 265 万符号引擎存储库上验证有界铁律：结果 <= 预算。"""
     info = next((s for s in stores.list_stores() if s.alias == "NS_UE_5_6_1"), None)
     if info is None or not info.db_path.is_file():
         pytest.skip("NS_UE_5_6_1 store not present")

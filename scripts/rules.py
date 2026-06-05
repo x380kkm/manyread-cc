@@ -61,7 +61,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # 按约定:在调整 sys.path 之后再 import
-from lib import config  # noqa: E402  (import after sys.path tweak, per convention)
+from lib import config  # noqa: E402
 
 
 # 内置预设所在目录:<repo>/presets/<name>.rules.json(本文件位于 <repo>/scripts/rules.py)
@@ -82,19 +82,17 @@ _SLICE_WINDOW = 256
 
 #### 对原始抽取结果施加 override 规则(纯函数) [@380kkm 2026-06-05] ####
 def apply_rules(rows, edges, content_by_file_id, rules):
-    """对原始抽取输出施加 override 规则。纯函数:无 DB、无 IO。
-
-    Args:
-      rows:  list[dict] 符号行(见模块 docstring / 共享契约)。
+    """Args:
+      rows:  list[dict] 符号行。
       edges: list[dict] 边,通过 _local 引用 rows。
       content_by_file_id: dict[int, str] 每个 file_id 对应的整文件文本。
       rules: list[dict] 合并后的规则列表(预设 + 项目),按顺序。
 
     Returns:
       (rows, edges, provenance),其中 provenance 为 {rule_id: [被改动的 local id]}。
-      当 rules == [] 时原样返回输入(为安全起见做了深拷贝)。
+      当 rules == [] 时原样返回输入。
     """
-    # 总是在副本上工作,使引擎对调用方无副作用
+    # 在副本上工作
     rows = [copy.deepcopy(r) for r in rows]
     edges = [copy.deepcopy(e) for e in edges]
     content_by_file_id = content_by_file_id or {}
@@ -138,12 +136,6 @@ def apply_rules(rows, edges, content_by_file_id, rules):
 
 #### 把 when 子句编译成 行->bool 谓词 [@380kkm 2026-06-05] ####
 def _compile_when(when):
-    """从 ``when`` 子句返回一个谓词 row->bool。
-
-    按 lang(精确)、kind(精确)、name_regex(对 name 做 re.fullmatch)、path_glob
-    (若 row 存在 'path' 则对其做 fnmatch;否则为可选的 no-op)进行匹配。空的 ``when``
-    匹配每一行。
-    """
     lang = when.get("lang")
     kind = when.get("kind")
     name_regex = when.get("name_regex")
@@ -159,8 +151,7 @@ def _compile_when(when):
         if name_re is not None and not name_re.fullmatch(row.get("name") or ""):
             return False
         if path_glob is not None:
-            # path 在 row dict 中是可选的;若取不到则视为 no-op
-            # (不排除),从而 path_glob 绝不会无声地丢弃一切
+            # path 可选,取不到时视为 no-op 不排除
             path = row.get("path")
             if path is not None and not fnmatch.fnmatch(path, path_glob):
                 return False
@@ -173,26 +164,22 @@ def _compile_when(when):
 
 #### 按规则的 action 改动一行,返回是否被改动 [@380kkm 2026-06-05] ####
 def _apply_action(row, rule, action, content_by_file_id) -> bool:
-    """按规则的 action 改动 ``row``;若该行被改动返回 True。"""
     if action == "rename_to_next_identifier":
         return _action_rename(row, rule, content_by_file_id)
     if action == "set_attr":
         return _action_set_attr(row, rule)
     if action == "drop":
-        # 由调用方记录并移除该行
+        # 由调用方移除该行
         return True
     if action == "reclassify":
         return _action_reclassify(row, rule)
-    # 未知 action:保持该行不变(validate() 会捕获这类问题)
+    # 未知 action:保持该行不变
     return False
 #### /按规则的 action 改动一行 ####
 
 
 #### rename action：取下一个标识符作为修正名 [@380kkm 2026-06-05] ####
 def _action_rename(row, rule, content_by_file_id) -> bool:
-    """切片 content[start_byte : start_byte+256],可选地跳过一个匹配 skip_token_regex
-    的 token,然后取下一个 C 标识符作为修正后的名字。匹配成功时:重命名并合并 ``set``
-    属性。当且仅当发生重命名时返回 True。"""
     content = content_by_file_id.get(row.get("file_id"))
     if content is None:
         return False
@@ -217,9 +204,8 @@ def _action_rename(row, rule, content_by_file_id) -> bool:
         return False
     new_name = m_ident.group(0)
     if not new_name or new_name == row.get("name"):
-        # 没有可用的下一个标识符(或它与原名相同):保持不变
+        # 无下一个标识符或与原名相同:保持不变
         if new_name == row.get("name"):
-            # 仍要合并 set 属性吗?不——契约规定:仅在真正重命名时才合并
             return False
         return False
 
@@ -231,14 +217,12 @@ def _action_rename(row, rule, content_by_file_id) -> bool:
 
 #### set_attr action：把 set 合并进 row 的 attrs [@380kkm 2026-06-05] ####
 def _action_set_attr(row, rule) -> bool:
-    """把 rule['set'] 合并进 row['attrs']。当且仅当有任何改动时返回 True。"""
     return _merge_set(row, rule.get("set"))
 #### /set_attr action ####
 
 
 #### reclassify action：改写 row 的 kind [@380kkm 2026-06-05] ####
 def _action_reclassify(row, rule) -> bool:
-    """设置 row['kind'] = rule['to_kind']。当且仅当 kind 发生改变时返回 True。"""
     to_kind = rule.get("to_kind")
     if not to_kind or row.get("kind") == to_kind:
         return False
@@ -249,7 +233,6 @@ def _action_reclassify(row, rule) -> bool:
 
 #### 把 set 映射合并进 row 的 attrs [@380kkm 2026-06-05] ####
 def _merge_set(row, set_map) -> bool:
-    """把一张 ``set`` 映射合并进 row['attrs'];当且仅当有值改变时返回 True。"""
     if not set_map:
         return False
     attrs = row.setdefault("attrs", {})
@@ -264,7 +247,6 @@ def _merge_set(row, set_map) -> bool:
 
 #### 记录某规则改动了某行的 provenance [@380kkm 2026-06-05] ####
 def _mark(row, provenance, rule_id) -> None:
-    """记录 rule_id 改动了该行,同时写入该行和 provenance 映射两处。"""
     prov = row.setdefault("provenance", [])
     if rule_id not in prov:
         prov.append(rule_id)
@@ -277,7 +259,6 @@ def _mark(row, provenance, rule_id) -> None:
 
 #### 读取并 JSON 解析一个规则/预设文件 [@380kkm 2026-06-05] ####
 def _read_rules_file(path: Path) -> dict:
-    """读取并 JSON 解析一个规则/预设文件。JSON 非法时抛 ValueError。"""
     try:
         return json.loads(Path(path).read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -287,7 +268,6 @@ def _read_rules_file(path: Path) -> dict:
 
 #### 定位 <name>.rules.json 预设文件 [@380kkm 2026-06-05] ####
 def _find_preset(name: str, search_dirs: list[Path]) -> Path | None:
-    """先在内置目录、再在额外目录中定位 <name>.rules.json。"""
     fname = f"{name}.rules.json"
     for d in [BUILTIN_PRESET_DIR, *search_dirs]:
         cand = Path(d) / fname
@@ -305,11 +285,6 @@ def _collect_preset_rules(
     seen: set[str],
     acc: list[dict],
 ) -> None:
-    """递归地把 extends_presets 中的规则按预设顺序收集进 ``acc``。
-
-    ``doc`` 内声明的 preset_dirs 在非绝对路径时相对于 base_dir(声明它们的文件所在
-    目录)解析,并加入搜索路径。内置目录始终最先被搜索(见 _find_preset)。
-    """
     declared = doc.get("preset_dirs") or []
     resolved_dirs: list[Path] = []
     for d in declared:
@@ -321,7 +296,7 @@ def _collect_preset_rules(
 
     for name in doc.get("extends_presets") or []:
         if name in seen:
-            # 防止循环 / 重复
+            # 跳过已见预设
             continue
         seen.add(name)
         preset_path = _find_preset(name, search_dirs)
@@ -331,7 +306,7 @@ def _collect_preset_rules(
                 + ("".join(f", {d}" for d in search_dirs)) + ")"
             )
         preset_doc = _read_rules_file(preset_path)
-        # 一个预设本身也可以再 extends 其他预设(深度优先,先于它自身的规则)
+        # 深度优先递归收集被扩展的预设
         _collect_preset_rules(
             preset_doc, preset_path.parent, extra_preset_dirs, seen, acc
         )
@@ -344,13 +319,11 @@ def _collect_preset_rules(
 
 #### 加载并合并项目 rules.json 与其扩展的预设 [@380kkm 2026-06-05] ####
 def load_rules(rules_path, extra_preset_dirs=None) -> list[dict]:
-    """加载并合并项目 rules.json 与它所 extends 的预设。
+    """合并顺序:预设(按 extends_presets 顺序,先搜内置目录再搜任何 preset_dirs)然后是
+    项目规则。同一 id 上项目规则胜出(就地替换)。
 
-    合并顺序:预设(按 extends_presets 顺序,先搜内置目录再搜任何 preset_dirs)然后是
-    项目规则。同一 id 上项目规则胜出(id 为 X 的项目规则会就地替换 id 为 X 的预设规则)。
-
-    返回的每条规则都带一个 ``_origin`` 标记("preset:<name>" 或 "project")。若
-    rules_path 不存在,则只返回(空的)预设链,即 []——向后兼容。
+    返回的每条规则都带一个 ``_origin`` 标记("preset:<name>" 或 "project")。
+    rules_path 不存在时只返回(空的)预设链,即 []。
     """
     extra_preset_dirs = [Path(d) for d in (extra_preset_dirs or [])]
     rules_path = Path(rules_path)
@@ -390,8 +363,7 @@ def load_rules(rules_path, extra_preset_dirs=None) -> list[dict]:
 
 #### 校验一个已解析的 rules.json 文档 [@380kkm 2026-06-05] ####
 def validate_rules_doc(doc: dict) -> list[str]:
-    """对已解析的 rules.json 文档做 lint。返回一组人类可读的错误信息
-    (空 == 合法)。"""
+    """返回一组人类可读的错误信息(空 == 合法)。"""
     errs: list[str] = []
     if not isinstance(doc, dict):
         return ["top-level value must be a JSON object"]
@@ -476,7 +448,6 @@ _STARTER_DOC = {
 
 #### 解析出 store 共享的 rules.json 路径 [@380kkm 2026-06-05] ####
 def _rules_path(args) -> Path:
-    """store 的共享规则文件:<store>/rules.json(或显式指定的 --rules)。"""
     if getattr(args, "rules", None):
         return Path(args.rules)
     cfg = config.resolve_project(root=args.root, store=args.store)
@@ -538,7 +509,7 @@ def cmd_validate(args) -> int:
         for e in errs:
             print(f"  - {e}", file=sys.stderr)
         return 1
-    # 同时尝试解析预设,使缺失的预设在此处暴露
+    # 尝试解析预设
     extra = [d.strip() for d in (args.preset_dir or "").split(",") if d.strip()]
     try:
         load_rules(path, extra_preset_dirs=extra)

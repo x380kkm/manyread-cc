@@ -2,10 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["pytest>=8"]
 # ///
-"""manyscan selftest — 运行 pytest 套件；有任何失败即以非零码退出。
-
-    uv run --python 3.12 scripts/selftest.py
-"""
+"""manyscan selftest — 运行 pytest 套件；有任何失败即以非零码退出。"""
 from __future__ import annotations
 
 from pathlib import Path

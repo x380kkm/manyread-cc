@@ -42,7 +42,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib import config  # noqa: E402
 
-# 本插件 pass 的固定构建日期（规范全程使用 2026-05-28）。
+# 固定构建日期
 REF_DATE = "2026-05-28"
 
 SCRIPT_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
@@ -50,11 +50,7 @@ SCRIPT_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
 
 #### 把自由格式任务串转成文件系统安全的 slug [@380kkm 2026-06-05] ####
 def slugify(task: str) -> str:
-    """把自由格式任务串转成文件系统安全的 slug。
-
-    转小写，非字母数字折叠为单个连字符，并裁剪两端。空输入回退为 "ref"，
-    使 id 始终格式良好。
-    """
+    """空输入回退为 "ref"。"""
     s = task.strip().lower()
     s = re.sub(r"[^a-z0-9]+", "-", s)
     s = s.strip("-")
@@ -63,19 +59,16 @@ def slugify(task: str) -> str:
 
 #### 组装 ref id = <date>-<task-slug> [@380kkm 2026-06-05] ####
 def make_ref_id(task: str, date: str = REF_DATE) -> str:
-    """组装 ref id = <date>-<task-slug>。"""
     return f"{date}-{slugify(task)}"
 
 
 #### 从 --store / --root（或由 cwd 发现，§5）解析项目配置 [@380kkm 2026-06-05] ####
 def resolve_cfg(store: str | None, root: str | None) -> config.ProjectConfig:
-    """从 --store / --root（或由 cwd 发现，§5）解析项目配置。"""
     return config.resolve_project(root=root, store=store)
 
 
 #### 在解析出的 store 的 refs_dir 下定位 ref_id 的目录 [@380kkm 2026-06-05] ####
 def find_ref(ref_id: str, store: str | None, root: str | None) -> tuple[config.ProjectConfig, Path]:
-    """在解析出的 store 的 refs_dir 下定位 ref_id 的目录。"""
     cfg = resolve_cfg(store, root)
     ref_dir = Path(cfg.refs_dir) / ref_id
     if ref_dir.exists():
@@ -99,11 +92,7 @@ def save_manifest(ref_dir: Path, manifest: dict) -> None:
 
 #### 直接对项目 db 跑 SQL，返回 'path' 列的取值 [@380kkm 2026-06-05] ####
 def select_from_query(db_path: Path, sql: str) -> list[str]:
-    """直接对项目 db 跑 SQL；返回 'path' 列的取值。
-
-    查询必须产出一个名为 'path' 的列（大小写不敏感）。我们直接用 sqlite3 连接
-    （不经 query.py 中转），依据规范 §10。
-    """
+    """查询必须产出一个名为 'path' 的列（大小写不敏感）。"""
     if not db_path.exists():
         raise SystemError(
             f"project db not found: {db_path} (build it with index_build.py first)"
@@ -142,7 +131,6 @@ def parse_files_arg(files: str | None) -> list[str]:
 
 #### 尽力取文件的 git blob/commit sha；非 git 跟踪时返回 None [@380kkm 2026-06-05] ####
 def _git_rev(root: Path, rel_path: str) -> str | None:
-    """尽力取文件的 git blob/commit sha；非 git 跟踪时返回 None。"""
     try:
         out = subprocess.run(
             ["git", "rev-parse", f"HEAD:{rel_path}"],
@@ -162,11 +150,6 @@ def _git_rev(root: Path, rel_path: str) -> str | None:
 
 #### 把选定路径归一化为相对项目根的 posix 串 [@380kkm 2026-06-05] ####
 def _to_relative(root: Path, raw: str) -> str | None:
-    """把选定路径归一化为相对项目根的 posix 串。
-
-    接受已相对于根的路径，或根下的绝对路径。当路径逃逸出根（无法可移植地存储）
-    时返回 None。
-    """
     root = Path(root).resolve()
     p = Path(raw)
     if not p.is_absolute():
@@ -294,7 +277,6 @@ def cmd_create(args: argparse.Namespace) -> int:
 
 #### 在 files/ 下挑选副本文件名，消解 basename 冲突 [@380kkm 2026-06-05] ####
 def _unique_copy_name(rel: str, used: set[str]) -> str:
-    """在 files/ 下挑选一个副本文件名，消解 basename 冲突。"""
     base = Path(rel).name
     if base not in used:
         return base
@@ -313,17 +295,12 @@ def _unique_copy_name(rel: str, used: set[str]) -> str:
 
 #### 建一个 git worktree 托管隔离分支目录，返回相对路径 [@380kkm 2026-06-05] ####
 def _add_worktree(root: Path, ref_dir: Path, ref_id: str) -> str | None:
-    """建一个 git worktree 托管隔离分支目录；返回相对路径。
-
-    worktree 位于 refs/<id>/worktree，在新分支 manyread/<id> 上。返回相对项目根的
-    路径；失败或根非 git 仓库时返回 None。
-    """
     if not is_git_repo(root):
         print("warning: --worktree ignored: project root is not a git repo", file=sys.stderr)
         return None
     wt_abs = ref_dir / "worktree"
     branch = f"manyread/{ref_id}"
-    # 删除陈旧目录，使 `git worktree add` 不会在非空路径上报错。
+    # 删除陈旧目录
     if wt_abs.exists():
         shutil.rmtree(wt_abs, ignore_errors=True)
     out = subprocess.run(
@@ -334,7 +311,7 @@ def _add_worktree(root: Path, ref_dir: Path, ref_id: str) -> str | None:
         check=False,
     )
     if out.returncode != 0:
-        # 分支可能已存在（重新创建）；去掉 -b 重试。
+        # 去掉 -b 重试
         out2 = subprocess.run(
             ["git", "worktree", "add", str(wt_abs), branch],
             cwd=str(root),
@@ -356,7 +333,6 @@ def _add_worktree(root: Path, ref_dir: Path, ref_id: str) -> str | None:
 
 #### 加载 refs_dir 下全部 ref 清单（跳过不可读的） [@380kkm 2026-06-05] ####
 def _scan_refs(refs_dir: Path) -> list[dict]:
-    """加载某 refs_dir 下的全部 ref 清单（跳过不可读的）。"""
     out: list[dict] = []
     if not refs_dir.exists():
         return out
@@ -474,11 +450,6 @@ def cmd_strip_ifdef(args: argparse.Namespace) -> int:
 
 #### 取某源路径（相对根）的 ifdef_branch 符号 span [@380kkm 2026-06-05] ####
 def _ifdef_spans_for(conn: sqlite3.Connection, src_rel: str) -> list[dict]:
-    """返回某源路径（相对根）的 ifdef_branch 符号 span。
-
-    span 来自 L2 富化：kind 为 'ifdef_branch' 的符号，其 name 记录控制宏/条件，
-    并带精确的行跨度。
-    """
     row = conn.execute("SELECT id FROM files WHERE path=?", (src_rel,)).fetchone()
     if not row:
         return []
@@ -498,22 +469,12 @@ def _ifdef_spans_for(conn: sqlite3.Connection, src_rel: str) -> list[dict]:
 
 #### 判断某预处理 span 的控制条件是否提及被保留的宏 [@380kkm 2026-06-05] ####
 def _span_keeps(name: str, keep: set[str]) -> bool:
-    """判断某预处理 span 的控制条件是否提及被保留的宏。
-
-    'name' 是记录下的条件文本（如 "WIN32"、"defined(WIN64)"、"FOO && BAR"）。
-    只要任一被保留的宏 token 出现其中，就保留该 span。
-    """
     tokens = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", name or ""))
     return bool(tokens & keep)
 
 
 #### 从副本删除不匹配的预处理 span（1 起含端点的行） [@380kkm 2026-06-05] ####
 def _strip_spans_from_copy(copy_abs: Path, spans: list[dict], keep: set[str]) -> int:
-    """从副本删除不匹配的预处理 span（1 起、含端点的行）。
-
-    返回被删除的 span 数。被丢弃 span 覆盖的行被删去；重叠/嵌套的被丢弃 span
-    会取并集，以免重复裁剪。
-    """
     text = copy_abs.read_text(encoding="utf-8", errors="replace")
     lines = text.splitlines(keepends=True)
     n = len(lines)
@@ -552,8 +513,7 @@ def cmd_index(args: argparse.Namespace) -> int:
 
     ib = str(SCRIPT_DIR / "index_build.py")
     en = str(SCRIPT_DIR / "enrich_treesitter.py")
-    # 经 `uv run` 重新调用同级脚本，使各自装上自己的 PEP 723 依赖集
-    # （项目级运行时约定，§4）。若 `uv` 不可用则回退到当前解释器。
+    # 经 uv run 重新调用同级脚本，无 uv 时回退到当前解释器
     runner = ["uv", "run", "--python", "3.12"] if shutil.which("uv") else [sys.executable]
 
     print(f"indexing ref {args.ref_id} sub-index at {index_root}")
@@ -561,7 +521,7 @@ def cmd_index(args: argparse.Namespace) -> int:
     if rc != 0:
         print(f"error: index_build failed (rc={rc})", file=sys.stderr)
         return rc
-    # 富化是尽力而为（需 tree-sitter 依赖）；不因它失败而让 ref 索引失败。
+    # 富化失败不让 ref 索引失败
     rc2 = subprocess.run([*runner, en, "--root", str(index_root)], check=False).returncode
     if rc2 != 0:
         print(f"warning: enrich_treesitter failed (rc={rc2}); sub-index built without symbols",
@@ -602,7 +562,6 @@ def cmd_clear(args: argparse.Namespace) -> int:
 
 #### 添加 ref-id 子命令共用的项目定位参数 [@380kkm 2026-06-05] ####
 def _add_locator(sp: argparse.ArgumentParser) -> None:
-    """添加 ref-id 子命令共用的可选项目定位参数。"""
     sp.add_argument("--store", default=None, help="explicit manyread store dir (default: discover)")
     sp.add_argument("--root", default=None, help="source tree root (default: store's parent)")
 

@@ -16,7 +16,6 @@ from .zoning import DEPENDENCY, TARGET, Zoning, _NORM, zone_of_path
 
 #### 沿 parent_id 上溯拼出 Outer::Inner::name 限定名（带环路保护） [@380kkm 2026-06-05] ####
 def qualified_name(store, symbol_id: int) -> str:
-    """沿 ``parent_id`` 上溯拼出 ``Outer::Inner::name`` 限定名（带环路保护）。"""
     cache = getattr(store, "_ms_qname_cache", None)
     if cache is None:
         cache = {}
@@ -42,7 +41,6 @@ def qualified_name(store, symbol_id: int) -> str:
 
 #### 为已索引符号构造图节点（id 为 s<id>） [@380kkm 2026-06-05] ####
 def symbol_node(store, symbol_id: int, z: Zoning, alias: str | None = None) -> Node:
-    """为已索引的符号构造图 :class:`Node`（``s<id>``）。"""
     row = store.symbol(symbol_id)
     if row is None:
         # 防御：边指向已消失的符号，按外部节点处理
@@ -61,7 +59,6 @@ def symbol_node(store, symbol_id: int, z: Zoning, alias: str | None = None) -> N
 
 #### 为依赖/未解析符号构造外部节点（id 为 dep:<name>） [@380kkm 2026-06-05] ####
 def external_node(name: str, ambiguity: int = 0) -> Node:
-    """为依赖/未解析的外部符号构造 :class:`Node`（``dep:<name>``）。"""
     attrs: dict = {"zone": DEPENDENCY, "cluster": DEPENDENCY, "unresolved": True}
     if ambiguity:
         attrs["ambiguity"] = ambiguity
