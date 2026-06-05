@@ -1,3 +1,5 @@
+# audience: internal
+# manyscan.tests.test_rollup
 """manyscan.lib.rollup 的测试 —— 目录/模块折叠 + frontier 上卷。"""
 from __future__ import annotations
 

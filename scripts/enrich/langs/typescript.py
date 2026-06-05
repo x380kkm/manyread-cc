@@ -1,3 +1,5 @@
+# audience: internal
+# enrich.langs.typescript
 from __future__ import annotations
 
 from tree_sitter import Node
@@ -12,6 +14,7 @@ _TS_TYPE_DEFS = {
     "interface_declaration": "interface",
     "enum_declaration": "enum",
 }
+#### /类型类声明节点类型 -> 符号 kind ####
 
 
 #### 递归遍历 TypeScript 语法树，向 pend 累加符号与继承边 [@380kkm 2026-06-05] ####

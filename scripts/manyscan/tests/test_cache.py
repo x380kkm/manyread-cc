@@ -1,3 +1,5 @@
+# audience: internal
+# manyscan.tests.test_cache
 """manyscan.lib.cache 的测试 —— 键的构造、put/get、按新鲜度失效。"""
 from __future__ import annotations
 

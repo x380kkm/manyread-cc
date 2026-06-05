@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.cache
 """manyscan.lib.cache —— 有界切片的增量缓存，键随索引新鲜度变化。
 
 切片缓存在 ``<store>/manyscan/cache/<key>.json``，其中 ``key`` 对索引指纹

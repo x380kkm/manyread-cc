@@ -1,3 +1,5 @@
+# audience: internal
+# manyscan.tests.test_modules_views
 """manyscan.lib.boundary.modules_views 的测试 —— N 路解耦派生视图（手搭图，纯变换）。
 
 覆盖：边内/跨分类、区矩阵、按需符号（证据 + 引用计数 + winning_prefix）、模块级环检测、

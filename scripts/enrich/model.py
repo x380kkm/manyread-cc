@@ -1,3 +1,5 @@
+# audience: internal
+# enrich.model
 from __future__ import annotations
 
 from tree_sitter import Node
@@ -42,8 +44,10 @@ def _text(node: Node | None, src: bytes) -> str:
     if node is None:
         return ""
     return src[node.start_byte:node.end_byte].decode("utf-8", "replace")
+#### /取节点覆盖的源码文本 ####
 
 
 #### 取某个具名子节点的文本 [@380kkm 2026-06-05] ####
 def _named_child_text(node: Node, field: str, src: bytes) -> str:
     return _text(node.child_by_field_name(field), src)
+#### /取某个具名子节点的文本 ####

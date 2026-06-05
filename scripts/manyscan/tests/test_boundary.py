@@ -1,3 +1,5 @@
+# audience: internal
+# manyscan.tests.test_boundary
 """manyscan.lib.boundary 的测试 —— 符号级 目标↔依赖 边界。
 
 覆盖：分类器（路径包含判定，含归一化 + 自动探测）、解析置信度

@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = ["pytest>=8"]
 # ///
+# audience: internal
+# manyscan.selftest
 """manyscan selftest — 运行 pytest 套件；有任何失败即以非零码退出。"""
 from __future__ import annotations
 

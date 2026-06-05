@@ -1,3 +1,5 @@
+# audience: internal
+# manyscan.tests.test_render
 """manyscan.lib.render 的测试 —— 确定性视图 + 诚实的 frontier 渲染。"""
 from __future__ import annotations
 

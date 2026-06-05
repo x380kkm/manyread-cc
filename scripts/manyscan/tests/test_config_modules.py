@@ -1,3 +1,5 @@
+# audience: internal
+# manyscan.tests.test_config_modules
 """已提交的 `modules` N 路分区配置加载器（manyread 自带 lib/config.py）的测试。
 
 覆盖 validate_modules 的结构性检查、load_modules 的优先级

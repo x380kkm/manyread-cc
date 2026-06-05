@@ -1,3 +1,5 @@
+# audience: internal
+# enrich.langreg
 from __future__ import annotations
 
 from tree_sitter import Language, Node, Parser, Query, QueryCursor
@@ -35,6 +37,7 @@ SUPPORTED_LANGS: list[str] = [
     "cpp", "python", "javascript", "typescript", "tsx", "csharp", "glsl",
     "java", "gdscript",
 ]
+#### /我们实际能解析的语言集合 ####
 
 
 #### manyread 语言名 -> tree-sitter-language-pack 文法名 [@380kkm 2026-06-05] ####
@@ -57,11 +60,13 @@ def register_lang(lang: str, grammar: str) -> None:
     _PACK_NAME[lang] = grammar
     if lang not in SUPPORTED_LANGS:
         SUPPORTED_LANGS.append(lang)
+#### /扩展注册一种语言 ####
 
 
 #### 扩展注册一个 扩展名->语言 的路由（就地改动 LANG_FOR_EXT） [@380kkm 2026-06-05] ####
 def register_ext(ext: str, lang: str) -> None:
     LANG_FOR_EXT[ext] = lang
+#### /扩展注册一个 扩展名->语言 的路由 ####
 
 
 #### 经 language-pack 取受支持文法对应的 tree-sitter Language [@380kkm 2026-06-05] ####
@@ -70,3 +75,4 @@ def _load_language(lang: str) -> Language:
     if pack is None:
         raise ValueError(f"unsupported language: {lang}")
     return get_language(pack)
+#### /经 language-pack 取受支持文法对应的 tree-sitter Language ####

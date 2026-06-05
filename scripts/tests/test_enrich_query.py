@@ -1,3 +1,5 @@
+# audience: internal
+# tests.test_enrich_query
 """enrich 中声明式依赖边查询层的回归测试。"""
 import os
 import sys

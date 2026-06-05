@@ -1,3 +1,5 @@
+# audience: internal
+# enrich.langs.cpp
 from __future__ import annotations
 
 from tree_sitter import Node
@@ -15,6 +17,7 @@ def _cpp_name(node: Node, src: bytes) -> str:
     # function_definition：深入声明符取函数标识符
     decl = node.child_by_field_name("declarator")
     return _cpp_declarator_name(decl, src) if decl is not None else ""
+#### /尽力提取一个 cpp 定义节点的声明符 / 名字 ####
 
 
 #### 沿（可能嵌套的）声明符向下走到叶子标识符 [@380kkm 2026-06-05] ####
@@ -35,6 +38,7 @@ def _cpp_declarator_name(node: Node | None, src: bytes) -> str:
         if nm:
             return nm
     return ""
+#### /沿（可能嵌套的）声明符向下走到叶子标识符 ####
 
 
 #### cpp 定义节点类型到符号 kind 的映射 [@380kkm 2026-06-05] ####
@@ -45,6 +49,7 @@ _CPP_DEFS = {
     "enum_specifier": "enum",
     "namespace_definition": "namespace",
 }
+#### /cpp 定义节点类型到符号 kind 的映射 ####
 
 #### cpp 预处理分支节点类型到符号 kind 的映射 [@380kkm 2026-06-05] ####
 _CPP_PREPROC = {
@@ -53,6 +58,7 @@ _CPP_PREPROC = {
     "preproc_elif": "ifdef_branch",
     "preproc_else": "ifdef_branch",
 }
+#### /cpp 预处理分支节点类型到符号 kind 的映射 ####
 
 
 #### 递归收集 node 下的具名类型标识符（跳过基本类型与宏） [@380kkm 2026-06-05] ####
@@ -65,6 +71,7 @@ def _collect_type_idents(node: Node | None, src: bytes, out: list[str]) -> None:
             out.append(t)
     for ch in node.children:
         _collect_type_idents(ch, src, out)
+#### /递归收集 node 下的具名类型标识符 ####
 
 
 #### 取一个函数返回类型 + 形参声明中的具名类型（去重） [@380kkm 2026-06-05] ####
@@ -75,6 +82,7 @@ def _cpp_function_type_idents(node: Node, src: bytes) -> list[str]:
     # 形参
     _collect_type_idents(node.child_by_field_name("declarator"), src, out)
     return list(dict.fromkeys(out))
+#### /取一个函数返回类型 + 形参声明中的具名类型 ####
 
 
 #### 为一个预处理分支生成可读标签（被测的宏 / 条件） [@380kkm 2026-06-05] ####
@@ -84,6 +92,7 @@ def _cpp_ifdef_label(node: Node, src: bytes) -> str:
         return _text(cond, src).strip() or node.type
     # else 分支没有 condition
     return node.type
+#### /为一个预处理分支生成可读标签 ####
 
 
 #### 递归遍历 cpp 语法树，收集符号、继承边与 uses_type 边 [@380kkm 2026-06-05] ####
@@ -127,3 +136,4 @@ def _walk_cpp(node: Node, src: bytes, pend: Pending, parent_local: int | None) -
 
     for ch in node.children:
         _walk_cpp(ch, src, pend, cur_parent)
+#### /递归遍历 cpp 语法树 ####

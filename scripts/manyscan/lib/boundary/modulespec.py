@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.boundary.modulespec
 """manyscan.lib.boundary.modulespec —— N 路模块分区的规格原语（与二进制 Zoning 并行）。
 
 把已索引符号的路径划分到 N 个用户声明的模块 ZONE，外加一个兜底 ZONE（默认 ``External``）。

@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# ref
 """manyread L4 —— ref / prune / worktree 命令行（仅标准库）。
 
 规范第 10 节。一个 *ref* 是带日期、按任务打标签的阅读工作区，存放选定文件的

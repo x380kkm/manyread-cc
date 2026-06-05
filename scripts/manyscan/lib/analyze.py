@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.analyze
 """manyscan.lib.analyze —— 依赖 Graph 之上的重构支持度量（纯函数）。
 
 给定任意一个 :class:`graph.Graph`（一个有界/已 rollup 的切片），计算团队推理

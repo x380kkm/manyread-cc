@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# query
 """manyread query.py —— 对 project db 执行 SQL，并自动记入 trace 库。
 
 对应 spec 第 7 节。对一个 project 的 <store>/source.db 执行任意 SQL，把结果行以

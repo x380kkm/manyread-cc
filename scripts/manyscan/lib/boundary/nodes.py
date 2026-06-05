@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.boundary.nodes
 """manyscan.lib.boundary.nodes —— 图节点与限定名的构造。
 
 为已索引的符号构造图 :class:`~lib.graph.Node`，为未解析/依赖的外部符号构造外部节点，

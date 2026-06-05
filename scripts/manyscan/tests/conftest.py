@@ -1,3 +1,5 @@
+# audience: internal
+# manyscan.tests.conftest
 """manyscan 的 pytest 夹具。
 
 用 manyread 自己的 ``db.init_schema`` 建一个极小的存储库（让测试运行真实 schema），再插入一个

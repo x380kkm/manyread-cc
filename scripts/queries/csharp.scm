@@ -1,3 +1,5 @@
+;; audience: internal
+;; csharp
 ;; manyread — C# dependency-EDGE query (declarative, project-customizable).
 ;;
 ;; Symbols (class/struct/interface/enum/record + method/ctor + containment + extends/

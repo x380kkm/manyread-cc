@@ -1,3 +1,5 @@
+# audience: internal
+# extensions.ue.tests.test_dsl_semantic_bplisp_animlang
 """bplisp / animlang 由 schema 驱动的语义校验层（scripts/dsl_validate.py）的测试。
 
 镜像 test_dsl_semantic.py 的 matlang 套路，覆盖两条语言的：合法文件零语义错误、未知类型
@@ -33,6 +35,7 @@ def _bplisp_schema():
     return V.load_schema(_BPLISP_SCHEMA)
 
 
+#### 加载内置的 animlang 样例 schema [@380kkm 2026-06-05] ####
 def _animlang_schema():
     return V.load_schema(_ANIMLANG_SCHEMA)
 
@@ -43,13 +46,10 @@ def _codes(text, lang, schema=None, sev=None):
                   if sev is None or i.severity == sev)
 
 
+#### 收集 bplisp/animlang 的语义错误条目 [@380kkm 2026-06-05] ####
 def _sem(text, lang, schema):
     return [i for i in V.dsl_validate(text, lang, schema) if i.code in _SEMANTIC_CODES]
 
-
-# ============================================================
-#  bplisp
-# ============================================================
 
 #### 合法 bplisp 内联夹具（villager 示例的镜像） [@380kkm 2026-06-05] ####
 _GOOD_BPLISP = (
@@ -80,6 +80,7 @@ _VILLAGER = os.path.join(
     "villager_select_before_print.bplisp")
 
 
+#### 验证真实 bplisp 示例对样例 schema 零语义问题且无 error [@380kkm 2026-06-05] ####
 def test_bplisp_real_example_zero_semantic():
     if not os.path.isfile(_VILLAGER):
         pytest.skip(f"reference fixture absent: {_VILLAGER}")
@@ -149,10 +150,6 @@ def test_bplisp_required_pin_connected_is_clean():
     assert "MISSING_REQUIRED_PIN" not in _codes(src, "bplisp", adhoc)
 
 
-# ============================================================
-#  animlang
-# ============================================================
-
 #### 合法 animlang 内联夹具（state_machine 示例的镜像） [@380kkm 2026-06-05] ####
 _GOOD_ANIMLANG = (
     '(anim-blueprint "SimpleStateMachine"\n'
@@ -186,6 +183,7 @@ _REAL_ANIMLANG = [
 ]
 
 
+#### 验证每个真实 animlang 示例对样例 schema 零语义问题且无 error [@380kkm 2026-06-05] ####
 @pytest.mark.parametrize("path", _REAL_ANIMLANG)
 def test_animlang_real_examples_zero_semantic(path):
     if not os.path.isfile(path):
@@ -246,10 +244,6 @@ def test_animlang_required_pose_pin_connected_is_clean():
     src = '(anim-blueprint "X" :anim-graph (blend :alpha 0.5 :a (sequence-player "I" :loop true)))'
     assert "MISSING_REQUIRED_PIN" not in _codes(src, "animlang", adhoc)
 
-
-# ============================================================
-#  跨语言：确定性 + 隔离
-# ============================================================
 
 #### 验证 bplisp/animlang 语义校验跨多次运行确定且结果有序 [@380kkm 2026-06-05] ####
 def test_deterministic_and_sorted():

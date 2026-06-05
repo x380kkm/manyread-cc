@@ -1,3 +1,5 @@
+# audience: internal
+# enrich.langs.glsl
 from __future__ import annotations
 
 from tree_sitter import Node
@@ -11,6 +13,7 @@ _GLSL_DEFS = {
     "function_definition": "function",
     "struct_specifier": "struct",
 }
+#### /GLSL 定义节点类型到符号 kind 的映射 ####
 
 
 #### 递归遍历 GLSL 语法树，收集函数与结构体符号 [@380kkm 2026-06-05] ####
@@ -23,3 +26,4 @@ def _walk_glsl(node: Node, src: bytes, pend: Pending, parent_local: int | None) 
         cur_parent = idx
     for ch in node.children:
         _walk_glsl(ch, src, pend, cur_parent)
+#### /递归遍历 GLSL 语法树 ####

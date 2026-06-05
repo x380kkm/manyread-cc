@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# rules
 """manyread L2 富化的 override 规则引擎 + 预设(仅依赖标准库)。
 
 基础的 tree-sitter 抽取是通用的,偶尔会在与具体代码库相关的写法上出错(例如 Unreal 的

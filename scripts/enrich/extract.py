@@ -1,3 +1,5 @@
+# audience: internal
+# enrich.extract
 from __future__ import annotations
 
 from tree_sitter import Parser

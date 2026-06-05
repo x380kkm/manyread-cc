@@ -1,3 +1,5 @@
+# audience: internal
+# enrich.langs
 from __future__ import annotations
 
 from enrich.langs.cpp import _walk_cpp
@@ -21,6 +23,7 @@ WALKERS = {
     "java": _walk_java,
     "gdscript": _walk_gdscript,
 }
+#### /语言 -> 遍历器函数的分发表 ####
 
 #### 拥有遍历器的语言集合，作为查询驱动与遍历器驱动的分流闸 [@380kkm 2026-06-05] ####
 HAS_WALKER = frozenset(WALKERS)

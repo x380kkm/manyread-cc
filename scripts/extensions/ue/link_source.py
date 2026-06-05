@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# extensions.ue.link_source
 """manyread link-source —— 资产↔源码跨层链接器（纯函数、只读）。
 
 给定一个 DSL **资产**存储库（如 matlang 材质）、一个**代码**存储库（引擎 C++）、
@@ -55,7 +57,7 @@ def _load_module(name: str, path: str):
     sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
-#### /按路径加载模块 ####
+#### /按文件路径在私有别名下加载模块 ####
 
 
 # 本模块在 scripts/extensions/ue/ 下；manyscan 在 scripts/manyscan/（上溯三级）
@@ -95,7 +97,7 @@ def load_schema(path: str) -> dict:
             if not isinstance(pins, dict):
                 raise ValueError(f"schema[{lang!r}][{nt!r}].pins must be an object")
     return data
-#### /schema 加载器 ####
+#### /本地、仅 stdlib 的 schema 加载器（dsl_validate.load_schema 的副本）####
 
 
 #### 从 classPath 提取 ReflectedName（末尾 '.' 之后的部分）[@380kkm 2026-06-05] ####
@@ -103,13 +105,13 @@ def reflected_name(class_path: str) -> str | None:
     if not class_path or "." not in class_path:
         return None
     return class_path.rsplit(".", 1)[-1]
-#### /提取 ReflectedName ####
+#### /从 classPath 提取 ReflectedName（末尾 '.' 之后的部分）####
 
 
 #### 归一化存储的文件路径用于输出（反斜杠 -> '/'）[@380kkm 2026-06-05] ####
 def _norm(path: str) -> str:
     return (path or "").replace("\\", "/")
-#### /归一化路径 ####
+#### /归一化存储的文件路径用于输出（反斜杠 -> '/'）####
 
 
 #### 把 ReflectedName 解析到代码库的 class/struct 候选 [@380kkm 2026-06-05] ####
@@ -139,7 +141,7 @@ def resolve_class(code: "stores.Store", reflected: str, code_lang: str = "cpp") 
         conf = "unique" if len(chosen) == 1 else "ambiguous"
         return {"confidence": conf, "cands": chosen}
     return {"confidence": "unresolved", "cands": []}
-#### /解析 class ####
+#### /把 ReflectedName 解析到代码库的 class/struct 候选 ####
 
 
 #### 逐个产出 (row, lookup_key) 覆盖每个 DSL 节点/材质符号，已排序 [@380kkm 2026-06-05] ####
@@ -158,7 +160,7 @@ def dsl_nodes(dsl: "stores.Store", lang: str):
         attrs = json.loads(r["attrs"]) if r["attrs"] else {}
         key = attrs.get("node_type") or (r["kind"] if r["kind"] == "material" else None)
         yield r, key
-#### /产出 DSL 节点 ####
+#### /逐个产出 (row, lookup_key) 覆盖每个 DSL 节点/材质符号，已排序 ####
 
 
 #### 构建确定性的链接报告（纯函数、只读）[@380kkm 2026-06-05] ####
@@ -237,7 +239,7 @@ def link(dsl_store: str, code_store: str, schema_path: str, lang: str = "matlang
         "nodes": nodes,
         "summary": summary,
     }
-#### /构建链接报告 ####
+#### /构建确定性的链接报告（纯函数、只读）####
 
 
 #### 把链接报告渲染为文本 [@380kkm 2026-06-05] ####
@@ -268,7 +270,7 @@ def render_text(rep: dict) -> str:
         f'total={s["total"]}'
     )
     return "\n".join(lines)
-#### /渲染文本 ####
+#### /把链接报告渲染为文本 ####
 
 
 #### CLI 入口：解析参数、运行链接、按 --json 或文本输出 [@380kkm 2026-06-05] ####
@@ -302,7 +304,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(render_text(rep))
     return 0
-#### /CLI 入口 ####
+#### /CLI 入口：解析参数、运行链接、按 --json 或文本输出 ####
 
 
 if __name__ == "__main__":

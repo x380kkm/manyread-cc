@@ -1,3 +1,5 @@
+# audience: internal
+# extensions
 """manyread 扩展发现 —— 通用、与具体扩展无关的注册机制。
 
 通用核心只保留与任何具体领域无关的语言/查询/校验机制；可选的领域扩展（如 UE 资产 DSL）

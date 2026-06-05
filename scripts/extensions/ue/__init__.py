@@ -1,3 +1,5 @@
+# audience: internal
+# extensions.ue
 """UE 资产 DSL 扩展 —— manyread 的可选、UE 项目级领域插件。
 
 把三种 UE 资产 DSL（matlang / bplisp / animlang）的全部专属能力接到通用核心上：

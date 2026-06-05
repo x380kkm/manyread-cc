@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.render.textfmt
 """manyscan.lib.render.textfmt —— Graph / Metrics 的确定性纯文本视图。"""
 from __future__ import annotations
 

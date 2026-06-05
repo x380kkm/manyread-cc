@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# trace
 """manyread L3 —— 查询轨迹存储库的命令行工具（仅依赖标准库）。
 
 对应规范第 9 节。一个跨会话的查询轨迹存储库，分为两类:

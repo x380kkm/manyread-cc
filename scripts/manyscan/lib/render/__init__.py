@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.render
 """manyscan.lib.render —— 确定性的 JSON / mermaid / dot / text / HTML 视图门面。
 
 每个 emitter 对输出排序;有界账本显式呈现:边界节点标注 ``+N⤳``,截断/深度封顶的切片打印可见警告。

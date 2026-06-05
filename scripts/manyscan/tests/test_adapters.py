@@ -1,3 +1,5 @@
+# audience: internal
+# manyscan.tests.test_adapters
 """manyscan.lib.adapters 的测试 —— SourceAdapter 协议 + CodeAdapter。"""
 from __future__ import annotations
 

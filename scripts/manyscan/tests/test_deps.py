@@ -1,3 +1,5 @@
+# audience: internal
+# manyscan.tests.test_deps
 """manyscan.lib.deps 的测试 —— import 抽取 + 跨文件解析。"""
 from __future__ import annotations
 

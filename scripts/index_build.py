@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# index_build
 """manyread L1 —— 第一阶段 FTS5 trigram 索引器（仅用标准库）。
 
 以全量 DROP+CREATE 重建 <root>/.manyread/source.db：

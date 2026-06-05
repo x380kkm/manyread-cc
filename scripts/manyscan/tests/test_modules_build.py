@@ -1,3 +1,5 @@
+# audience: internal
+# manyscan.tests.test_modules_build
 """manyscan.lib.boundary.modules_build 的测试 —— N 路有界构建流水线。
 
 覆盖：逐 zone 前缀播种（规模随声明模块、非库大小）、N 区节点构造（zone==cluster==module）、

@@ -1,3 +1,5 @@
+# audience: internal
+# manyscan.tests.test_scan_cli
 """manyscan CLI（scripts/scan.py）经进程内 main(argv) 的测试。"""
 from __future__ import annotations
 

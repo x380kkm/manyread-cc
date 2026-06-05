@@ -1,3 +1,5 @@
+# audience: internal
+# manyscan.tests.test_graph
 """manyscan.lib.graph 的测试 —— 模型 + 有界 BFS + topo/scc/rollup。"""
 from __future__ import annotations
 

@@ -1,3 +1,5 @@
+# audience: internal
+# extensions.ue.validate_passes
 """UE 资产 DSL（matlang / bplisp / animlang）的结构 + 语义校验 pass。
 
 这些 pass 是 UE 扩展专属的；通用核心（scripts/dsl_validate.py）只提供 pass 协议、

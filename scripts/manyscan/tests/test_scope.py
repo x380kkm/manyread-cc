@@ -1,3 +1,5 @@
+# audience: internal
+# manyscan.tests.test_scope
 """manyscan.lib.scope 的测试 —— 种子解析 + 有界的真实依赖展开。"""
 from __future__ import annotations
 

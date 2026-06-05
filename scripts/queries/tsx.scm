@@ -1,3 +1,5 @@
+;; audience: internal
+;; tsx
 ;; manyread — TSX dependency-EDGE query. The .tsx dialect uses IDENTICAL tree-sitter
 ;; node/field names to the `typescript` grammar, so this preset mirrors
 ;; typescript.scm exactly. Symbols + extends/implements come from the WALKER

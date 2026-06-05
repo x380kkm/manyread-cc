@@ -1,3 +1,5 @@
+# audience: internal
+# enrich.langs.gdscript
 from __future__ import annotations
 
 from tree_sitter import Node
@@ -11,6 +13,7 @@ def _gd_first_ident(node: Node, src: bytes) -> str:
         if ch.type in ("name", "identifier"):
             return _text(ch, src).strip()
     return ""
+#### /兜底取名 ####
 
 
 #### 递归遍历 GDScript 语法树，收集类与函数/方法符号 [@380kkm 2026-06-05] ####
@@ -35,3 +38,4 @@ def _walk_gdscript(node: Node, src: bytes, pend: Pending, parent_local: int | No
         cur_parent = idx
     for ch in node.children:
         _walk_gdscript(ch, src, pend, cur_parent)
+#### /递归遍历 GDScript 语法树 ####

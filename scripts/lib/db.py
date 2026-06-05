@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# lib.db
 """manyread 数据库 schema DDL 与 sqlite 辅助函数（仅依赖标准库）。
 
 项目数据库位于 <root>/.manyread/source.db。下面的 schema 是规范性的

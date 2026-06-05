@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.boundary.modules_build
 """manyscan.lib.boundary.modules_build —— N 路模块分区的有界构建流水线（build 的并行体）。
 
 按声明模块的路径前缀逐 zone 播种（LIKE 预筛 + ESCAPE，``module_of_path`` 为权威），把每个

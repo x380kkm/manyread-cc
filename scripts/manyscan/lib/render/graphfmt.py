@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.render.graphfmt
 """manyscan.lib.render.graphfmt —— 确定性的 mermaid / graphviz dot 视图。"""
 from __future__ import annotations
 

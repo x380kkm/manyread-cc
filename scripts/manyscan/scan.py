@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.scan
 """manyscan CLI —— 对 manyread 存储库做有界、按需驱动的依赖扫描。
 
 提供开箱即用的子命令，让你调用工具而非手写查询：

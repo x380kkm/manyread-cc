@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+#### 重新导出 N 路模块分区的原语/构建/视图接口 [@380kkm 2026-06-05] ####
 from .modulespec import (
     DEFAULT_FALLBACK,
     ModuleSpec,
@@ -46,3 +47,4 @@ __all__ = [
     "classify_edge", "zone_matrix", "needed_symbols", "module_cycles", "fan_stats",
     "cut_costs", "winning_prefix", "CrossStat", "CutCost", "ModuleFanStat", "Need",
 ]
+#### /重新导出 N 路门面接口 ####

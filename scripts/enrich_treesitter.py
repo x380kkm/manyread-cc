@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = ["tree-sitter>=0.23", "tree-sitter-language-pack"]
 # ///
+# audience: internal
+# enrich_treesitter
 """manyread L2 —— 基于 tree-sitter 的 symbol/edge 富化。
 
 读取一个 project 的 <root>/.manyread/source.db 中的 ``files`` 表，按语言用

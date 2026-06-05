@@ -1,3 +1,5 @@
+# audience: internal
+# enrich.langs.java
 from __future__ import annotations
 
 from tree_sitter import Node
@@ -13,12 +15,14 @@ _JAVA_TYPE_DEFS = {
     "record_declaration": "class",
     "annotation_type_declaration": "interface",
 }
+#### /Java 类型定义节点到符号 kind 的映射 ####
 
 #### Java 可调用单元节点到符号 kind 的映射 [@380kkm 2026-06-05] ####
 _JAVA_CALLABLE = {
     "method_declaration": "method",
     "constructor_declaration": "method",
 }
+#### /Java 可调用单元节点到符号 kind 的映射 ####
 
 #### 判定父节点是否为类型容器（决定 method/function）的 kind 集合 [@380kkm 2026-06-05] ####
 _JAVA_TYPE_KINDS = frozenset(("class", "interface", "enum"))

@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.adapters
 """manyscan.lib.adapters —— 可插拔的依赖来源适配器。
 
 一个 :class:`SourceAdapter` 把 manyread 存储库转换成 manyscan 的图原语：

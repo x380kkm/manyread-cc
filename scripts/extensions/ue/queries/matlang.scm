@@ -1,3 +1,5 @@
+;; audience: internal
+;; matlang
 ;; MatLang (UMaterial -> S-expr) — symbols + wires for a material DAG.
 ;; Scheme grammar: every (...) is a `list`; head/keyword/$id are `symbol`; "..."
 ;; is a `string` (text INCLUDES the quotes); the captured `@def` token's symbol

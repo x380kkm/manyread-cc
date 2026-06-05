@@ -1,3 +1,5 @@
+# audience: internal
+# enrich.query
 from __future__ import annotations
 
 from pathlib import Path
@@ -127,6 +129,7 @@ def _load_scm_dir(specs: dict[str, str], directory: Path) -> None:
             specs[p.stem] = p.read_text(encoding="utf-8")
         except OSError:
             pass
+#### /从一个目录加载 *.scm ####
 
 
 #### 三层加载 lang -> .scm 文本：内置预设 -> 扩展目录 -> 项目覆盖（后者依次更优先） [@380kkm 2026-06-05] ####

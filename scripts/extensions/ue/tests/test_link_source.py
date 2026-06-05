@@ -1,3 +1,5 @@
+# audience: internal
+# extensions.ue.tests.test_link_source
 """ASSET->SOURCE 跨层链接器（scripts/extensions/ue/link_source.py）的回归测试。"""
 import json
 import os

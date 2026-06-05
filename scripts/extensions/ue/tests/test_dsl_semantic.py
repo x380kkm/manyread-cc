@@ -1,3 +1,5 @@
+# audience: internal
+# extensions.ue.tests.test_dsl_semantic
 """预检 DSL 校验器（scripts/dsl_validate.py）由 schema 驱动的语义层的测试。"""
 import json
 import os

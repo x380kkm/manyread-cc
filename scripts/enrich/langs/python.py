@@ -1,3 +1,5 @@
+# audience: internal
+# enrich.langs.python
 from __future__ import annotations
 
 from tree_sitter import Node
@@ -10,6 +12,7 @@ _PY_DEFS = {
     "function_definition": "function",
     "class_definition": "class",
 }
+#### /Python 节点类型到符号 kind 的映射 ####
 
 
 #### 递归遍历 Python 语法树，收集符号与继承边 [@380kkm 2026-06-05] ####

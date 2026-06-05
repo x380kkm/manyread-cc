@@ -1,3 +1,5 @@
+# audience: internal
+# extensions.ue.tests.test_dsl_equiv
 """规范 S 表达式等价校验器（scripts/extensions/ue/dsl_equiv.py）的测试。
 
 conftest 已在整会话 ``run_discovery(['ue'])``，故 .matlang/.bplisp/.animlang 的文法

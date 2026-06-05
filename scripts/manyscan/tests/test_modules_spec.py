@@ -1,3 +1,5 @@
+# audience: internal
+# manyscan.tests.test_modules_spec
 """manyscan.lib.boundary.modulespec 的测试 —— N 路分区原语。
 
 核心：退化等价 —— 一个 2-zone ModuleSpec 在一组路径语料上与二进制 zone_of_path 逐路径一致

@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.render.html
 """manyscan.lib.render.html — 自包含的交互式 HTML 视图（sigma.js）。"""
 from __future__ import annotations
 
@@ -28,7 +30,7 @@ _PALETTE = ["#4e79a7", "#f28e2b", "#59a14f", "#e15759", "#76b7b2",
 
 _BOOTSTRAP_ASSET = _ASSET_DIR / "boundary_bootstrap.js"
 _HTML_BOOTSTRAP = _BOOTSTRAP_ASSET.read_text(encoding="utf-8")
-# N 路模块附加脚本：仅 module_mode 时追加，二进制路径绝不读取/追加（保 byte-identity）
+# N 路模块附加脚本：仅 module_mode 时追加
 _MODULE_ADDON_ASSET = _ASSET_DIR / "module_addon.js"
 #### /自包含交互式 HTML 的素材与库清单 ####
 
@@ -224,13 +226,12 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
         }
         if zoned and zone in _ZONES:
             attrs["zone"] = zone
-        # 门控于 band_of is not None
         if band_of is not None:
             attrs["band"] = band_of.get(n.id, 0)
-        # 门控于 module_of is not None：烘焙带侧前缀的模块 id
+        # 烘焙带侧前缀的模块 id
         if module_of is not None:
             attrs["module"] = module_of.get(n.id, "")
-        # 门控于 module_mode：N 路分区把每节点的模块名烘焙到 attrs['module']
+        # N 路分区把每节点的模块名烘焙到 attrs['module']
         elif mod_mode:
             attrs["module"] = n.attrs.get("module") or n.attrs.get("cluster") or ""
         nodes.append({"key": n.id, "attrs": attrs})
@@ -409,7 +410,7 @@ def to_html(g: Graph, title: str = "manyscan dependency slice", view: str = "bot
     # const 放在一个裸 <script>，bootstrap 带 id="ms-boot"
     consts_tag = "<script>" + consts + "</script>"
     boot_tag = '<script id="ms-boot">' + _HTML_BOOTSTRAP + "</script>"
-    # 受门控的 N 路附加脚本：module_mode 时才读取并追加；否则完全不出现（byte-identical）
+    # 受门控的 N 路附加脚本：module_mode 时才读取并追加
     addon_tag = ""
     if mod_mode:
         addon_tag = ('<script id="ms-module-addon">'

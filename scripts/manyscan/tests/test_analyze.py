@@ -1,3 +1,5 @@
+# audience: internal
+# manyscan.tests.test_analyze
 """manyscan.lib.analyze 的测试 —— 耦合 / 环 / 桥 / 割点 / 分层。"""
 from __future__ import annotations
 

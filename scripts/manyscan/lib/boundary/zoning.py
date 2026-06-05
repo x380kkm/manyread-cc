@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.boundary.zoning
 """manyscan.lib.boundary.zoning — 目标↔依赖的分区（ZONING）。
 
 如何把已索引的符号划分到 TARGET（你正在分析的代码）与 DEPENDENCY 区

@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# lib.config
 """manyread 配置 + 项目本地存储库解析（仅依赖标准库）。
 
 存储模型（v2）：所有内容都放在一个可见、项目本地的存储库文件夹中，名为
@@ -34,6 +36,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+#### 项目本地存储库目录名 [@380kkm 2026-06-05] ####
 STORE_DIRNAME = "manyread"
 
 #### 语言 -> 扩展名预设（内置） [@380kkm 2026-06-05] ####

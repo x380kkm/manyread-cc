@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.render.jsonfmt
 """manyscan.lib.render.jsonfmt —— Graph / Metrics 的确定性 JSON 视图。"""
 from __future__ import annotations
 

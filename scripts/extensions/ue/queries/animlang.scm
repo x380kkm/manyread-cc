@@ -1,3 +1,5 @@
+;; audience: internal
+;; animlang
 ;; AnimLang (AnimBP -> S-expr) — pose tree + cached-pose DAG. The pose tree comes
 ;; FREE from the synthesized `contains` (byte-range parenting). Validated on
 ;; DSL/Examples/*.animlang (state_machine def.node=12, third_person_char=33,

@@ -1,3 +1,5 @@
+# audience: internal
+# extensions.ue.tests.test_enrich_query_ue
 """UE 资产 DSL（matlang/bplisp/animlang）声明式查询层的回归测试。
 
 从通用的 test_enrich_query.py 中carve出，因为三种 DSL 的 .scm 与符号契约属于 UE 扩展；

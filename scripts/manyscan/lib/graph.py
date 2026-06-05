@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.graph
 """manyscan.lib.graph —— 内存中的节点/边模型 + 图算法。
 
 纯函数、无 IO：调用方注入 ``expand`` 回调产出邻居，算法只操作得到的

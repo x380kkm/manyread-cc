@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.boundary.views
 """manyscan.lib.boundary.views —— boundary graph 之上的派生 VIEW。
 
 两个派生 view 及其分层 / 折叠呈现：

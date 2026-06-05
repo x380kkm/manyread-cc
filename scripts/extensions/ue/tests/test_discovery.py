@@ -1,3 +1,5 @@
+# audience: internal
+# extensions.ue.tests.test_discovery
 """扩展发现机制（scripts/extensions/）的回归测试 —— 注册表复现、还原、启用解析与摄取惰性。"""
 from __future__ import annotations
 

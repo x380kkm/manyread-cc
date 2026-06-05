@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.deps
 """manyscan.lib.deps —— 基于存储库的真实跨文件依赖提取。
 
 manyread 不存任何 import 图，且只在「单个文件内」解析继承。本模块补上 manyscan

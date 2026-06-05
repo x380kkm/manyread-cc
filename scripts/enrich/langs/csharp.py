@@ -1,3 +1,5 @@
+# audience: internal
+# enrich.langs.csharp
 from __future__ import annotations
 
 from tree_sitter import Node
@@ -13,12 +15,14 @@ _CS_TYPE_DEFS = {
     "record_declaration": "class",
     "record_struct_declaration": "struct",
 }
+#### /类型类声明（容器）节点类型 -> 符号 kind ####
 
 #### 可调用声明节点类型 -> 符号 kind [@380kkm 2026-06-05] ####
 _CS_CALLABLE_DEFS = {
     "method_declaration": "method",
     "constructor_declaration": "method",
 }
+#### /可调用声明节点类型 -> 符号 kind ####
 
 #### 视为方法宿主的类型 kind 集合 [@380kkm 2026-06-05] ####
 _CS_TYPE_KINDS = frozenset(("class", "struct", "interface"))

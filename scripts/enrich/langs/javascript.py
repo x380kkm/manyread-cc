@@ -1,3 +1,5 @@
+# audience: internal
+# enrich.langs.javascript
 from __future__ import annotations
 
 from tree_sitter import Node
@@ -14,6 +16,7 @@ def _js_lexical_fn_name(node: Node, src: bytes) -> str | None:
         if val is not None and val.type in ("arrow_function", "function", "function_expression"):
             return _named_child_text(decl, "name", src) or _text(decl.child_by_field_name("name"), src)
     return None
+#### /取 lexical_declaration 绑定的箭头/函数表达式的名字 ####
 
 
 #### 递归遍历 JavaScript 语法树，收集类/函数/方法符号与继承边 [@380kkm 2026-06-05] ####

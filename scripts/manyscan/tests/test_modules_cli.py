@@ -1,3 +1,5 @@
+# audience: internal
+# manyscan.tests.test_modules_cli
 """manyscan modules 子命令的 CLI 测试 —— 规格解析、退出码、json/text 接线、html 烘焙。
 
 覆盖：无规格退出 2、--module 内联规格、--modules 文件、manyread.json 自动发现、

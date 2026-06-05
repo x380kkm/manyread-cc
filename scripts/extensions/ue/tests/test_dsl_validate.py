@@ -1,3 +1,5 @@
+# audience: internal
+# extensions.ue.tests.test_dsl_validate
 """预检结构 DSL 校验器（scripts/dsl_validate.py）的测试。"""
 import os
 import sys

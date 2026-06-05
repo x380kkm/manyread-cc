@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.boundary
 """manyscan.lib.boundary —— 符号级的目标↔依赖边界。
 
 把每个符号归类到一个分区（``target`` = 被分析的代码 / ``dependency`` = 其依赖），把每条符号边

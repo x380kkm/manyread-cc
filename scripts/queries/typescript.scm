@@ -1,3 +1,5 @@
+;; audience: internal
+;; typescript
 ;; manyread — TypeScript dependency-EDGE query (declarative, project-customizable).
 ;;
 ;; Symbols (class/interface/enum/type/function/method + containment + extends/

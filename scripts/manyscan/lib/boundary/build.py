@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.boundary.build
 """manyscan.lib.boundary.build — 深度 1 依赖汇（dependency-sink）构建流水线。
 
 展开一个深度 1 的*依赖汇*切片：每个目标符号加上其单层依赖边界（带置信度解析），

@@ -1,3 +1,5 @@
+;; audience: internal
+;; javascript
 ;; manyread — JavaScript dependency-EDGE query (declarative, project-customizable).
 ;;
 ;; Symbols (class/function/method + containment + extends) come from the tree-sitter

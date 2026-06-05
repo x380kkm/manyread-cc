@@ -1,6 +1,8 @@
 # /// script
 # requires-python = ">=3.12"
 # ///
+# audience: internal
+# tests.test_config_bom
 """manyread 的 config 与 hub 读取器容忍 UTF-8 BOM。"""
 import json
 import os

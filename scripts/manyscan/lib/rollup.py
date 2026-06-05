@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.rollup
 """manyscan.lib.rollup —— 把文件级切片折叠到目录 / 模块层级。
 
 在 :func:`graph.rollup` 之上按目录、或按 *module*（最近的带构建标记文件如

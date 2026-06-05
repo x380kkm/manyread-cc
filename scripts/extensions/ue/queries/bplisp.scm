@@ -1,3 +1,5 @@
+;; audience: internal
+;; bplisp
 ;; BlueprintLisp (Blueprint EventGraph/FunctionGraph -> S-expr) — tree-shaped;
 ;; there is NO `connect` form, so exec/data flow comes FREE from the synthesized
 ;; `contains` (byte-range parenting). Validated on Tests/Regression/

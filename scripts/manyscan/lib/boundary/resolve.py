@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.boundary.resolve
 """manyscan.lib.boundary.resolve —— 带可靠性置信度的边解析。
 
 把每条符号边（``extends`` / ``implements`` / ``uses_type``）解析到一个具体目标，并附带

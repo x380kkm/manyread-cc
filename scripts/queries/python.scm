@@ -1,3 +1,5 @@
+;; audience: internal
+;; python
 ;; manyread — Python dependency-EDGE query (declarative, project-customizable).
 ;;
 ;; Symbols (class/function/method + containment) come from the tree-sitter walker.

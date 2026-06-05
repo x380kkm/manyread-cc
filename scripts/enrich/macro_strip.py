@@ -1,3 +1,5 @@
+# audience: internal
+# enrich.macro_strip
 from __future__ import annotations
 
 import re
@@ -10,6 +12,7 @@ _MACRO_TYPE_EXTRA = frozenset({"FORCEINLINE", "FORCENOINLINE", "FORCEINLINE_DEBU
 #### 判断一个 token 是否为应被剥离的宏类型名 [@380kkm 2026-06-05] ####
 def _is_macro_type(name: str) -> bool:
     return name in _MACRO_TYPE_EXTRA or bool(_MACRO_TYPE_RE.match(name))
+#### /判断一个 token 是否为应被剥离的宏类型名 ####
 
 
 # 匹配 `class|struct <MACRO> <RealName>` 位置上的声明修饰符宏
@@ -32,6 +35,7 @@ def _blank_preserving(s: str) -> str:
     return "".join(
         "\n" if c == "\n" else " " * len(c.encode("utf-8")) for c in s
     )
+#### /长度保持地空白化一段字符串 ####
 
 
 #### 构造 is_macro(token) 判定函数（内建检测器 OR 配置扩展） [@380kkm 2026-06-05] ####
@@ -43,8 +47,10 @@ def _macro_strip_predicate(macro_strip: dict):
     def is_macro(tok: str) -> bool:
         return (_is_macro_type(tok) or tok in extra_names
                 or any(p.match(tok) for p in extra_pats))
+    #### /判定单个 token 是否应作为宏被剥离 ####
 
     return is_macro
+#### /构造 is_macro(token) 判定函数 ####
 
 
 #### 单趟剥离 `class|struct <MACRO> <RealName>` 位置上的宏 token [@380kkm 2026-06-05] ####
@@ -65,6 +71,7 @@ def _strip_decl_macros_once(content: str, is_macro) -> tuple[str, bool]:
         return content, False
     out.append(content[pos:])
     return "".join(out), True
+#### /单趟剥离 `class|struct <MACRO> <RealName>` 位置上的宏 token ####
 
 
 #### 长度保持地迭代剥离声明修饰符宏到不动点 [@380kkm 2026-06-05] ####
@@ -79,3 +86,4 @@ def _strip_decl_macros(content: str, macro_strip: dict | None) -> str:
         if not changed:
             break
     return content
+#### /长度保持地迭代剥离声明修饰符宏到不动点 ####

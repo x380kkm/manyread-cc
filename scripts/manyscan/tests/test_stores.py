@@ -1,3 +1,5 @@
+# audience: internal
+# manyscan.tests.test_stores
 """manyscan.lib.stores 的测试 —— 对 manyread 存储库的只读访问。"""
 from __future__ import annotations
 

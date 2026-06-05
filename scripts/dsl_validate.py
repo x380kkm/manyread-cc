@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = ["tree-sitter>=0.23", "tree-sitter-language-pack"]
 # ///
+# audience: internal
+# dsl_validate
 """manyread —— UE 资产 DSL 的预检（pre-flight）结构校验器。
 
 对 DSL 文件（matlang / bplisp / animlang）做 OFFLINE 的结构校验：捕捉无法解析的
@@ -93,10 +95,10 @@ def pass_parse(ctx: Context) -> Iterable[Issue]:
     return out or [Issue("error", "PARSE_ERROR", "grammar rejected file", 1, 0)]
 
 
-# 按语言注册的有序结构 pass 表（通用核心为空；由扩展经 register_passes 填充）
+#### 持有按语言注册的有序结构 pass 表（通用核心为空；由扩展经 register_passes 填充） [@380kkm 2026-06-05] ####
 STRUCTURAL_PASSES: dict[str, list[Callable[[Context], Iterable[Issue]]]] = {}
 
-# 按语言注册的有序 semantic pass 表（通用核心为空；由扩展经 register_passes 填充）
+#### 持有按语言注册的有序 semantic pass 表（通用核心为空；由扩展经 register_passes 填充） [@380kkm 2026-06-05] ####
 SEMANTIC_PASSES: dict[str, list[Callable[[Context], Iterable[Issue]]]] = {}
 
 

@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.scope
 """manyscan.lib.scope — 种子解析 + 有界、按需展开。
 
 给定一个种子（符号 / 文件 / 目录 / 关键字），围绕它构建真实的依赖切片，由

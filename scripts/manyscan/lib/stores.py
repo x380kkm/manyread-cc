@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.stores
 """manyscan.lib.stores —— 对 manyread 存储库的只读访问。
 
 manyscan 构建于 manyread 之上。它从不重新声明 manyread 的 schema 或存储布局；而是

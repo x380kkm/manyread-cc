@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = ["tree-sitter>=0.23", "tree-sitter-language-pack"]
 # ///
+# audience: internal
+# extensions.ue.dsl_equiv
 """manyread dsl-equiv —— DSL 文件的规范 S 表达式等价校验器（纯函数、无 store）。
 
 当 AI 重新生成或编辑一个 UE 资产 DSL 文件（matlang / bplisp / animlang）时，机器核验

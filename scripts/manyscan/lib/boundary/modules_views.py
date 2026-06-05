@@ -2,6 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+# audience: internal
+# manyscan.lib.boundary.modules_views
 """manyscan.lib.boundary.modules_views —— N 路模块分区图之上的解耦派生 VIEW。
 
 全部为纯图→数据变换（除有界 build 外不再查库）：边内/跨分类、NxN 区矩阵、按有序模块对的

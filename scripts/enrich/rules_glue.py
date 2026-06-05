@@ -1,3 +1,5 @@
+# audience: internal
+# enrich.rules_glue
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,6 +11,7 @@ import rules
 #### 给出项目 rules 文件路径 <root>/.manyread/rules.json [@380kkm 2026-06-05] ####
 def _default_rules_path(root: Path) -> Path:
     return Path(root) / ".manyread" / "rules.json"
+#### /给出项目 rules 文件路径 ####
 
 
 #### 一次性加载并合并 override 规则 [@380kkm 2026-06-05] ####
@@ -22,6 +25,7 @@ def _resolve_merged_rules(cfg: config.ProjectConfig, rules_path: str | None,
     # load_rules 从文档自身读取 preset_dirs
     merged = rules.load_rules(path, extra_preset_dirs=None)
     return merged, path
+#### /一次性加载并合并 override 规则 ####
 
 
 #### 给出规则遍历改动的符号的人类可读 diff 行 [@380kkm 2026-06-05] ####
@@ -47,3 +51,4 @@ def _preview_diff(before_rows: list[dict], after_rows: list[dict], path: str) ->
             lines.append(f"  {path}: {'; '.join(changes)}  "
                          f"[L{b['start_line']}; rules: {prov}]")
     return lines
+#### /给出规则遍历改动的符号的人类可读 diff 行 ####

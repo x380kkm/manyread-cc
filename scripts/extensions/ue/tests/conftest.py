@@ -1,3 +1,5 @@
+# audience: internal
+# extensions.ue.tests.conftest
 """UE 扩展测试套件的 pytest 夹具。
 
 UE pass、.scm 与 schema 都在扩展里；这些测试通过 ``dsl_validate``/``link_source``/
@@ -12,7 +14,7 @@ import sys
 
 import pytest
 
-# 把 scripts/ 加入 sys.path（本文件在 scripts/extensions/ue/tests/ 下，上溯四级）
+# 把 scripts/ 加入 sys.path（本文件在 scripts/extensions/ue/tests/ 下，上溯三级）
 _SCRIPTS = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, _SCRIPTS)
 
