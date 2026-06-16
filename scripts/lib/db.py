@@ -70,6 +70,36 @@ CREATE INDEX IF NOT EXISTS idx_edges_rel ON edges(relation);
 """
 
 
+#### 按 UTF-8 字节偏移切 content，配 symbols 的 start_byte/end_byte [@380kkm 2026-06-16] ####
+def _slice_bytes(content, start_byte, length):
+    """按字节偏移取 content 的子串，供 SQLite 注册为 slice_bytes(content, start_byte, length)。
+
+    符号表的 start_byte/end_byte 是 UTF-8 字节偏移，而 SQLite 的内建 substr 在 TEXT 列上按
+    字符计数；当符号之前含多字节字符（如中文注释）时，把字节偏移喂给 substr 会取到错位片段。
+    本函数把 content 编码回 UTF-8，按字节切片，再解码回字符串，使按字节偏移的有界提取在任何
+    编码下都对齐。start_byte 是 0 基（与符号表一致），越界与负数被夹到合法范围；解码用 replace
+    容错，避免切在多字节字符中间时抛错。
+    """
+    if content is None:
+        return None
+    raw = content.encode("utf-8")
+    try:
+        start = int(start_byte)
+    except (TypeError, ValueError):
+        return None
+    if start < 0:
+        start = 0
+    if length is None:
+        end = len(raw)
+    else:
+        try:
+            end = start + int(length)
+        except (TypeError, ValueError):
+            return None
+    return raw[start:end].decode("utf-8", "replace")
+#### /按 UTF-8 字节偏移切 content ####
+
+
 #### 打开项目数据库的 sqlite 连接（并创建父目录） [@380kkm 2026-06-05] ####
 def connect(path: str | Path) -> sqlite3.Connection:
     """传入 ":memory:" 可得到内存数据库。"""
@@ -77,6 +107,8 @@ def connect(path: str | Path) -> sqlite3.Connection:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.execute("PRAGMA foreign_keys=ON")
+    # 注册按字节偏移的有界提取，让符号表的 start_byte/end_byte 在含多字节字符时也对齐
+    conn.create_function("slice_bytes", 3, _slice_bytes)
     return conn
 
 

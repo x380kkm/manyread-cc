@@ -19,8 +19,9 @@ content and writes:
 
 - **`symbols`** — one row per definition, with precise spans:
   `name, kind, lang, start_line, end_line, start_byte, end_byte, parent_id`.
-  The byte span lets you `substr(content, start_byte+1, end_byte-start_byte)` to
-  extract exactly that definition.
+  The byte span lets you `slice_bytes(content, start_byte, end_byte-start_byte)` to
+  extract exactly that definition. Use `slice_bytes` (byte offsets), not `substr`
+  (character offsets), since the spans are UTF-8 byte positions.
 - **`edges`** — relationships between symbols:
   `relation` ∈ {`contains`, `extends`/`implements`, optional `references`},
   with `src_symbol_id`, `dst_symbol_id` (when resolved) and `dst_name` (always).

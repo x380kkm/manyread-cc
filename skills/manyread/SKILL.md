@@ -184,17 +184,27 @@ layer uses these.
 
 ### Operator 4 — Bounded source extraction (goal test)
 
-Extraction is the A* goal test, not browsing. Locate an offset, then take a small window;
-prefer a symbol's `start_byte`/line span as the anchor:
+Extraction is the A* goal test, not browsing. Prefer a symbol's byte span as the anchor, and
+extract it with `slice_bytes(content, start_byte, length)` — a manyread-registered SQLite
+function that slices by **byte**. Symbol `start_byte`/`end_byte` are 0-based UTF-8 byte offsets,
+so pass `start_byte` directly (no `+ 1`):
 
 ```sql
+-- from a symbol's byte span (preferred — no search needed):
+SELECT slice_bytes(f.content, s.start_byte, s.end_byte - s.start_byte)
+FROM symbols s JOIN files f ON f.id = s.file_id
+WHERE f.path = '<target>' AND s.name = '<symbol>';
+
+-- from a text anchor (instr is a character position, so substr is correct here):
 SELECT instr(content, '<anchor>') AS off FROM files WHERE path = '<target>';
 SELECT substr(content, <start_offset>, <length>) FROM files WHERE path = '<target>';
 ```
 
-Rules: **never** `substr(content, 1, length(content))` (whole file); keep each slice ~500–2000
-chars; prefer symbol spans/anchors over file starts; extract per layer only; stop once the
-evidence answers the question.
+Use `slice_bytes` (not `substr`) with symbol byte spans: SQLite's `substr` counts characters,
+so a byte offset handed to it lands past the target whenever multibyte text (e.g. a Chinese
+comment) precedes the symbol. Rules: **never** read the whole file (no `slice_bytes`/`substr`
+spanning the entire content); keep each slice ~500–2000 chars; prefer symbol spans/anchors over
+file starts; extract per layer only; stop once the evidence answers the question.
 
 ## Mandatory Preflight (L3)
 

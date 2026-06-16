@@ -47,7 +47,7 @@ that advances `h(n)`.
 | 1 | **Shape** — aggregate over `files` | learn the tree's size/layout before reading anything | tiny (counts only) |
 | 2 | **Locate** — FTS5 `MATCH` over `files_fts` | rank candidate files/lines for a term | small (ranked paths) |
 | 3 | **Symbolize** — query `symbols`/`edges` (L2) | jump to a precise definition + its containment/inheritance | small (rows with line spans) |
-| 4 | **Extract** — bounded `substr()` over `files.content` | read only the proven slice | bounded (you choose the window) |
+| 4 | **Extract** — bounded `slice_bytes()` (symbol byte spans) or `substr()` (anchors) over `files.content` | read only the proven slice | bounded (you choose the window) |
 
 ### Operator 1 — Shape (do this first, every time)
 
@@ -102,17 +102,26 @@ SELECT substr(content, max(1, :off - 200), 600)
 FROM files WHERE path='src/layout.ts';
 ```
 
-Or extract directly from a symbol's byte span (no search needed):
+Or extract directly from a symbol's byte span (no search needed). Symbol spans are
+**UTF-8 byte offsets**, so extract them with `slice_bytes(content, start_byte, length)`,
+not `substr()`:
 
 ```sql
-SELECT substr(f.content, s.start_byte + 1, s.end_byte - s.start_byte)
+SELECT slice_bytes(f.content, s.start_byte, s.end_byte - s.start_byte)
 FROM symbols s JOIN files f ON f.id = s.file_id
 WHERE f.path='src/layout.ts' AND s.name='prepare';
 ```
 
-`substr()` is a **token-efficiency primitive**: you pay for the relevant context
-window, not the full file. It mirrors how a developer scrolls to a line number
-instead of reading top-to-bottom.
+`slice_bytes()` is a manyread-registered SQLite function that slices `content` by
+**byte** offset. It must be used with symbol `start_byte`/`end_byte` because SQLite's
+built-in `substr()` counts **characters**, not bytes: when any multibyte text (for
+example a Chinese comment) precedes the symbol, a byte offset handed to `substr()`
+lands past the target. `start_byte` is 0-based, so pass it directly (no `+ 1`).
+For an anchor found with `instr()` (a character position), `substr()` is still correct.
+
+Both are **token-efficiency primitives**: you pay for the relevant context window,
+not the full file. It mirrors how a developer scrolls to a line number instead of
+reading top-to-bottom.
 
 ---
 
